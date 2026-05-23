@@ -1,0 +1,1 @@
+Modify src/environment.py to add `seed=None` to PhysicsSandbox.__init__ and PhysicsSandbox.reset. If a seed is passed, call `np.random.seed(seed)` in `reset` to seed the environment. Make sure to store self.seed = seed in __init__. Verify the change by running `python src/test_integration.py`.
