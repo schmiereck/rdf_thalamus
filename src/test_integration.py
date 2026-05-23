@@ -40,6 +40,28 @@ def test_physics_sandbox():
         max_diff = np.max(np.abs(pos_history[-1] - pos_history[0]))
         assert max_diff > 0.01, f"Objects did not move enough: max diff is {max_diff}"
         
+    # Test Seeding
+    print("Testing seeding in PhysicsSandbox...")
+    env1 = PhysicsSandbox(N=2, seed=42)
+    obs1 = env1.reset(seed=42)
+    obs1_step, info1_step = env1.step()
+    
+    env2 = PhysicsSandbox(N=2, seed=42)
+    obs2 = env2.reset(seed=42)
+    obs2_step, info2_step = env2.step()
+    
+    # Check that they are identical
+    np.testing.assert_array_equal(obs1, obs2)
+    np.testing.assert_array_equal(obs1_step, obs2_step)
+    np.testing.assert_array_equal(info1_step["positions"], info2_step["positions"])
+    np.testing.assert_array_equal(info1_step["velocities"], info2_step["velocities"])
+    
+    # Check that different seed produces different results
+    env3 = PhysicsSandbox(N=2, seed=43)
+    obs3 = env3.reset(seed=43)
+    assert not np.array_equal(obs1, obs3), "Different seeds should produce different observations"
+    print("Seeding in PhysicsSandbox tested successfully!")
+    
     print("PhysicsSandbox tests passed successfully!")
 
 def test_jepa_models():

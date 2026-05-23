@@ -1,7 +1,7 @@
 import numpy as np
 
 class PhysicsSandbox:
-    def __init__(self, N=2, substeps=10, sigma_blur=0.5):
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None):
         """
         PhysicsSandbox simulates N elastic colliding objects in a 1D space [0, 128].
         Mapped to a 1D array of 128 RGB pixels.
@@ -10,10 +10,12 @@ class PhysicsSandbox:
             N (int): Number of objects (usually 2 or 3).
             substeps (int): Number of integration sub-steps per environment step.
             sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
         """
         self.N = N
         self.substeps = substeps
         self.sigma_blur = sigma_blur
+        self.seed = seed
         
         # State variables
         self.positions = np.zeros(N)
@@ -22,12 +24,16 @@ class PhysicsSandbox:
         self.masses = np.zeros(N)
         self.colors = np.zeros((N, 3))
         
-        self.reset()
+        self.reset(seed=seed)
         
-    def reset(self):
+    def reset(self, seed=None):
         """
         Reset environment with randomized parameters (sizes, colors, masses, positions, velocities).
         """
+        if seed is not None:
+            np.random.seed(seed)
+            self.seed = seed
+
         W = 128.0 / self.N
         for i in range(self.N):
             # Sample radius and mass
