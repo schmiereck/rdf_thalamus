@@ -1,0 +1,26 @@
+Implement the Thalamus Phase 1 representation base and run a short integration test.
+Specifically:
+1. Review src/pre_registration.md.
+2. Implement src/environment.py:
+   - A 1D physics sandbox representing a 1D array of 128 RGB pixels.
+   - It simulates N elastic colliding objects with randomized sizes, colors, masses, and initial velocities.
+   - Physics must correctly handle boundary bounces and elastic collisions between objects (momentum and energy conservation).
+   - The environment must support varying object counts (N=2 and N=3) and parameter randomization (colors, sizes, masses) to prevent dark-room collapse.
+   - It should output observations of shape (3, 128) per step.
+3. Implement src/models.py:
+   - An Encoder (1D CNN or MLP) mapping observations of shape (3, 128) to latent space of size up to D_max=8, with only the first d_t dimensions active.
+   - A Predictor forecasting the active latent states z_{t+1} from history (e.g., delay-line context or MLP with last 3 steps of history).
+   - FixedJEPA (Baseline B1 with fixed d_t=2, and Baseline B1-Large with fixed d_t=3).
+   - DynamicJEPA implementing GDASR: starts with d_t=2, tracks EMA of prediction error. Define an adaptive recruitment trigger based on stable 2-object error mean and standard deviation (recruit if error > mean + k * std, with k=4 and cooldown N_cooldown=500).
+   - Implement VICReg-style loss:
+     - Invariance loss: Mean Squared Error of the prediction in active latent space.
+     - Variance loss: push standard deviations of active dimensions to be >= 1.
+     - Covariance loss: minimize cross-correlations between active dimensions.
+     - Ensure variance/covariance calculations are done on batch dimension.
+   - Implement weight freezing/stop-gradient on existing dimensions when a new dimension is recruited for a short stabilization period (e.g., 200 steps).
+4. Implement a short integration test script src/test_integration.py to verify that:
+   - The environment runs and objects collide correctly.
+   - The models can perform forward passes, compute VICReg loss, and update weights.
+   - DynamicJEPA can trigger recruitment of a dimension.
+   - No NaNs or shape errors occur.
+Run src/test_integration.py and write a brief summary of the validation. Do not run the full experiments yet; just verify the code works.
