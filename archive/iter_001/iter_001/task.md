@@ -1,0 +1,1 @@
+Verify environment capabilities (PyTorch version, GPU presence if any), and create the 'src' directory structure if it doesn't exist. Write a simple environment report to src/env_report.txt.
