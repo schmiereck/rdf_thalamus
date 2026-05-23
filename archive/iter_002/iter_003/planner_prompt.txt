@@ -1,0 +1,34 @@
+# Sub-Planner Task (depth 1)
+
+Your iter_id context is `2.3`. When spawning sub-agents via run_agent, form their IDs as `2.3.1`, `2.3.2`, etc.
+
+## Goal
+
+Implement src/train.py and execute the full Phase 1 scientific evaluation of Thalamus across 5 seeds and 3 model configurations.
+
+CRITICAL IMPLEMENTATION & PLATFORM RULES:
+1. You MUST execute all tasks (file writing, script execution, data analysis, and plotting) directly within yourself. You must NOT call run_agent or spawn any sub-agents of complexity 'low', 'medium', or 'high', because those adapters are currently broken on this platform.
+2. To ensure fast CPU training and prevent timeouts, design the training loop and network to be highly efficient:
+   - Use the lightweight Encoder from src/models.py (which is already fast) or optimize it if needed.
+   - Train on N=2 for 1500 steps (track the EMA of sim_loss in the last 500 steps to define the baseline error mean and std).
+   - At step 1500, transition to N=3, clear the replay buffer, and train on N=3 for 3500 steps (total 5000 steps per run).
+   - Replay buffer size: 2000, batch size: 32, learning rate: 1e-3.
+
+SPECIFIC EXPERIMENT AND DATA LOGGING INSTRUCTIONS:
+1. Write src/train.py:
+   - Implement the replay buffer and training loop.
+   - Run the 15 experiments (3 models: 'b1' [FixedJEPA, d_t=2], 'b1_large' [FixedJEPA, d_t=3], and 'dynamic' [DynamicJEPA, starting at d_t=2, trigger k=4, cooldown=500, stabilization=200]) across 5 random seeds (42, 123, 456, 789, 999).
+   - Pass the random seed to torch, numpy, random, and the environment reset to ensure identical environment sequences across models for a given seed.
+   - Save the step-by-step training logs (loss, sim_loss, var_loss, cov_loss, active_dims, active dimension stds, and active dimension correlations) to `archive/iter_002/runs/{model_type}_seed{seed}.csv`.
+2. Evaluate models on a separate test environment (100 transitions) at the end of the N=3 phase, and calculate the final sim_loss, dimension stds, and absolute correlations.
+3. Write an aggregation and analysis script (or run it inside src/train.py) that:
+   - Summarizes the results across the 5 seeds for all 3 models (calculating mean and std of final N=3 prediction error, dimensionality, latent variance, and cross-correlations).
+   - Evaluates the three pre-registered falsification criteria:
+     1. Did 'dynamic' always recruit a 3rd dimension (d_t=3) within 3500 steps of N=3?
+     2. Is the final N=3 prediction error of 'dynamic' at least 30% lower than 'b1' ($d_t=2$)?
+     3. Did representation collapse occur (defined as any active dimension having std <= 0.1 or mean absolute correlation >= 0.3 on the evaluation batch)?
+   - Computes the projection/orthogonality of the newly recruited 3rd dimension onto the stable 2D subspace for the dynamic model (e.g., cross-correlation matrix elements).
+   - Compares the learning speed / adaptation curve of 'dynamic' after recruitment versus 'b1_large'.
+   - Generates summary.csv in `archive/iter_002/results/`.
+   - Generates high-quality learning curve plots and saves them as PNGs in `archive/iter_002/results/`.
+4. Run the full pipeline directly, ensure all files (CSVs, PNGs) are written to their correct locations under `archive/iter_002/results/` and `archive/iter_002/runs/`, and write a detailed summary of your findings.

@@ -1,0 +1,1 @@
+Write a test file named 'archive/iter_002/results/test_agent.txt' with the content 'hello' inside it.
