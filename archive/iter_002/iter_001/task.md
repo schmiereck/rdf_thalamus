@@ -1,4 +1,4 @@
-Implement the Thalamus Phase 1 representation base and run a short integration test.
+Implement and run integration tests for Thalamus Phase 1.
 Specifically:
 1. Review src/pre_registration.md.
 2. Implement src/environment.py:
