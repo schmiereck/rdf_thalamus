@@ -35,3 +35,4 @@ hierarchical abstraction **without generative decoders**. The system must:
 * [Iteration 008 — Unsupervised Spatial Bottlenecks and Output-as-Input Closed-Loop Probing](RESEARCH-RESULT-008.md)
 * [Iteration 009 — Null Result on Surprise-Modulated Adaptive Bottleneck Curriculum (DSMC)](RESEARCH-RESULT-009.md)
 * [Iteration 010 — Null Result: Dual-Stream Decoupling (DSDT) Semantic Blindness](RESEARCH-RESULT-010.md)
+* [Iteration 011 — Non-Parametric Spatial Projection](RESEARCH-RESULT-011.md)
