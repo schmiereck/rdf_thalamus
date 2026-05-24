@@ -31,4 +31,7 @@ hierarchical abstraction **without generative decoders**. The system must:
 * [Iteration 004 — Refuted Hypothesis: Rigid-Cooldown Thalamic Gating](RESEARCH-RESULT-004.md)
 * [Iteration 005 — Closed-Loop Motor Coupling & Subsumption Motorics](RESEARCH-RESULT-005.md)
 * [Iteration 006 — Phase 4: Generalization & Noise Robustness](RESEARCH-RESULT-006.md)
+* [Iteration 007 — Active Probing vs. Passive Observation in Latent Space Specialization](RESEARCH-RESULT-007.md)
+* [Iteration 008 — Unsupervised Spatial Bottlenecks and Output-as-Input Closed-Loop Probing](RESEARCH-RESULT-008.md)
+* [Iteration 009 — Null Result on Surprise-Modulated Adaptive Bottleneck Curriculum (DSMC)](RESEARCH-RESULT-009.md)
 
