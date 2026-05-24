@@ -1,0 +1,1 @@
+Run '.venv/Scripts/python.exe src/train_thalamus.py --model gated --seed 456' and verify that it completes successfully without any RuntimeError or autograd crash. Show the output log.
