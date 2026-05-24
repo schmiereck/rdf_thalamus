@@ -1,0 +1,121 @@
+The Phase 13 experiment is running in the background. The monitor will report progress (seed/arm completions, recruitment events, errors, final audit). I'll wait for completion before reporting the final stats.
+Running. Will wait for completion notifications.
+Arm G seed 42 finished passive pretraining and recruited dim 4 during active phase.
+Arm G seed 42 done; Arm H starting.
+Arm H seed 42 starts active CLTS phase.
+Arm H seed 42 done.
+Arm I seed 42 in active phase.
+Seed 42 complete. Seed 123 starting.
+Seed 123 Arm G in active phase.
+Seed 123 Arm G done — much better MSE (35.0) than seed 42 (132.1).
+Seed 123 Arm H in active phase.
+Seed 123 Arm H done.
+Seed 123 Arm I in active phase.
+Recruited dim 4 in Arm I seed 123.
+Seed 123 complete. Seed 456 starting.
+Seed 456 Arm G has high initial loss (5.3) — interesting.
+Seed 456 Arm G done.
+Seed 456 Arm H in active phase.
+Seed 456 Arm H done.
+Seed 456 Arm I in active phase.
+Seed 456 complete. Seed 789 starting (Arm I sim loss was high at 0.16).
+Seed 789 Arm G in active phase.
+Seed 789 Arm G done — high sim loss (0.10).
+Seed 789 Arm H in active phase.
+Seed 789 Arm H done — high sim loss (0.10) and high var (13.3).
+Seed 789 Arm I in active phase.
+Seed 789 complete. Last seed (999) starting.
+Seed 999 Arm G in active phase.
+Seed 999 Arm G done.
+Seed 999 Arm H in active phase.
+Seed 999 Arm H done. Last arm running.
+Last arm-seed running (999 Arm I).
+All seeds done. Summary CSV saved.
+Phase 13 complete. All 5 seeds × 3 arms ran successfully. The hypothesis was falsified on 3 of 4 criteria.
+
+**Summary of results (means across 5 seeds, step 3000):**
+
+| Arm | Test Sim Loss | MSE Centroid | Soft Var |
+|---|---|---|---|
+| G (RGB CLTS, baseline) | 0.0483 | 85.85 | 8.67 |
+| H (Linear CLTS) | 0.0593 | 87.50 | **10.71** |
+| I (Sinusoidal CLTS) | 0.0911 | 88.11 | 6.83 |
+
+**Statistical tests (step 3000):**
+- Welch's t-test, G vs H: t=−0.62, p=0.5529
+- Welch's t-test, G vs I: t=−1.63, p=0.1497
+- Levene, G vs H: W=0.026, p=0.8753
+- Levene, G vs I: W=0.727, p=0.4187
+
+**Falsification verdict:** All 3 quantitative criteria failed for Arm H and Arm I (MSE > 75, sim loss > 0.050, Arm H variance > 10). Criterion 4 (statistical non-inferiority) is technically satisfied because p > 0.05 in both pairwise t-tests — but the direction of the means is *worse*, not better. **Hypothesis FALSIFIED.** Positional encodings did not mitigate the active-control representational drift; in fact Arm I appears slightly worse (higher mean loss, larger spread).
+
+```yaml
+status: ok
+artifacts:
+  - src/run_phase13_experiments.py
+  - archive/iter_013/results/summary_phase13.csv
+  - archive/iter_013/results/auc_recovery_curves_phase13.png
+  - archive/iter_013/results/audit_results_phase13.json
+  - archive/iter_013/results/phase13_run.log
+metrics:
+  arm_g_test_sim_loss_mean: 0.048329
+  arm_h_test_sim_loss_mean: 0.059278
+  arm_i_test_sim_loss_mean: 0.091132
+  arm_g_mse_cent_mean: 85.846592
+  arm_h_mse_cent_mean: 87.499947
+  arm_i_mse_cent_mean: 88.112237
+  arm_g_mean_var_3_mean: 8.672636
+  arm_h_mean_var_3_mean: 10.707129
+  arm_i_mean_var_3_mean: 6.831435
+  arm_g_pointer_entropy_mean: 3.955071
+  arm_h_pointer_entropy_mean: 3.954530
+  arm_i_pointer_entropy_mean: 3.951589
+  ttest_gh_t: -0.6211
+  ttest_gh_p: 0.552909
+  ttest_gi_t: -1.6260
+  ttest_gi_p: 0.149724
+  levene_gh_W: 0.0263
+  levene_gh_p: 0.875266
+  levene_gi_W: 0.7268
+  levene_gi_p: 0.418704
+  c1_falsified: true
+  c2_falsified: true
+  c3_falsified: true
+  c4_falsified: false
+  hypothesis_falsified: true
+log_excerpt: |
+  Two-sample two-sided Welch's t-test:
+    Arm G vs Arm H: t = -0.6211, p-value = 0.552909
+    Arm G vs Arm I: t = -1.6260, p-value = 0.149724
+  Levene's test (equality of variances):
+    Arm G vs Arm H: W = 0.0263, p-value = 0.875266
+    Arm G vs Arm I: W = 0.7268, p-value = 0.418704
+  Criterion 1 (Coordinate Accuracy) - Arm H MSE 87.50 / Arm I MSE 88.11 (threshold < 75.0) -> FALSIFIED
+  Criterion 2 (Spatial Tightness)   - Arm H Soft Var 10.71 (threshold < 10.0) -> FALSIFIED; Arm I 6.83 -> OK
+  Criterion 3 (Predictive Integrity)- Arm H sim_loss 0.0593 / Arm I 0.0911 (threshold < 0.050) -> FALSIFIED
+  Criterion 4 (Generalization)      - t-test p > 0.05 in both directions -> VALIDATED (non-inferiority not statistically rejected)
+  OVERALL HYPOTHESIS: FALSIFIED
+  Saved archive/iter_013/results/summary_phase13.csv
+  Saved archive/iter_013/results/auc_recovery_curves_phase13.png
+  Saved archive/iter_013/results/audit_results_phase13.json
+experimenter_view: |
+  Adding explicit pixel-position encodings (Linear or Sinusoidal) to the convolutional
+  backbone under CLTS did NOT mitigate the active-perception representational drift
+  observed in Phase 12. With matched 5-seed sweeps trained independently from step 1
+  (different input channel counts: 3 for G, 4 for H, 7 for I), all three arms exceeded
+  the pre-registered MSE-centroid bound of 75.0 (G=85.8, H=87.5, I=88.1) and exceeded
+  the post-collision sim-loss bound of 0.050 (G=0.048 just under, H=0.059, I=0.091),
+  triggering falsification under Criteria 1 and 3. Arm H additionally breached the
+  soft-variance bound (10.71 > 10.0) -> Criterion 2 falsified. Criterion 4 is the only
+  one not falsified: although Arm H and Arm I have higher mean test sim losses than
+  Arm G, the Welch t-test p-values (0.553 / 0.150) do not reach statistical
+  significance with n=5 seeds, so we cannot reject non-inferiority. However, the
+  effect direction is consistently in the wrong direction (H and I are worse, not
+  better), and the variance for Arm I is substantially larger (std 0.050 vs 0.031).
+  Strategic interpretation: the explicit positional channels do not yield the
+  hypothesized improvement; if anything Sinusoidal encoding (Arm I) degrades both
+  predictive integrity and online training AUC (online_auc_1501_3000 ~10,000 vs
+  ~5,800 for baseline). The Phase 13 hypothesis is FALSIFIED.
+notes: "Phase 13 falsified: positional encodings do not resolve active-perception drift; Arms H/I are no better and trend worse than RGB baseline."
+```
+Monitor timeout — expected. Run already complete; no action needed.
