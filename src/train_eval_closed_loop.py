@@ -359,7 +359,7 @@ def run_priming_test(model, seed, priming_mode, device):
 
 if __name__ == "__main__":
     model_names = ["M_active", "M_no_motor", "M_random"]
-    seeds = [42, 43, 44, 45, 46]
+    seeds = [42, 123, 456, 789, 999]
     device = torch.device("cpu")
     
     print("Starting parallel training of 15 runs...")
