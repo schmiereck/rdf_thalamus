@@ -1,0 +1,4 @@
+Modify src/environment.py to add a 1D physical pointer. Update the step function to accept an action dictionary containing continuous acceleration 'acc' and boolean 'push'. Implement elastic collisions between the pointer and objects. Render the pointer onto the canvas.
+Modify src/thalamus.py to implement surprise-modulated adaptive cooldown C_t. Add a trainable linear position readout 'pos_readout' from the L1 latent representation, and a mathematically clean 'compute_attended_centroid' function that extracts the spatial centroid purely from visual activations of the attended segment (no ground truth).
+Create src/motor.py implementing the 3-layer Subsumption Motor Controller (Reflexive PD Tracking, Predictive Kinematics, Deliberate Push Perturbation) and Representation Ablation Controls (random initialization and spatial attention shuffling).
+Write an integration test src/test_closed_loop.py to verify all components work together in a closed-loop simulation step.
