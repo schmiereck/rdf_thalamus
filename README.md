@@ -7,6 +7,8 @@
 
 Uroboros-RDF pairs strategic planning with autonomous execution in a closed-loop system, featuring **recursive sub-goal decomposition**.
 
+* see: https://github.com/schmiereck/uroboros-rdf
+
 ## Research
 
 ### Research Goal: Exploration of a Dynamic, Curiosity-Driven Representation Network

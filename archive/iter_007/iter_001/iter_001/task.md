@@ -1,0 +1,1 @@
+Read `src/pre_registration.md` and rewrite it to match the exact Phase 7 unsupervised pre-registration hypothesis, falsification criteria, and methods as specified in the Goal. Ensure all details about GDASR, Active Probing, Passive Observation, the 5 seeds, the post-hoc linear probe, and the three falsification criteria are perfectly and cleanly documented.
