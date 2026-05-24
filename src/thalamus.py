@@ -163,10 +163,14 @@ class ThalamusNet(nn.Module):
         Plasticity Gating: dynamically sets requires_grad based on active token locus.
         If L1 active (locus 0-3), only L1 parameters are trainable.
         If L2 active (locus 4), only L2 parameters (and color readout) are trainable.
-        If L2 is locked, L2 parameters are always frozen.
+        If L2 is locked, L2 parameters are always frozen, and we fall back to training L1.
         """
-        l1_active = (self.token_locus in [0, 1, 2, 3])
-        l2_active = (self.token_locus == 4) and not self.l2_locked
+        if self.token_locus == 4 and self.l2_locked:
+            l1_active = True
+            l2_active = False
+        else:
+            l1_active = (self.token_locus in [0, 1, 2, 3])
+            l2_active = (self.token_locus == 4) and not self.l2_locked
 
         for param in self.l1_encoders.parameters():
             param.requires_grad = l1_active
@@ -184,8 +188,12 @@ class ThalamusNet(nn.Module):
         """
         Ensures inactive layers receive zero gradients.
         """
-        l1_active = (self.token_locus in [0, 1, 2, 3])
-        l2_active = (self.token_locus == 4) and not self.l2_locked
+        if self.token_locus == 4 and self.l2_locked:
+            l1_active = True
+            l2_active = False
+        else:
+            l1_active = (self.token_locus in [0, 1, 2, 3])
+            l2_active = (self.token_locus == 4) and not self.l2_locked
 
         if not l1_active:
             for param in self.l1_encoders.parameters():
@@ -339,7 +347,10 @@ class ThalamusNet(nn.Module):
         l2_loss, l2_sim, l2_var, l2_cov = self.calc_vicreg_loss(z_pred_l2, z_target_l2, sim_weight, var_weight, cov_weight)
 
         # Return active layer loss
-        active_loss = total_l1_loss if (self.token_locus in [0, 1, 2, 3]) else l2_loss
+        if self.token_locus == 4 and self.l2_locked:
+            active_loss = total_l1_loss
+        else:
+            active_loss = total_l1_loss if (self.token_locus in [0, 1, 2, 3]) else l2_loss
 
         loss_dict = {
             "loss": active_loss,
