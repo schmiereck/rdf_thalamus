@@ -1,36 +1,31 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 004
+*   **Iteration:** 005
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
-In a hierarchical two-layer representation network (Layer 1: local spatial features; Layer 2: global object trajectory prediction), implementing surprise-driven Thalamic Gating (Pillar D) with Z-score normalized surprise routing, a token-holding cooldown (C = 200 steps), and a lower-layer Stability Lock (L2 eligibility gated by L1 convergence threshold \theta_conv = 0.25) will:
-1. Prevent input-drift collapse, resulting in a statistically significant reduction in the variance (standard deviation) of Layer 2 test prediction loss across seeds compared to a non-gated baseline (where both layers train continuously).
-2. Achieve superior sample efficiency, reaching a stable Layer 2 prediction loss < 0.08 in fewer training steps than the non-gated baseline.
-3. Enable stable self-sustained tracking: when transitioning from externally primed queries (biased towards a target object color) to self-generated queries (using L2's own previous state prediction), the system will maintain target tracking overlap > 0.85 and reduce prediction loss on the target object by at least 15% compared to the non-gated standard JEPA.
+1. Replacing the rigid 200-step attention cooldown with an adaptive, surprise-modulated cooldown ($C_t \in [10, 30]$ steps) combined with a Proportional-Derivative (PD) reflexive motor tracking controller in $M_{active}$ will resolve the physical tracking lag from Phase 2, increasing the physical pointer-to-object tracking overlap $\mathcal{O}_{track}$ from $11.20\%$ to $\ge 70.0\%$ in the test environment.
+2. Progressive training of the Subsumption Motorics hierarchy (Lower-layer tracking -> Upper-layer perturbation) will allow the agent to learn the physical dynamics of hidden mass via intentional collisions. This causal sensitivity advantage will manifest such that, when evaluated on post-collision velocity predictions with altered hidden masses, $M_{active}$ will achieve an L2 prediction loss $\mathcal{L}_{collision}$ that is at least $35\%$ lower than both the passive control ($M_{no\_motor}$) and the random control ($M_{random}$).
+3. Transitioning from externally primed attention queries (guided by color/size) to self-generated attention queries (output-as-input loop) will remain stable, with the test prediction loss on the attended locus increasing by no more than $15\%$ relative to the primed attention baseline.
 
 ## 2. Falsification Criterion
-The hypothesis will be falsified if any of the following occur over a 5-seed evaluation suite:
-1. The gated model fails to show a lower standard deviation of L2 test prediction loss across seeds compared to the non-gated model (p >= 0.05 via Levene's test, or higher raw standard deviation).
-2. The gated model requires more or equal training steps than the non-gated model to reach L2 prediction loss < 0.08, or fails to reach this error level entirely.
-3. During the self-generated attention phase, target tracking overlap falls below 0.80, or the test prediction loss on the target object is not at least 15% lower than that of the standard non-gated JEPA baseline.
+The hypothesis will be proven false if any of the following occur:
+1. The physical tracking overlap $\mathcal{O}_{track}$ of $M_{active}$ across the 5-seed test suite is $< 70.0\%$.
+2. The post-collision L2 prediction loss ratio $\frac{\mathcal{L}_{collision}(M_{active})}{\mathcal{L}_{control}} \ge 0.65$ for either control $M_{control} \in \{M_{random}, M_{no\_motor}\}$ (failing to demonstrate a $35\%$ reduction in prediction error).
+3. The prediction loss on the attended locus under self-generated attention is $> 1.15$ times the loss under externally primed attention.
+4. Active closed-loop motor coupling causes drift collapse or numeric instability, resulting in an overall test L2 prediction loss higher than the baseline B1 model (0.0452).
 
 ## 3. Proposed Method
-1. Architecture Extension: In `src/models.py` (or a new `src/thalamus.py`), implement a two-layer DynamicJEPA:
-   - L1 (Local Segment Predictor): Processes visual segments, predicts its next latent state, and uses VICReg regularization (cov_weight=25.0) with GDASR recruitment.
-   - L2 (Object Tracker): Aggregates L1 latents, predicts global entity trajectories, and uses identical collapse prevention and recruitment.
-2. Thalamic Gating Mechanism:
-   - Surprise Watchdog: Compute local surprise E_l(t) = ||z_l(t) - \hat{z}_l(t)||^2 for l \in {L1, L2}.
-   - Z-Score Normalization: Maintain EMA of mean and variance for each layer's surprise to compute normalized surprise \bar{E}_l(t).
-   - Token Routing: Route Attention Token T(t) = argmax \bar{E}_l(t) with a 200-step cooldown timer.
-   - Stability Lock: Prevent L2 from receiving the token or updating weights until L1's running surprise falls below \theta_conv = 0.25.
-   - Plasticity Gating: Freeze gradients and disable dimension recruitment for the layer not holding the token.
-3. Priming & Self-Generation:
-   - Implement external priming (biasing surprise weight towards a specific object's color) for the first 1500 steps.
-   - Transition to self-generated priming by feeding L2's trajectory predictions back as the query vector.
-4. Control & Evaluation:
-   - Run 5 seeds for: (a) proposed Thalamic Gated model, (b) non-gated multi-layer control, and (c) single-layer baseline (B1).
-   - Log test prediction loss, loss variance, attention tracking accuracy, and token transition histories.
+1. **Adaptive Cooldown & Attention (`src/thalamus.py`)**: Replace the rigid 200-step cooldown with a dynamic, surprise-modulated cooldown $C_t = \text{clip}(\frac{\alpha}{|\Delta E_t| + \epsilon}, 10, 30)$ where $\Delta E_t = E_t - E_{t-1}$ is the temporal change in local surprise.
+2. **Subsumption Motor Controller (`src/motor.py`)**: Create/modify the motor module to implement three hierarchical layers:
+   - *Lower Layer (Reflexive Tracking)*: A PD controller that maps the attended spatial centroid of the attention token to continuous pointer acceleration to match the object's position.
+   - *Middle Layer (Predictive Kinematics)*: Uses the temporal latent predictions to preemptively adjust the pointer's velocity and anticipate the object's path.
+   - *Upper Layer (Deliberate Perturbation)*: Detects when tracking error is low and surprise is stabilized ("boredom"), and overrides lower layers to trigger a "push" command to collide with the object.
+3. **Environment Alignment (`src/environment.py`)**: Verify that the 1D physics sandbox properly integrates continuous pointer actions (acceleration, push commands) and exposes correct bounding box/centroid targets.
+4. **Progressive Coupling & Sweep (`src/train_eval.py`)**:
+   - Implement the staged training schedule: Steps 0-1000: Decoupled random motor actions; Steps 1000-3000: Lower-layer visual tracking active; Steps 3000-5000: Full subsumption motorics (predictive tracking + deliberate push perturbations) active.
+   - Execute a systematic 5-seed sweep across: $M_{no\_motor}$ (passive), $M_{random}$ (random exploration), and $M_{active}$ (proposed model).
+   - Evaluate causal sensitivity by randomizing object masses in the test environments and measuring post-collision velocity prediction error. Log attention token traces to measure the self-generated vs. primed attention loss.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
