@@ -1,7 +1,7 @@
 import numpy as np
 
 class PhysicsSandbox:
-    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None):
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False):
         """
         PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
         Mapped to a 1D array of 128 RGB pixels.
@@ -11,18 +11,27 @@ class PhysicsSandbox:
             substeps (int): Number of integration sub-steps per environment step.
             sigma_blur (float): Softness of the continuous rendering.
             seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
         """
         self.N = N
         self.substeps = substeps
         self.sigma_blur = sigma_blur
         self.seed = seed
+        self.pixel_noise_std = pixel_noise_std
+        self.noisy_tv = noisy_tv
         
-        # State variables
+        # State variables for standard objects
         self.positions = np.zeros(N)
         self.velocities = np.zeros(N)
         self.radii = np.zeros(N)
         self.masses = np.zeros(N)
         self.colors = np.zeros((N, 3))
+        
+        # State variables for Noisy-TV entity
+        self.noisy_tv_pos = 64.0
+        self.noisy_tv_radius = 5.0
+        self.noisy_tv_color = np.array([0.5, 0.5, 0.5])
         
         # Pointer state variables
         self.pointer_pos = 64.0
@@ -73,6 +82,12 @@ class PhysicsSandbox:
         self.pointer_radius = 4.0
         self.pointer_mass = 10.0
         self.pointer_color = np.array([1.0, 1.0, 1.0])
+        
+        # Reset Noisy-TV entity if active
+        if self.noisy_tv:
+            self.noisy_tv_radius = np.random.uniform(3.0, 8.0)
+            self.noisy_tv_pos = np.random.uniform(self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
         
         # Resolve initial overlaps of both the objects and the pointer in a loop
         temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
@@ -206,7 +221,18 @@ class PhysicsSandbox:
             self.pointer_pos = temp_positions[-1]
             self.pointer_vel = temp_velocities[-1]
 
+        # Update Noisy-TV state if active
+        if self.noisy_tv:
+            # Random walk motion: Gaussian step with std 2.0
+            step_noise = np.random.normal(0.0, 2.0)
+            self.noisy_tv_pos += step_noise
+            # Keep inside environment boundaries [radius, 128 - radius]
+            self.noisy_tv_pos = np.clip(self.noisy_tv_pos, self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            # Flicker with maximum entropy: color randomly sampled from [0.3, 1.0]
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+
         obs = self.render()
+        
         info = {
             "positions": self.positions.copy(),
             "velocities": self.velocities.copy(),
@@ -219,20 +245,31 @@ class PhysicsSandbox:
             "pointer_mass": self.pointer_mass,
             "pointer_color": self.pointer_color.copy(),
         }
+        
+        if self.noisy_tv:
+            info["noisy_tv_pos"] = self.noisy_tv_pos
+            info["noisy_tv_color"] = self.noisy_tv_color.copy()
+            info["noisy_tv_radius"] = self.noisy_tv_radius
+            
         return obs, info
 
     def render(self):
         """
         Render continuous 1D space to a (3, 128) array with soft continuous blending.
-        Includes original objects and the white physical pointer.
+        Includes original objects, the white physical pointer, and optionally the Noisy-TV entity.
         """
         pixel_centers = np.arange(128) + 0.5  # shape (128,)
         canvas = np.zeros((3, 128))
         
-        # Combine objects and pointer for rendering depth sorting
-        temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
-        temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
-        temp_colors = np.concatenate([self.colors, [self.pointer_color]], axis=0)
+        # Combine objects, pointer, and optional Noisy-TV for rendering depth sorting
+        if self.noisy_tv:
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos], [self.noisy_tv_pos]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius], [self.noisy_tv_radius]])
+            temp_colors = np.concatenate([self.colors, [self.pointer_color], [self.noisy_tv_color]], axis=0)
+        else:
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_colors = np.concatenate([self.colors, [self.pointer_color]], axis=0)
         
         # Sort objects and pointer by position to blend left-to-right (depth order)
         sorted_indices = np.argsort(temp_positions)
@@ -251,5 +288,10 @@ class PhysicsSandbox:
             
             # Alpha blend onto canvas
             canvas = canvas * (1.0 - mask) + color_expanded * mask
+            
+        # Apply global pixel noise if specified
+        if self.pixel_noise_std > 0.0:
+            noise = np.random.normal(0.0, self.pixel_noise_std, size=canvas.shape)
+            canvas = np.clip(canvas + noise, 0.0, 1.0)
             
         return canvas
