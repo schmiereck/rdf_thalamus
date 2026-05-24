@@ -316,3 +316,41 @@ Key Findings:
 
 **Notes:** DSMC provides a Pareto-like compromise, but the aggressive predictive and temporal loss limits were technically falsified. Representational stability and localization are fully validated.
 
+
+---
+```yaml
+cached_tokens: 1111390
+cost_usd: 0.99555
+hypothesis: 'phase-10: evaluation of DSDT dual-stream decoupling under active probing'
+input_tokens: 1812779
+iter: 10
+metrics:
+  arm_a_test_sim_loss: 0.081522
+  arm_c_test_sim_loss: 0.100149
+  arm_d_abs_r_centroid: 0.1265
+  arm_d_collapse_rate: 1.0
+  arm_d_masked_test_sim_loss: 3952.177979
+  arm_d_mean_var_3: 1356.5242
+  arm_d_test_sim_loss: 13.446293
+output_tokens: 5438
+status: ok
+```
+
+## iter_010: phase-10: evaluation of DSDT dual-stream decoupling under active probing
+
+**Analysis:** Phase 10 evaluated a dual-stream architecture (DSDT) designed to decouple coordinate extraction from temporal dynamics modeling, thereby attempting to bypass the Pareto regularization-prediction trade-off. We successfully implemented the model (10.1) and executed the 5-seed sweep (10.3). 
+
+The results present an outstanding, honest scientific failure of the stop-gradient decoupling method. While t
+
+**Status:** ok
+
+**Metrics:** `{'arm_a_test_sim_loss': 0.081522, 'arm_c_test_sim_loss': 0.100149, 'arm_d_test_sim_loss': 13.446293, 'arm_d_masked_test_sim_loss': 3952.177979, 'arm_d_mean_var_3': 1356.5242, 'arm_d_collapse_rate': 1.0, 'arm_d_abs_r_centroid': 0.1265}`
+
+**Experimenter view:** Phase 10 successfully executed the full 5-seed comparative sweep evaluating the Dual-Stream Decoupled Thalamus (DSDT) architecture (Arm D) against Arm A (Gentle) and Arm C (DSMC) controls.
+
+The pre-registered hypotheses were systematically and completely FALSIFIED:
+1. Spatial Localization: Arm D's soft spatial variance was 1356.52 (falsification threshold: > 75.0).
+2. Predictive Capacity: Arm D's 
+
+**Notes:** DSDT hypothesis systematically falsified due to stop-gradient semantic blindness. Complete decoupling prevents spatial grounding, causing 100% collapse.
+
