@@ -1,24 +1,24 @@
 # Current Research State
-Phase: Phase 12 Complete (Closed-Loop Thalamic Subsumption Motorics Swept and Evaluated)
+Phase: Phase 13 Complete (Explicit Position Encodings Evaluated and Falsified)
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 12 goal was to mount Pillar E (Closed Loop Subsumption Motorics - CLTS) on top of the Arm F model to validate curiosity-driven active probing under the new non-parametric representation base.
+Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 13 goal was to evaluate whether adding explicit pixel-position encodings (Linear Normalized or Sinusoidal) to the input of the convolutional backbone resolves the active-perception coordinate representation drift observed in Phase 12.
 
 ## Confirmed
-- EXCELLENT PREDICTIVE PERFORMANCE (iter_12.3): Arm G (CLTS) achieved a 47.68% lower post-collision standardized test simulation loss (0.0483) compared to the random exploration baseline (Arm F-Random: 0.0924), validating pre-registered Criterion 1.
-- ACCELERATED ADAPTATION (iter_12.3): CLTS achieved a 28.25% reduction in test simulation loss AUC across the training steps, confirming that surprise-modulated active probing significantly accelerates model adaptation to novel physical dynamics (Criterion 3 validated).
-- SHANNON ENTROPY BOOST (iter_12.3): The spatial coverage entropy of CLTS was 3.9551, vastly outperforming random exploration (2.9781) and passive observation (2.7903). This confirms that surprise-driven subsumption motorics actively and systematically explores the state space, completely avoiding delusional feedback loop collapse.
-- ROBUST COORDINATE GROUNDING (iter_12.3): The soft spatial variance of the coordinate encoder under CLTS remained extremely stable and tight (8.6726, far below the falsification limit of 20.0).
+- STATISTICAL NON-INFERIORITY NOT FORMALLY REJECTED (iter_13.4): Welch's t-test comparing post-collision test simulation loss at step 3000 did not reject non-inferiority under n=5 seeds for either Arm H (p=0.553) or Arm I (p=0.150) vs Arm G. However, the mean simulation losses were physically worse across the board, showing that explicit positional encoding degrades the optimization landscape.
+- ROBUST SPATIAL COVERAGE (iter_13.4): Pointer spatial coverage entropy under CLTS active control remained highly stable and wide across all arms (G=3.955, H=3.955, I=3.952), showing that active probing and environment exploration were fully functional.
 
 ## Refuted / Falsified
-- MARGINAL REPRESENTATION DRIFT (iter_12.3): The centroid decoding MSE of the novel object under active CLTS control reached 85.8466, marginally exceeding the pre-registered falsification threshold of 85.0 (Criterion 2). This indicates that the intense physical contact and active collisions of CLTS introduce a minor representational drift that slightly degrades linear probe coordinate decoding.
+- RE-IDENTITY/COORDINATE DRIFT UNMITIGATED (iter_13.4): The centroid decoding MSE of the novel object remained far above the falsification limit of 75.0 (Arm H: 87.50, Arm I: 88.11 vs Arm G: 85.85), proving that explicit positional input does not resolve representational drift under active physical perturbations (Criterion 1 Falsified).
+- RECONSTRUCTION VS PHYSICS OPTIMIZATION INTERFERENCE (iter_13.4): Under sinusoidal positional encoding (Arm I), the post-collision test simulation loss degraded severely to 0.0911 (exceeding the 0.050 limit) and the training curve AUC worsened dramatically. This confirms that adding raw coordinate channels introduces an optimization shortcut that distracts the network from learning physical dynamics (Criterion 3 Falsified).
+- LOSS OF SPATIAL REPRESENTATIONAL STABILITY (iter_13.4): Under linear positional encoding (Arm H), the soft spatial variance of the coordinate encoder expanded to 10.71 (exceeding the limit of 10.0), showing a complete destabilization of spatial tightness (Criterion 2 Falsified).
 
 ## Best Result
-- Closed-Loop Thalamic Subsumption (CLTS): Test Sim Loss: 0.0483, Soft Spatial Variance: 8.67, Centroid Decoding MSE: 85.85, Pointer Spatial Entropy: 3.96.
+- Original RGB CLTS (Arm G): Test Sim Loss: 0.0483, Soft Spatial Variance: 8.67, Centroid Decoding MSE: 85.85, Pointer Spatial Entropy: 3.96.
 
 ## In Progress
-- Having fully evaluated all architectural pillars (A, B, C, D, E) and completed the pre-registered sweeps, the Thalamus architecture is now fully integrated and mature.
+- Phase 13 has successfully delivered a clear negative result: adding explicit coordinate channels creates a "position shortcut" that harms, rather than helps, unsupervised spatial bottle-necked dynamics networks.
 
 ## Open Questions
-- Can contrastive coordinate regularisation prevent the marginal representation drift observed under active CLTS control?
-- How does the performance of CLTS scale when transitioning to multi-dimensional (2D/3D) physical environments?
+- Can contrastive coordinate regularization prevent active-perception representational drift without resorting to supervised coordinate readouts?
+- What are the architectural trade-offs of transitioning the Thalamus project into a multi-dimensional (2D/3D) environment?

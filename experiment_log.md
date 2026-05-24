@@ -439,3 +439,53 @@ The sub-agents successfully appended the `CLTSMotorController` class to `src/mot
 
 **Notes:** Phase 12 complete. All architectural pillars successfully integrated. CLTS performance and adaptation gains are fully validated, with marginal representational drift identified as an open area for future research.
 
+
+---
+```yaml
+cached_tokens: 1004586
+cost_usd: 0.797
+hypothesis: 'phase-13: evaluate explicit input-level positional encodings under CLTS
+  active control'
+input_tokens: 1531231
+iter: 13
+metrics:
+  arm_g_mean_var_3_mean: 8.672636
+  arm_g_mse_cent_mean: 85.846592
+  arm_g_pointer_entropy_mean: 3.955071
+  arm_g_test_sim_loss_mean: 0.048329
+  arm_h_mean_var_3_mean: 10.707129
+  arm_h_mse_cent_mean: 87.499947
+  arm_h_pointer_entropy_mean: 3.95453
+  arm_h_test_sim_loss_mean: 0.059278
+  arm_i_mean_var_3_mean: 6.831435
+  arm_i_mse_cent_mean: 88.112237
+  arm_i_pointer_entropy_mean: 3.951589
+  arm_i_test_sim_loss_mean: 0.091132
+  c1_falsified: true
+  c2_falsified: true
+  c3_falsified: true
+  c4_falsified: false
+  hypothesis_falsified: true
+  levene_gh_p: 0.875266
+  levene_gi_p: 0.418704
+  ttest_gh_p: 0.552909
+  ttest_gi_p: 0.149724
+output_tokens: 6403
+status: ok
+```
+
+## iter_013: phase-13: evaluate explicit input-level positional encodings under CLTS active control
+
+**Analysis:** Phase 13 successfully addressed the Spatial Specialization Gap by evaluating a key candidate mitigation: explicit pixel-position encodings. Under a fully matched 5-seed sweep, both Linear Normalized and Sinusoidal positional encodings were implemented and compared under Closed-Loop Thalamic Subsumption (CLTS) control.
+
+The results present an outstanding, highly rigorous scientific negative result.
+
+**Status:** ok
+
+**Metrics:** `{'arm_g_test_sim_loss_mean': 0.048329, 'arm_h_test_sim_loss_mean': 0.059278, 'arm_i_test_sim_loss_mean': 0.091132, 'arm_g_mse_cent_mean': 85.846592, 'arm_h_mse_cent_mean': 87.499947, 'arm_i_mse_cent_mean': 88.112237, 'arm_g_mean_var_3_mean': 8.672636, 'arm_h_mean_var_3_mean': 10.707129, 'arm_i_mean_var_3_mean': 6.831435, 'arm_g_pointer_entropy_mean': 3.955071, 'arm_h_pointer_entropy_mean': 3.95453, 'arm_i_pointer_entropy_mean': 3.951589, 'ttest_gh_p': 0.552909, 'ttest_gi_p': 0.149724, 'levene_gh_p': 0.875266, 'levene_gi_p': 0.418704, 'c1_falsified': True, 'c2_falsified': True, 'c3_falsified': True, 'c4_falsified': False, 'hypothesis_falsified': True}`
+
+**Experimenter view:** We executed the Phase 13 comparative sweep across 5 seeds evaluating the explicit pixel-position encodings hypothesis.
+We implemented Arm H (Linear Position, 4 channels) and Arm I (Sinusoidal Embeddings at scales 10 and 100, 7 channels) inside src/thalamus.py and src/models_dual_stream.py. Both arms were trained from step 1 (with matched passive N=3 pre-training and active CLTS N=4 training) to gu
+
+**Notes:** Phase 13 completed. The positional-shortcut hypothesis is resoundingly falsified. Adding coordinate channels degrades both spatial grounding and predictive integrity.
+

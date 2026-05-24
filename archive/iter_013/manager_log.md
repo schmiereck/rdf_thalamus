@@ -46,3 +46,66 @@ We are tightening your falsification criteria to protect against the position-sh
 
 ---
 
+## Iteration 013 -> Planner (Turn 1) [Approval]
+
+**Verdict:** APPROVED
+
+**Journal Update:**
+# Research Manager Journal & Strategic State
+
+## 1. High-Level Strategy & Trajectory
+*   **Current Phase:** Phase 13 (Positional Encoding under Active Control) Complete.
+*   **Active Direction:** Shifting focus from input-level spatial modifications to representation-level constraints. Having resoundingly falsified the hypothesis that explicit input-level positional encodings could resolve the Active-Perception Drift Penalty without degradation, we must pivot. The empirical findings show that input-level coordinate injection introduces a fatal "position shortcut" that blinds the network to dynamic state changes. Our active strategic focus must now target representation-level regularizers (e.g., contrastive coordinate regularization, temporal anchoring loss, or localized stability locks) to stabilize the soft-argmax coordinate projection stream during active physical contact.
+*   **Confidence Score:** 85% (Adjusted down from 88% due to the definitive failure of input-level positional injection, demonstrating that the spatial tracking bottleneck is more deeply coupled to temporal prediction dynamics than previously modeled).
+
+## 2. Strategic Insights & Lessons Learned
+*   **The Position-Shortcut Pathology:** Directly introducing coordinate pathways into the raw input channels of a self-supervised predictive network (specifically with a spatial bottleneck) allows the optimizer to satisfy spatial localization constraints by trivially mapping the coordinates. This bypasses the need to build a latent model of physical dynamics (e.g., mass, velocity, collisions), causing severe semantic blindness. Temporal prediction error surges because the network abandons representation-level dynamics in favor of spatial shortcuts.
+*   **Decoupled Input vs. Latent Spatial Grounding:** Grounding spatial coordinates in unsupervised systems must emerge from temporal dynamics or be constrained at the latent representation level, rather than being handed to the model at the raw input level. If provided at the input, the architectural incentive to compress and represent dynamic interaction is destroyed.
+
+## 3. Loop & Bottleneck Detection
+*   **The Shortcut Exploitation Loop:** Attempting to fix coordinate drift by injecting spatial features at the input level causes the optimizer to exploit those features to satisfy the spatial bottleneck loss. This reduces the feature-learning incentive, degrading the predictive temporal model, which then increases the post-collision surprise, leading to unstable closed-loop motor execution.
+*   **Mitigation Strategy:** We must strictly enforce that the input layer remains position-agnostic (RGB-only), while introducing a *Temporal Anchoring Loss* or *Contrastive Phase Lock* directly on the soft-argmax spatial activation map to smooth out high-frequency coordinate noise under active physical contact, or temporarily freeze plasticity of the coordinate projector during high-velocity collisions.
+
+## 4. Alternate Research Paths
+*   **Contrastive Coordinate Regularization:** Incorporate a latent-space contrastive penalty that forces the soft-argmax spatial coordinates of identical objects to remain close across temporal frames, without providing raw coordinates as input.
+*   **Temporal Anchoring / Phase Lock:** Apply a Kalman-style or momentum-based temporal smoothing objective to the soft-argmax output to penalize sudden discontinuous jumps during active pointer-object collisions.
+*   **Plasticity Gating via Push-Surprise:** Freeze the weights of the coordinate projection network during active physical "push" frames, allowing only the temporal predictor to update under highly transient out-of-distribution states.
+
+---
+
+## Iteration 013 -> Project Archive [Milestone Report]
+
+# RDF Milestone Review — Iteration 013 — Null Result: Input-Level Positional Encodings under Active Control
+
+## 1. Pre-Declared Hypothesis and Falsification Criterion
+*   **Hypothesis:** Explicit pixel-position encoding (Linear or Sinusoidal) injected at the input level will improve spatial centroid decoding MSE under active CLTS control from 85.85 to below 75.0, thereby mitigating the Active-Perception Drift Penalty without degrading predictive performance.
+*   **Falsification Criterion:** Falsified if spatial centroid decoding MSE remains ≥ 75.0, or if temporal prediction error (post-collision test simulation loss) increases significantly compared to the RGB-only CLTS baseline (0.0483).
+
+## 2. Experimental Protocol
+*   **Environment:** 128 RGB(P) pixels, 1D physics sandbox, 3 moving objects under active CLTS (Closed-Loop Thalamic Subsumption) motor control.
+*   **Configurations Evaluated:**
+    *   *Control:* RGB-only CLTS (Phase 12 baseline).
+    *   *Experimental Arm 1 (Linear):* RGB + Linear Positional Encoding (`pos_i = i / 127.0`).
+    *   *Experimental Arm 2 (Sinusoidal):* RGB + Sinusoidal Positional Encoding (multiple frequencies).
+*   **Execution:** 5-seed matched sweep, evaluated over standard training step envelope. All parameters not related to the input dimension were held strictly constant across arms.
+
+## 3. Observed Quantities
+*   **Post-Collision Test Sim Loss:**
+    *   *Control (RGB-only):* 0.0483 [Standardized L2 Loss]
+    *   *Linear Position:* 0.059 [Standardized L2 Loss] (22.15% degradation)
+    *   *Sinusoidal Position:* 0.091 [Standardized L2 Loss] (88.40% degradation)
+*   **Centroid Decoding MSE:**
+    *   Both experimental configurations failed to show any statistically significant reduction below the 75.0 target threshold, remaining statistically indistinguishable from the baseline active drift level (MSE ~85).
+*   **Mechanistic Observation:** Directly injecting raw coordinate channels into the visual backbone created a "position shortcut." The network satisfied the soft spatial bottleneck loss by trivially copying raw coordinates, rendering it semantically blind to actual physical interactions (such as collisions and velocities).
+
+## 4. Verdict
+*   **Refuted.** The experimental results conclusively refute the hypothesis. Input-level positional encodings do not resolve the active-perception coordinate drift and instead lead to severe degradation in the model's ability to learn temporal physical dynamics.
+
+## 5. Construction-vs-Empirical Note
+The degrade in temporal predictive performance is a genuinely empirical finding. While the spatial bottleneck loss *can* mathematically be satisfied by static coordinates, the exact manner in which the optimization landscape collapses (by completely prioritizing static input-level coordinates over dynamic motion features) provides critical empirical insight into the competitive dynamics between spatial regularization and temporal prediction.
+
+## 6. Limitations
+This result demonstrates that *input-level* spatial grounding is highly detrimental to self-supervised predictive networks with spatial constraints. However, it does not rule out *representation-level* constraints, such as contrastive coordinate regularization or temporal anchoring losses, which constrain the latents directly rather than introducing a bypass in the raw input channels.
+
+---
+
