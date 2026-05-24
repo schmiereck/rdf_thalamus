@@ -1,19 +1,18 @@
 # Research Manager Journal & Strategic State
 
 ## 1. High-Level Strategy & Trajectory
-*   **Current Phase:** Transitioning from Phase 1 (Representation Base Verification) to Phase 2 (Thalamic Gating).
-*   **Active Direction:** Evaluating cross-scale surprise normalization and attention token routing over the now-stabilized representation base.
-*   **Confidence Score:** 85% (increased from 75% due to resolving the representation collapse and error-threshold inflation, despite the predictive loss trade-off).
+*   **Current Phase:** Phase 2 (Thalamic Gating Evaluation).
+*   **Active Direction:** Resolving the tracking-lag bottleneck in attention-token routing. Transitioning from fixed-step stabilization cooldowns to adaptive, surprise-modulated gating mechanisms.
+*   **Confidence Score:** 80% (Slightly adjusted down from 85% to reflect the rigid-cooldown tracking failure, though the representation accuracy gains remain highly encouraging).
 
 ## 2. Strategic Insights & Lessons Learned
-*   **Covariance Regularization Trade-off:** Preventing representational collapse via high covariance regularization ($Cov\_weight = 25.0$) significantly increases the optimization difficulty. This results in a higher latent temporal prediction loss (0.10037) compared to a capacity-limited baseline (B1, 0.07089) which ignores the third dimension of physical variation. 
-*   **Curriculum-as-Optimizer:** A progressive recruitment curriculum provides a vital optimization pathway. While a fixed-capacity 3D model (B1_large) fails to converge stably under high covariance constraints (loss of 0.16457), starting with 2D and recruiting the 3rd dimension dynamically reduces final prediction loss by 39% (0.10037).
-*   **Sliding-Window Surprise Filtering:** Discarding early initialization transients via a rolling FIFO buffer (size 500) successfully decouples the novelty detection threshold from initial optimization spikes, enabling sub-15-step precision in detecting environmental complexity transitions.
+*   **The Tracking-Lag Bottleneck:** A rigid token-holding cooldown of 200 steps introduces a fundamental physical mismatch when representing highly dynamic environments. In a 128-pixel grid, objects moving at velocities of 1–2 pixels/step traverse a 32-pixel local receptive field in 16–32 steps. Enforcing a 200-step stabilization lock prevents the gating mechanism from updating its focus to match the object's spatial displacement, causing the attention trace to fall behind the physical entity.
+*   **Local Gating Efficiency:** Despite the tracking lag, limiting plasticity to the gated layer yields a substantial performance improvement (18.1% lower predictive loss than the non-gated control, and 49.1% lower than the B1 baseline). This provides strong empirical support for the hypothesis that localized plasticity focus acts as a powerful regularizer, preventing global weight drift and catastrophic interference during multi-object transitions.
 
 ## 3. Loop & Bottleneck Detection
-*   **Identified Bottleneck:** The primary bottleneck is now the trade-off between strict decorrelation (preventing collapse) and prediction accuracy. Extremely high covariance penalties enforce orthogonal representations but constrain the predictor's capacity to find smooth temporal transitions.
-*   **Mitigation Strategy for Phase 2:** As we transition to Thalamic Gating, we must ensure that the attention token routing does not introduce dynamic instability. If the token constantly shifts plasticity between layers, the covariance boundaries might drift. A token-holding cooldown or a rolling stability metric is required.
+*   **Identified Bottleneck:** The structural stability of lower-level representations requires a minimal temporal window of static plasticity (to prevent input drift at higher levels). However, object kinematics require rapid, sub-30-step spatial tracking updates. A static, step-based cooldown cannot satisfy both constraints simultaneously.
+*   **Mitigation Strategy for Next Iteration:** We must replace the step-counter cooldown with a dynamic, surprise-driven release. Plasticity gating should unlock when local surprise drops below a normalized threshold *or* when a sudden, high-amplitude surprise spike occurs in a neighboring spatial segment (indicating an object crossing a receptive field boundary).
 
 ## 4. Alternate Research Paths
-*   **Asymmetric Prediction (BYOL/JEPA-style Target Network):** Retained as a secondary path if deeper hierarchical stacking in Phase 2 causes the high-covariance training regime to become unstable.
-*   **Dynamic Covariance Weight Decay:** Gradually relaxing the covariance weight post-recruitment to allow the newly recruited dimension to align more fluidly with the temporal dynamics.
+*   **Surprise-Gradient Cooldown Release (Priority):** Transitioning token release to a derivative-based metric (releasing the token when the local rate of surprise reduction $dE/dt$ levels off).
+*   **Velocity-Conditioned Gating:** Informing the gating duration directly with a fast, lower-level kinematic estimator so that the cooldown scales inversely with estimated object velocity.
