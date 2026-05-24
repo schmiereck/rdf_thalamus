@@ -1,0 +1,1 @@
+Write a simple hello world script in Python and run it to verify execution.
