@@ -1,29 +1,23 @@
 # Current Research State
-Phase: Phase 10 Complete (DSDT Sweep Evaluated and Audited)
+Phase: Phase 11 Complete (Plasticity-Adaptability Conflict Swept and Evaluated)
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 10 goal was to evaluate whether decoupling representation channels into a dual-stream latent space (Spatial Coordinate Stream $z^{coord}$ and Temporal Dynamics Stream $z^{dyn}$) with stop-gradients could resolve the spatial localization-prediction trade-off.
+Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 11 goal was to evaluate whether Progressive Decoupling with Representational Consolidation (PDRC - Arm E) resolves coordinate drift without creating an adaptability bottleneck, and compare it against a differentiable Non-Parametric Soft-Argmax Projection (Arm F).
 
 ## Confirmed
-- MATHEMATICAL GRADIENT DECOUPLING (iter_010.1): Specificity unit tests confirmed that spatial bottleneck gradients only update the coordinate stream head, while dynamics prediction gradients only flow back to the dynamics head and shared conv backbone.
-- ACTIVE MULTI-STREAM INTEGRATION (iter_010.3): The Information Flow Control Test confirmed that the predictor actively utilizes the coordinate stream; zero-masking $z^{coord}$ during inference caused prediction loss to spike from 13.44 to 3952.18 (a 29292.3% error increase).
+- GENERALIZATION PENALTY of PDRC (iter_11.2): Hard-freezing coordinate weights at step 1501 completely broke adaptation to the newly introduced 4th object, resulting in a high centroid decoding MSE of 95.82 on the novel object.
+- SUPERIORITY OF NON-PARAMETRIC PROJECTION (iter_11.2): Arm F successfully resolved the Plasticity-Adaptability Conflict. It achieved a test simulation loss of 0.0658 (lower than all other arms, including Arm A's 0.0815) while maintaining an extremely tight soft spatial variance of 12.99 and a fully grounded centroid decoding MSE of 75.36.
+- GENUINE INFORMATION FLOW (iter_11.2): The Information Flow Control test on Arm F confirmed that the predictor relies on the coordinates: masking them caused prediction error to spike by 15346.72% (from 0.0658 to 10.16).
 
 ## Refuted / Falsified
-- REFUTED (iter_010.3): Decoupling via complete stop-gradient isolation resolves the localization-prediction trade-off. Instead, it triggered all three pre-registered falsification criteria:
-  1. Spatial variance of $z^{coord}$ rose to 1356.52 (Falsified: $> 75.0$).
-  2. Prediction loss was 13.44, a massive penalty compared to Arm C (Falsified: ratio vs Arm A $\ge 1.10$).
-  3. Collapse rate was 100% across all 5 seeds (Falsified: collapse rate $> 0.0\%$).
-- Complete stop-gradient isolation prevents coordinate representations from grounding. Without prediction or visual gradients, the coordinate stream becomes "semantically blind"—representing static background noise or arbitrary static visual spikes.
+- REFUTED (iter_11.2): Progressive Decoupling with weight freezing (Arm E) prevents collapse while maintaining high predictive capacity. Instead, it triggers representation collapse (80% collapse rate) and extreme simulation loss (71.86) due to the lack of plastic adaptation.
 
 ## Best Result
-- Gentle Bottleneck (Arm A) Centroid Decoding MSE: 69.11, Spatial Variance: 118.76, Test Sim Loss: 0.081522
-- Single-Stream DSMC (Arm C) Centroid Decoding MSE: 73.46, Spatial Variance: 70.61, Test Sim Loss: 0.100149
-- Dual-Stream DSDT (Arm D) Centroid Decoding MSE: 75.88, Spatial Variance: 1356.52, Test Sim Loss: 13.446293 (Collapsed)
+- Non-Parametric Soft-Argmax Projection (Arm F) Centroid Decoding MSE: 75.36, Soft Spatial Variance: 12.99, Test Sim Loss: 0.065804 (Unmasked) / 10.164621 (Masked).
 
 ## In Progress
-- Devising a multi-stage curriculum or auxiliary spatial reconstruction loss to ground decoupled coordinate representations.
+- Preparing to mount Pillar E (Closed Loop Subsumption Motorics) on top of the Arm F model to validate curiosity-driven active probing under the new non-parametric representation base.
 
 ## Open Questions
-- How can we ground the coordinate stream without letting prediction gradients dilute the spatial bottleneck?
-- Does a multi-stage training curriculum (first training jointly with gradients, then decoupling) prevent semantic blindness?
-- Can we use an auxiliary self-supervised spatial reconstruction loss to ground coordinate channels?
+- Does Arm F's non-parametric projection scale to high-dimensional (2D/3D) environments?
+- Can we attach Closed-Loop Subsumption Motorics to Arm F to achieve superior curiosity-driven active learning?

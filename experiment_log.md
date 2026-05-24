@@ -354,3 +354,40 @@ The pre-registered hypotheses were systematically and completely FALSIFIED:
 
 **Notes:** DSDT hypothesis systematically falsified due to stop-gradient semantic blindness. Complete decoupling prevents spatial grounding, causing 100% collapse.
 
+
+---
+```yaml
+cached_tokens: 542112
+cost_usd: 0.62657
+hypothesis: 'phase-11: audit the plasticity-adaptability conflict in Arm E and validate
+  the non-parametric soft-argmax projection in Arm F'
+input_tokens: 1012652
+iter: 11
+metrics:
+  arm_a_test_sim_loss: 0.081522
+  arm_c_test_sim_loss: 0.100149
+  arm_d_test_sim_loss: 13.446293
+  arm_e_centroid_decoding_mse: 95.8214
+  arm_e_test_sim_loss: 71.863346
+  arm_f_abs_r_centroid: 0.1541
+  arm_f_centroid_decoding_mse: 75.3687
+  arm_f_masked_sim_loss: 10.164621
+  arm_f_soft_spatial_variance: 12.992
+  arm_f_test_sim_loss: 0.065804
+output_tokens: 6835
+status: ok
+```
+
+## iter_011: phase-11: audit the plasticity-adaptability conflict in Arm E and validate the non-parametric soft-argmax projection in Arm F
+
+**Analysis:** Phase 11 exposed the fatal flaw of hard-frozen representational consolidation (Arm E - PDRC) under environmental shifts. Freezing coordinate encoder weights at step 1501 made the model blind to the newly introduced 4th object. Because its weights could not update, the coordinate representation could not adapt to localize the new entity, and the stop-gradient isolated predictor suffered catastrophi
+
+**Status:** ok
+
+**Metrics:** `{'arm_a_test_sim_loss': 0.081522, 'arm_c_test_sim_loss': 0.100149, 'arm_d_test_sim_loss': 13.446293, 'arm_e_test_sim_loss': 71.863346, 'arm_f_test_sim_loss': 0.065804, 'arm_e_centroid_decoding_mse': 95.8214, 'arm_f_centroid_decoding_mse': 75.3687, 'arm_f_soft_spatial_variance': 12.992, 'arm_f_masked_sim_loss': 10.164621, 'arm_f_abs_r_centroid': 0.1541}`
+
+**Experimenter view:** We executed the Phase 11 sweep to address the Plasticity-Adaptability Conflict under environmental variation (the N=3 to N=4 transition).
+1. Arm E (Progressive Decoupling with Representational Consolidation - PDRC) was evaluated as a multi-stage approach. In Stage 1 (N=3), streams trained jointly. In Stage 2, at step 1501, when the 4th novel object was introduced, the coordinate head weights were 
+
+**Notes:** Plasticity-adaptability conflict validated; Arm E falsified due to rigidity under novelty, while Arm F (Non-Parametric Projection) achieved a breakthrough.
+

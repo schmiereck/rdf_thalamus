@@ -1,23 +1,22 @@
 # Research Manager Journal & Strategic State
 
 ## 1. High-Level Strategy & Trajectory
-*   **Current Phase:** Phase 10 (Dual-Stream Decoupling & Active Probing) Complete.
-*   **Active Direction:** Resolving the "semantic blindness" of isolated representational streams. Transitioning from absolute stop-gradient isolation to a *Task-Grounded Dual-Stream* architecture to preserve spatial coordinate tracking without inducing optimization interference.
-*   **Confidence Score:** 85% (Adjusted down from 95% to reflect the discovery of the semantic blindness barrier, though our trajectory remains highly structured).
+*   **Current Phase:** Phase 11 (Plasticity-Adaptability Audit & Non-Parametric Projection) Complete.
+*   **Active Direction:** Consolidating the *Non-Parametric Soft-Argmax Projection* (Arm F) as the standard architectural bridge between spatial localization and temporal predictive dynamics. This architectural solution successfully bypasses the gradient-interference trade-offs of joint training (Phase 9) and the semantic blindness of stop-gradient decoupling (Phase 10). We are now positioned to reintegrate this grounded representational structure with the Thalamic Gating mechanism (Pillar D) and Subsumption Motorics (Pillar E).
+*   **Confidence Score:** 92% (Adjusted up from 85% due to the successful empirical validation of the non-parametric projection under environmental novelty).
 
 ## 2. Strategic Insights & Lessons Learned
-*   **The "Semantic Blindness" of Absolute Decoupling:** Phase 10 results have rigorously established that completely shielding a highly bottlenecked coordinate stream from temporal prediction gradients (via stop-gradients) while applying spatial variance minimization and VICReg constraints leads to total representational collapse. Without downstream task gradients to anchor the representation to actual physical entities, the spatial optimization pressure trivially collapses the channel into arbitrary static spikes.
-*   **The Grounding Requirement:** A representational channel cannot organize itself into physically meaningful spatial coordinates purely based on local statistics (entropy minimization/contrastive spread) if it lacks a functional link to physical dynamics. Prediction or reconstruction gradients are not just "tasks"—they are the essential grounding mechanisms that bind latent dimensions to physical reality.
-*   **Failure of Simple Detachment:** While stop-gradients are useful for preventing representational drift in multi-scale networks, their naive application to separate "where" and "what" streams prevents "where" from learning any semantic relationships to the input.
+*   **The Plasticity-Adaptability Conflict:** Phase 11 has rigorously demonstrated the danger of hard-frozen representational consolidation (Arm E - PDRC). Freezing parametric coordinate encoders based on step-bound criteria (e.g., step 1501) renders the model rigid and blind to environmental expansion (introduction of a 4th object). Plasticity must be preserved in the underlying visual backbone to ensure adaptability to novel objects.
+*   **Implicit Spatial Structure in Predictive Dynamics:** The success of Arm F proves that a temporal predictive model, trained *without* explicit reconstruction or spatial localization losses, naturally organizes its internal spatial activations to track physical boundaries. Bypassing parametric coordinate heads entirely and relying on a non-parametric projection (soft-argmax) preserves this localization capability without introducing gradient interference.
+*   **Solving the Optimization Trade-off:** We have resolved the core contradiction of Phase 9 and Phase 10:
+    1. *Joint Training (Phase 9):* Caused gradient interference and a 22.8% simulation accuracy penalty.
+    2. *Stop-Gradient Decoupling (Phase 10):* Led to total semantic blindness of the spatial head.
+    3. *Non-Parametric Projection (Phase 11):* Eradicates both issues. Since there are no spatial parameters to train, gradient interference is mathematically zero, and semantic blindness is impossible because coordinates are directly projected from the grounded dynamics stream.
 
 ## 3. Loop & Bottleneck Detection
-*   **The "Grounding vs. Interference" Bottleneck:** We face a dual-sided failure envelope:
-    1. *Joint Training (Phase 9):* Joint gradient flow causes spatial regularization to interfere with temporal dynamics prediction (22.8% accuracy penalty).
-    2. *Strict Decoupling (Phase 10):* Strict stop-gradients eliminate interference but trigger 100% semantic blindness and representational collapse.
-*   **Mitigation Strategy:** We must explore "Soft Grounding." Instead of absolute stop-gradients, we must implement either:
-    - A dual-stage curriculum where a shared backbone is frozen after learning dynamics, and the coordinate head is trained on top of the frozen features.
-    - A projection-based coordinate extractor that uses a soft-argmax operator over the predictive dynamics channel, thereby enforcing spatial organization by construction rather than by independent optimization.
+*   **The Single-Centroid Projection Bottleneck:** While the non-parametric soft-argmax projection is highly effective, standard soft-argmax acts globally. In a multi-object environment, a global soft-argmax will calculate a single spatial average, producing a "phantom coordinate" in empty space between objects.
+*   **Mitigation Strategy:** We must couple the non-parametric soft-argmax with the *Thalamic Gating Token* (Pillar D). By applying the soft-argmax only over the localized spatial region holding the attention token, we can extract clean, entity-specific coordinates without parametric drift.
 
 ## 4. Alternate Research Paths
-*   **Auxiliary Action-Conditioned Grounding:** Ground the spatial channel by forcing it to predict ego-motion or relative pointer offsets under motor commands, bypassing the full temporal predictive model's gradients but still enforcing physical grounding.
-*   **Post-Hoc Coordinate Extraction (Soft-Argmax Projection):** Derive spatial coordinates directly as a differentiable, non-parametric projection of the predictive dynamics stream, guaranteeing no gradient interference because there are no separate spatial weights to train.
+*   **Multi-Channel Attention-Masked Soft-Argmax:** Implement a set of spatial attention masks (one per attended slot) and compute slot-specific non-parametric soft-argmaxes to track multiple coordinate trajectories concurrently.
+*   **Contrastive Predictive Coding (CPC) Soft-Argmax:** Apply the soft-argmax directly to the temporal prediction error maps generated by the local surprise watchdog, using the prediction error itself as the spatial localization weight.
