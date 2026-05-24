@@ -1,25 +1,26 @@
 # Current Research State
-Phase: Phase 5 Complete (Active Probing vs. Passive Observation Evaluated)
+Phase: Phase 8 Complete (Spatial Bottleneck & Closed-Loop Active Probing Swept)
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 5 goal was to compare Passive Observation (Control) against Active Probing (Experimental) during the N=3 -> N=4 generalization transition under a 5-seed comparison sweep, keeping representation training 100% unsupervised.
+Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 8 goal was to implement and evaluate an unsupervised spatial localization bottleneck coupled with closed-loop output-as-input active probing across a 5-seed comparative sweep.
 
 ## Confirmed
-- RELIABLE RECRUITMENT TIMELINE (iter_007.1): Active physical probing of a novel entity triggers capacity recruitment with 100% reliability at step 1501 exactly, whereas passive observation is erratic (60% recruitment rate, with 2 of 5 seeds failing to recruit completely).
-- COGNITIVE DECODABILITY ADVANTAGE (iter_007.1): Post-hoc linear readouts on frozen representations show that active probing consistently improves the decodability of the novel object's physical coordinates across 100% of the seeds, achieving a 19.9% average reduction in position prediction MSE.
-- REPRESENTATION DECORRELATION (iter_007.1): Active physical interaction acts as a powerful decorrelation force, reducing cross-dimension latent overlap by 29.8% (average r_cross decreased from 0.439 to 0.308), indicating that active probing forces the recruited dimension to represent unique, non-redundant state spaces.
+- REPRODUCIBLE VARIANCE REDUCTION (iter_008.3): Minimizing the soft spatial variance of the recruited channel reduces its spatial activation spread by 95.0% (from 1209.33 to 60.29 for lambda=0.1), forcing the recruited channel to act as a highly localized spatial spotlight.
+- COMPLETE COLLAPSE PREVENTION (iter_008.3): Introducing the local spatial variance penalty completely eliminates representation collapse, reducing the collapse rate from 40.0% in Control to 0.0% across all 15 runs of the active-bottleneck branches (lambda in [0.01, 0.1, 1.0]).
+- CRITICAL LOCALIZATION-CAPACITY TRADE-OFF (iter_008.3): There is a clear trade-off between spatial localization and cognitive predictive capacity. A gentle bottleneck (lambda = 0.01) yields the best coordinate decoding MSE of 69.11 (a 16.9% reduction over Control's 83.12, and a 6.2% reduction over Phase 7's 73.65). Stronger bottlenecks (lambda >= 0.1) restrict the representations too severely, causing decoding MSE to degrade (106.87 for lambda=0.1).
 
 ## Refuted
-- REFUTED (iter_007.1): Unsupervised active probing universally guarantees a high absolute Pearson correlation (|r| >= 0.40) or a large correlation improvement (\Delta |r| >= 0.25) on a single isolated recruited dimension. Due to high seed-to-seed variance, absolute correlation ranged from 0.005 to 0.562, indicating that spatial coordinates sometimes distribute across multiple dimensions.
+- REFUTED (iter_008.3): A strong unsupervised spatial bottleneck (lambda >= 0.1) universally improves the post-hoc linear decoding accuracy of physical coordinates. Instead, excessive regularization degrades coordinate decodability by restricting the predictive capacity of the latent channel.
+- REFUTED (iter_008.3): Unsupervised active probing and spatial bottlenecks can easily achieve an absolute Pearson correlation of |r| >= 0.60 or post-hoc decoding MSE < 55.0 within 1500 steps. High-dimensional coordinate alignment onto a single dimension remains noisy (average |r| = 0.2907, minimum seed |r| = 0.0059 for lambda=0.1).
 
 ## Best Result
-- Active Probing Dimension Recruitment Rate: 100% (iter_007.1)
-- Active Probing Average Position Decoding MSE: 73.65 (vs. 91.97 for Passive) (iter_007.1)
-- Active Probing Cross-Dimension Decorrelation: 0.308 (vs. 0.439 for Passive) (iter_007.1)
+- Active-Bottleneck (lambda=0.01) Average Centroid Decoding MSE: 69.11 (vs. 83.12 for Control) (iter_008.3)
+- Active-Bottleneck (lambda=0.1) Soft Spatial Variance: 60.29 (vs. 1209.33 for Control) (iter_008.3)
+- Active-Bottleneck Representation Collapse Rate: 0.0% (vs. 40.0% for Control) (iter_008.3)
 
 ## In Progress
-- Investigating coordinate-pooling constraints or spatial bottlenecks to eliminate seed-to-seed variance in coordinate alignment.
+- Exploring adaptive, surprise-modulated curriculums for lambda to resolve the localization-prediction trade-off.
 
 ## Open Questions
-- How can we introduce a relative coordinate bottleneck or coordinate-pooling constraint to stabilize the alignment of spatial coordinates onto a single dedicated recruited dimension across all random seeds?
-- Does the output-as-input loop (Pillar D's self-generated attention) interact with Active Probing to further stabilize spatial representations?
+- Can an adaptive curriculum for lambda (starting at 0 and rising to 0.01 as surprise falls) achieve tight localization without degrading predictive accuracy?
+- How does adding multi-scale temporal predictive context (predicting multiple steps into the future) affect coordinate specialization?

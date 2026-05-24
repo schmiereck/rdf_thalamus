@@ -236,3 +236,41 @@ The pre-registered hypotheses were technically FALSIFIED.
 
 **Notes:** Phase 7 complete. Unsupervised active-probing experiments run. Hypotheses technically falsified on correlation thresholds, but active interaction highly validated on recruitment stability (100% vs 60%), MSE (-19.9%), and cross-dimension decorrelation (-29.8%).
 
+
+---
+```yaml
+cached_tokens: 1028187
+cost_usd: 0.64097
+hypothesis: 'phase-8: evaluate unsupervised spatial bottlenecks and closed-loop output-as-input
+  active probing'
+input_tokens: 1391243
+iter: 8
+metrics:
+  best_avg_centroid_r: 0.2907
+  best_avg_decoding_mse: 69.1092
+  collapse_prevention_rate_exp: 100.0
+  collapse_rate_control: 40.0
+  control_avg_decoding_mse: 83.1196
+  recruitment_rate: 80.0
+  spatial_variance_reduction_pct: 95.0
+output_tokens: 6956
+status: ok
+```
+
+## iter_008: phase-8: evaluate unsupervised spatial bottlenecks and closed-loop output-as-input active probing
+
+**Analysis:** In Phase 7, we discovered a "Spatial Specialization Gap": unconstrained temporal-prediction error and VICReg spread coordinate information across the entire latent manifold rather than localizing it onto a single recruited channel, leading to high seed-to-seed variance.
+In Phase 8, we addressed this gap by introducing a spatial convolutional bottleneck and a soft spatial variance minimization pena
+
+**Status:** ok
+
+**Metrics:** `{'best_avg_centroid_r': 0.2907, 'best_avg_decoding_mse': 69.1092, 'control_avg_decoding_mse': 83.1196, 'spatial_variance_reduction_pct': 95.0, 'collapse_prevention_rate_exp': 100.0, 'collapse_rate_control': 40.0, 'recruitment_rate': 80.0}`
+
+**Experimenter view:** We executed Phase 8 (Pillar D & E integration with Spatial Bottlenecks) under a rigorous, 5-seed comparative sweep.
+Our experiments successfully validated the introduction of an unsupervised spatial bottleneck (minimizing soft spatial variance) coupled with closed-loop active probing.
+
+Key Findings:
+1. MASSIVE SOFT SPATIAL VARIANCE REDUCTION (iter_008.3): Squeezing the spatial activation map of th
+
+**Notes:** Phase 8 complete. The trade-off between spatial localization and cognitive predictive capacity was systematically mapped.
+
