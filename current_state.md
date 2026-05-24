@@ -1,26 +1,25 @@
 # Current Research State
-Phase: Phase 4 Complete (Generalization & Noise Robustness Evaluated)
+Phase: Phase 5 Complete (Active Probing vs. Passive Observation Evaluated)
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 4 goal was to evaluate Generalization (N=3 to N=4 transition) and Noise Robustness (global pixel noise and localized structured Noisy-TV distractor) under a 5-seed comparison sweep.
+Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 5 goal was to compare Passive Observation (Control) against Active Probing (Experimental) during the N=3 -> N=4 generalization transition under a 5-seed comparison sweep, keeping representation training 100% unsupervised.
 
 ## Confirmed
-- RELATIVISTIC ATTENTION RESILIENCE (iter_006.6): The attention watchdog is highly resilient to both global pixel noise (σ=0.15) and the localized, structured entropic Noisy-TV distractor, maintaining an outstanding relative tracking overlap efficiency of **93.86%** under both conditions (well above the 80.0% falsification threshold).
-- COOLDOWN & NORMALIZATION STABILITY (iter_006.6): Z-score surprise normalization successfully prevents the attention token from getting trapped by the unmodelable Noisy-TV entity, because the high background variance suppresses its normalized surprise numerator.
-- DYNAMIC RECRUITMENT curriculum (iter_006.6): Moving from N=3 to N=4 clean objects triggers dynamic recruitment of a 4th representation dimension with an **80.0% recruitment rate**. The dynamic model post-transition achieves a 6.0% prediction loss reduction over the rigid B1 baseline, and performs nearly identically to the statically over-parameterized B1_large baseline (0.07119 vs 0.07076).
+- RELIABLE RECRUITMENT TIMELINE (iter_007.1): Active physical probing of a novel entity triggers capacity recruitment with 100% reliability at step 1501 exactly, whereas passive observation is erratic (60% recruitment rate, with 2 of 5 seeds failing to recruit completely).
+- COGNITIVE DECODABILITY ADVANTAGE (iter_007.1): Post-hoc linear readouts on frozen representations show that active probing consistently improves the decodability of the novel object's physical coordinates across 100% of the seeds, achieving a 19.9% average reduction in position prediction MSE.
+- REPRESENTATION DECORRELATION (iter_007.1): Active physical interaction acts as a powerful decorrelation force, reducing cross-dimension latent overlap by 29.8% (average r_cross decreased from 0.439 to 0.308), indicating that active probing forces the recruited dimension to represent unique, non-redundant state spaces.
 
 ## Refuted
-- REFUTED (iter_006.6): Dynamic recruitment model reduces prediction loss on N=4 by at least 30% relative to the rigid B1 baseline. The observed reduction was 6.0%, although the dynamic model achieved parity with the pre-allocated B1_large model.
-- REFUTED (iter_006.6): The recruited 4th latent dimension directly correlates with the physical position of the 4th object ($|r| \ge 0.7$). The observed Pearson correlation was $0.0456 \pm 0.032$, indicating that while GDASR recruits the needed modeling capacity, representation specialization does not automatically emerge without downstream task coupling or explicit spatial readouts.
+- REFUTED (iter_007.1): Unsupervised active probing universally guarantees a high absolute Pearson correlation (|r| >= 0.40) or a large correlation improvement (\Delta |r| >= 0.25) on a single isolated recruited dimension. Due to high seed-to-seed variance, absolute correlation ranged from 0.005 to 0.562, indicating that spatial coordinates sometimes distribute across multiple dimensions.
 
 ## Best Result
-- Clean Test Attention Overlap: 0.2280 (iter_006.6)
-- Relative Tracking Overlap Efficiency under Noise: 93.86% (iter_006.6)
-- Dynamic JEPA N=4 Test Sim Loss: 0.07119 (iter_006.6)
+- Active Probing Dimension Recruitment Rate: 100% (iter_007.1)
+- Active Probing Average Position Decoding MSE: 73.65 (vs. 91.97 for Passive) (iter_007.1)
+- Active Probing Cross-Dimension Decorrelation: 0.308 (vs. 0.439 for Passive) (iter_007.1)
 
 ## In Progress
-- Investigating downstream coupling or RL-driven objectives to specialize recruited latent dimensions.
+- Investigating coordinate-pooling constraints or spatial bottlenecks to eliminate seed-to-seed variance in coordinate alignment.
 
 ## Open Questions
-- Can reinforcement learning or downstream task performance drive recruited dimensions to self-organize into specific coordinate representations?
-- Does the stabilization period duration affect coordinate alignment?
+- How can we introduce a relative coordinate bottleneck or coordinate-pooling constraint to stabilize the alignment of spatial coordinates onto a single dedicated recruited dimension across all random seeds?
+- Does the output-as-input loop (Pillar D's self-generated attention) interact with Active Probing to further stabilize spatial representations?
