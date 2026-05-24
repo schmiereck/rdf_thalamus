@@ -36,3 +36,7 @@ hierarchical abstraction **without generative decoders**. The system must:
 * [Iteration 009 — Null Result on Surprise-Modulated Adaptive Bottleneck Curriculum (DSMC)](RESEARCH-RESULT-009.md)
 * [Iteration 010 — Null Result: Dual-Stream Decoupling (DSDT) Semantic Blindness](RESEARCH-RESULT-010.md)
 * [Iteration 011 — Non-Parametric Spatial Projection](RESEARCH-RESULT-011.md)
+* [Iteration 012 — Closed-Loop Thalamic Subsumption (CLTS) Motorics](RESEARCH-RESULT-012.md)
+Phase 4 evaluation complete / Thalamus Project Fully Evaluated 
+(tag: milestone-phase-4-evaluation-complete-thalamus-project-fully-evaluated)
+
