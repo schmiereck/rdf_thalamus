@@ -1,0 +1,1 @@
+Test if low complexity agent can write a test file `src/test_write.py`. Create the file `src/test_write.py` with simple text print('hello').
