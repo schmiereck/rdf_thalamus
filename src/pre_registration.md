@@ -1,21 +1,36 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 003
+*   **Iteration:** 004
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
-Increasing the VICReg covariance regularization weight to 25.0, in conjunction with a 1000-step representation-warmup phase across all models, will prevent representation collapse (reducing the mean absolute cross-dimension correlation $r$ from >0.99 to <0.30). Furthermore, replacing the cumulative error buffer with a rolling sliding-window error buffer of size 500 (cleared only post-warmup at step 1000, with no Oracle reset during environmental transitions) will enable sensitive and reliable recruitment of a new dimension (recruitment rate >80%) when transitioning from 2 to 3 objects in the 1D physics sandbox, without increasing the temporal prediction simulation loss compared to the baseline B1.
+In a hierarchical two-layer representation network (Layer 1: local spatial features; Layer 2: global object trajectory prediction), implementing surprise-driven Thalamic Gating (Pillar D) with Z-score normalized surprise routing, a token-holding cooldown (C = 200 steps), and a lower-layer Stability Lock (L2 eligibility gated by L1 convergence threshold \theta_conv = 0.25) will:
+1. Prevent input-drift collapse, resulting in a statistically significant reduction in the variance (standard deviation) of Layer 2 test prediction loss across seeds compared to a non-gated baseline (where both layers train continuously).
+2. Achieve superior sample efficiency, reaching a stable Layer 2 prediction loss < 0.08 in fewer training steps than the non-gated baseline.
+3. Enable stable self-sustained tracking: when transitioning from externally primed queries (biased towards a target object color) to self-generated queries (using L2's own previous state prediction), the system will maintain target tracking overlap > 0.85 and reduce prediction loss on the target object by at least 15% compared to the non-gated standard JEPA.
 
 ## 2. Falsification Criterion
-The hypothesis will be falsified if any of the following occur:
-1. The mean absolute correlation ($r$) between representation dimensions is >= 0.30 at the end of training.
-2. The dynamic recruitment rate for the GDASR model upon the N=3 object transition is <= 80%.
-3. The final temporal prediction simulation loss of the recruiting DynamicJEPA model is > 0.080 (or more than 10% worse than the non-recruiting B1 baseline of 0.06662).
+The hypothesis will be falsified if any of the following occur over a 5-seed evaluation suite:
+1. The gated model fails to show a lower standard deviation of L2 test prediction loss across seeds compared to the non-gated model (p >= 0.05 via Levene's test, or higher raw standard deviation).
+2. The gated model requires more or equal training steps than the non-gated model to reach L2 prediction loss < 0.08, or fails to reach this error level entirely.
+3. During the self-generated attention phase, target tracking overlap falls below 0.80, or the test prediction loss on the target object is not at least 15% lower than that of the standard non-gated JEPA baseline.
 
 ## 3. Proposed Method
-1. Modify the training and model configuration files (e.g., in `src/`) to increase `cov_weight` from 1.0 to 25.0 in the VICReg loss calculation for all models.
-2. Implement a representation-warmup phase of 1000 steps during which gradient updates are performed normally but dimension recruitment is disabled across all models.
-3. Replace the cumulative error buffer in the GDASR recruitment module with a rolling sliding-window buffer of size 500.
-4. Programmatically reset/clear this error buffer immediately following the warmup phase (at step 1001), but do NOT programmatically reset or clear the error buffer or change any parameters during the N=2 to N=3 transition at step 1501.
-5. Run the full evaluation suite of 15 experiments (DynamicJEPA, B1, and B1_large across 5 deterministic seeds) on the 1D physics sandbox.
-6. Measure and log: mean absolute correlation between dimensions, recruitment rate upon N=3 transition, and final temporal prediction simulation loss.
+1. Architecture Extension: In `src/models.py` (or a new `src/thalamus.py`), implement a two-layer DynamicJEPA:
+   - L1 (Local Segment Predictor): Processes visual segments, predicts its next latent state, and uses VICReg regularization (cov_weight=25.0) with GDASR recruitment.
+   - L2 (Object Tracker): Aggregates L1 latents, predicts global entity trajectories, and uses identical collapse prevention and recruitment.
+2. Thalamic Gating Mechanism:
+   - Surprise Watchdog: Compute local surprise E_l(t) = ||z_l(t) - \hat{z}_l(t)||^2 for l \in {L1, L2}.
+   - Z-Score Normalization: Maintain EMA of mean and variance for each layer's surprise to compute normalized surprise \bar{E}_l(t).
+   - Token Routing: Route Attention Token T(t) = argmax \bar{E}_l(t) with a 200-step cooldown timer.
+   - Stability Lock: Prevent L2 from receiving the token or updating weights until L1's running surprise falls below \theta_conv = 0.25.
+   - Plasticity Gating: Freeze gradients and disable dimension recruitment for the layer not holding the token.
+3. Priming & Self-Generation:
+   - Implement external priming (biasing surprise weight towards a specific object's color) for the first 1500 steps.
+   - Transition to self-generated priming by feeding L2's trajectory predictions back as the query vector.
+4. Control & Evaluation:
+   - Run 5 seeds for: (a) proposed Thalamic Gated model, (b) non-gated multi-layer control, and (c) single-layer baseline (B1).
+   - Log test prediction loss, loss variance, attention tracking accuracy, and token transition histories.
+
+---
+*Created automatically by the RDF Orchestrator prior to iteration execution.*

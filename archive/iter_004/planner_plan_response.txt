@@ -1,0 +1,88 @@
+I will begin by listing the contents of the project directory to locate the source code files and configuration.
+
+[Tool Call: list_dir({'path': '.'})]
+
+[Tool Result: Tool not available: list_dir]
+
+I will list the iterations to see what has been run previously and what records are available.
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: Tool not available: list_iterations]
+
+I will perform a search for python files to see if the search tool is available.
+
+[Tool Call: grep_search({'pattern': 'def '})]
+
+[Tool Result: Tool not available: grep_search]
+
+I will attempt to read the `current_state.md` file using the `read_file` tool.
+
+[Tool Call: read_file({'path': 'current_state.md'})]
+
+[Tool Result: Tool not available: read_file]
+
+I will attempt to read the details of iteration 3.
+
+[Tool Call: read_iteration({'iter_num': 3})]
+
+[Tool Result: Tool not available: read_iteration]
+
+### Research Plan for Phase 2: Thalamic Gating (Pillar D)
+
+To systematically transition from a stable single-layer representation base (Phase 1) to a hierarchical, selectively plastic network, we focus on **Thalamic Gating** (Pillar D). The core challenges in hierarchical representation learning without decoders are **input-drift collapse** (where continuous changes in lower-layer representations prevent upper-layer convergence) and **attentional routing stability**. 
+
+We propose a two-layer hierarchical network where learning is mediated by a surprise-based attention watchdog. Plasticity is gated such that only the layer holding the Attention Token updates its weights, while the non-attended layer runs in inference-only mode. To stabilize inter-layer coupling, we introduce a **Stability Lock** and a **Token Cooldown**.
+
+---
+
+### Pre-Registration Plan
+
+```yaml
+hypothesis: |
+  In a hierarchical two-layer representation network (Layer 1: local spatial features; Layer 2: global object trajectory prediction), implementing surprise-driven Thalamic Gating (Pillar D) with Z-score normalized surprise routing, a token-holding cooldown (C = 200 steps), and a lower-layer Stability Lock (L2 eligibility gated by L1 convergence threshold \theta_conv = 0.25) will:
+  1. Prevent input-drift collapse, resulting in a statistically significant reduction in the variance (standard deviation) of Layer 2 test prediction loss across seeds compared to a non-gated baseline (where both layers train continuously).
+  2. Achieve superior sample efficiency, reaching a stable Layer 2 prediction loss < 0.08 in fewer training steps than the non-gated baseline.
+  3. Enable stable self-sustained tracking: when transitioning from externally primed queries (biased towards a target object color) to self-generated queries (using L2's own previous state prediction), the system will maintain target tracking overlap > 0.85 and reduce prediction loss on the target object by at least 15% compared to the non-gated standard JEPA.
+falsification_criterion: |
+  The hypothesis will be falsified if any of the following occur over a 5-seed evaluation suite:
+  1. The gated model fails to show a lower standard deviation of L2 test prediction loss across seeds compared to the non-gated model (p >= 0.05 via Levene's test, or higher raw standard deviation).
+  2. The gated model requires more or equal training steps than the non-gated model to reach L2 prediction loss < 0.08, or fails to reach this error level entirely.
+  3. During the self-generated attention phase, target tracking overlap falls below 0.80, or the test prediction loss on the target object is not at least 15% lower than that of the standard non-gated JEPA baseline.
+proposed_method: |
+  1. Architecture Extension: In `src/models.py` (or a new `src/thalamus.py`), implement a two-layer DynamicJEPA:
+     - L1 (Local Segment Predictor): Processes visual segments, predicts its next latent state, and uses VICReg regularization (cov_weight=25.0) with GDASR recruitment.
+     - L2 (Object Tracker): Aggregates L1 latents, predicts global entity trajectories, and uses identical collapse prevention and recruitment.
+  2. Thalamic Gating Mechanism:
+     - Surprise Watchdog: Compute local surprise E_l(t) = ||z_l(t) - \hat{z}_l(t)||^2 for l \in {L1, L2}.
+     - Z-Score Normalization: Maintain EMA of mean and variance for each layer's surprise to compute normalized surprise \bar{E}_l(t).
+     - Token Routing: Route Attention Token T(t) = argmax \bar{E}_l(t) with a 200-step cooldown timer.
+     - Stability Lock: Prevent L2 from receiving the token or updating weights until L1's running surprise falls below \theta_conv = 0.25.
+     - Plasticity Gating: Freeze gradients and disable dimension recruitment for the layer not holding the token.
+  3. Priming & Self-Generation:
+     - Implement external priming (biasing surprise weight towards a specific object's color) for the first 1500 steps.
+     - Transition to self-generated priming by feeding L2's trajectory predictions back as the query vector.
+  4. Control & Evaluation:
+     - Run 5 seeds for: (a) proposed Thalamic Gated model, (b) non-gated multi-layer control, and (c) single-layer baseline (B1).
+     - Log test prediction loss, loss variance, attention tracking accuracy, and token transition histories.
+pre_registration_file: "src/pre_registration.md"
+```
+
+---
+
+### Detailed Methodological Design
+
+#### 1. Cross-Scale Normalization of Surprise
+Because L1 and L2 operate on different dimensionalities, spatial scopes, and error characteristics, absolute prediction errors cannot be compared directly. We normalize the local surprise $E_l(t)$ using online running estimates of mean $\mu_l(t)$ and standard deviation $\sigma_l(t)$:
+$$\mu_l(t) = (1 - \alpha)\mu_l(t-1) + \alpha E_l(t)$$
+$$\sigma_l^2(t) = (1 - \alpha)\sigma_l^2(t-1) + \alpha (E_l(t) - \mu_l(t))^2$$
+$$\bar{E}_l(t) = \frac{E_l(t) - \mu_l(t)}{\sigma_l(t) + \epsilon}$$
+where $\alpha = 0.01$ and $\epsilon = 10^{-5}$.
+
+#### 2. Plasticity Gating & Optimization
+When Layer $l$ holds the Attention Token:
+*   Its weights $\theta_l$ are updated using gradients computed from its prediction error and VICReg loss.
+*   Its GDASR (dynamic dimension recruitment) module is active.
+*   The other layer is set to inference-only mode, stopping all gradient flows and dimension recruitment. This ensures a stable, stationary input coordinate space for the non-active layer, preventing co-adaptation and input-drift collapse.
+
+This plan establishes a clear path to Phase 2 validation, adhering strictly to the manager's directives of mathematical rigor, active scope management, and deterministic evaluation.
