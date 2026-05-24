@@ -1,29 +1,24 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 002
+*   **Iteration:** 003
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
-A Dynamic Representation Network (Thalamus Phase 1) using Gradient-Driven Active Subspace Recruitment (GDASR) combined with VICReg-style anti-collapse regularization will:
-1. Dynamically recruit new representational dimensions (incrementing active dimension count $d_t$) when transitioned from a low-complexity training environment (2 objects) to a high-complexity evaluation environment (3 objects) in a 1D physics sandbox.
-2. Achieve a post-recruitment temporal prediction error on the 3-object environment that is at least 30% lower than a fixed-dimensional Joint Embedding Predictive Architecture (Baseline B1 with fixed $d_t = 2$) trained under identical conditions.
-3. Avoid representation collapse, maintaining a latent standard deviation of $\sigma > 0.1$ for all active dimensions and an average absolute cross-dimension correlation of $r < 0.3$.
+Increasing the VICReg covariance regularization weight to 25.0, in conjunction with a 1000-step representation-warmup phase, will prevent representation collapse (reducing the mean absolute cross-dimension correlation $r$ from >0.99 to <0.30). Furthermore, replacing the cumulative error buffer with a rolling sliding-window error buffer of size 500 (cleared post-warmup) will enable sensitive and reliable recruitment of a new dimension (recruitment rate >80%) when transitioning from 2 to 3 objects in the 1D physics sandbox, without increasing the temporal prediction simulation loss compared to the baseline B1.
 
 ## 2. Falsification Criterion
-The hypothesis will be proven false if any of the following conditions are met:
-1. The dynamic representation network fails to recruit any new dimension (remains at $d_{\text{init}} = 2$) within 5000 steps of exposure to the 3-object environment.
-2. The mean temporal prediction error of the dynamic network on the 3-object environment after adaptation is NOT at least 30% lower than that of the fixed-dimensional baseline (B1).
-3. The representations collapse during training or evaluation, defined as any active dimension having a standard deviation $\sigma \le 0.1$ or the average absolute correlation between active dimensions being $r \ge 0.3$ across the evaluation batch.
+The hypothesis will be falsified if any of the following occur:
+1. The mean absolute correlation ($r$) between representation dimensions is >= 0.30 at the end of training.
+2. The dynamic recruitment rate for the GDASR model upon the N=3 object transition is <= 80%.
+3. The final temporal prediction simulation loss of the recruiting DynamicJEPA model is > 0.080 (or more than 10% worse than the non-recruiting B1 baseline of 0.06662).
 
 ## 3. Proposed Method
-1. Implement a 1D physics sandbox (`src/environment.py`) generating a 1D array of 128 RGB pixels, simulating N elastic colliding objects with randomized sizes, colors, masses, and initial velocities, with parameterizable N.
-2. Implement `src/models.py` containing:
-   - An Encoder (CNN/MLP) outputting up to $D_{\max} = 8$ dimensions, with only the first $d_t$ dimensions active.
-   - A Predictor (MLP or lightweight GRU) forecasting the active latent states $\hat{z}_{t+1}$ from history.
-   - Baseline B1 (FixedJEPA) with fixed $d_t = 2$ and VICReg loss.
-   - DynamicJEPA implementing GDASR: starts with $d_t = 2$, tracks the exponential moving average of prediction error, and increments $d_t$ when error exceeds $\theta_{\text{recruit}}$ after a cooldown $N_{\text{cooldown}}$.
-3. Create `src/train.py` to train both models first on $N=2$ objects, then transition them to $N=3$ objects.
-4. Perform 5 independent runs with different random seeds to calculate the mean and standard deviation of prediction errors, dimension count, latent variance, and cross-correlations.
+1. Modify the training and model configuration files (e.g., in `src/`) to increase `cov_weight` from 1.0 to 25.0 in the VICReg loss calculation.
+2. Implement a representation-warmup phase of 1000 steps during which gradient updates are performed normally but dimension recruitment is disabled.
+3. Replace the cumulative error buffer in the GDASR recruitment module with a rolling sliding-window buffer of size 500.
+4. Programmatically reset/clear this error buffer immediately following the warmup phase and during the transition from N=2 to N=3 objects.
+5. Run the full evaluation suite of 15 experiments (DynamicJEPA, B1, and B2 across 5 deterministic seeds) on the 1D physics sandbox.
+6. Measure and log: mean absolute correlation between dimensions, recruitment rate upon N=3 transition, and final temporal prediction simulation loss.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
