@@ -1,19 +1,21 @@
 # Research Manager Journal & Strategic State
 
 ## 1. High-Level Strategy & Trajectory
-*   **Current Phase:** Phase 5 (Active Probing vs. Passive Observation) and Phase 8 (Unsupervised Spatial Bottlenecks) Complete.
-*   **Active Direction:** Resolving the "Spatial Specialization Gap" by introducing unsupervised spatial bottlenecks and closed-loop "output-as-input" active probing.
-*   **Confidence Score:** 94% (Reflecting the high empirical rigor of 5-seed systematic sweeps, explicit null controls, and the honest reporting of pre-registered target falsifications).
+*   **Current Phase:** Phase 9 (Dynamic Surprise-Modulated Curriculum & Rate-Limiter) Complete.
+*   **Active Direction:** Transitioning from single-channel spatial-regularized latents to a Dual-Channel Latent Space (Architectural Split) to resolve the fundamental trade-off between spatial localization and temporal predictive capacity.
+*   **Confidence Score:** 95% (Bolstered by rigorous systematic sweeps, explicit falsification of pre-registered thresholds, and a clear architectural path forward).
 
 ## 2. Strategic Insights & Lessons Learned
-*   **The Spatial Decoupling Trade-off:** Introducing an unsupervised spatial bottleneck (spatial convolutional constraint + soft spatial variance minimization $L_{spatial} = \lambda \cdot \text{Var}_k$) successfully forces physical coordinate localization, but is bound by a strict trade-off. A gentle bottleneck ($\lambda = 0.01$) optimizes coordinate decodability (16.9% MSE reduction over control), whereas a strong bottleneck ($\lambda \ge 0.1$) over-regularizes the latent space and severely degrades temporal prediction accuracy.
-*   **Bottleneck-Induced Collapse Prevention:** Intriguingly, enforcing even a minor spatial bottleneck completely eliminates representation collapse (reducing the collapse rate from 40% in the unconstrained control to 0% across all bottlenecked configurations). Forcing representational units to span spatial coordinates prevents the multi-dimensional manifold from co-varying into a trivial, single-point attractor state.
-*   **Inherent Manifold Dispersion:** The "Spatial Specialization Gap" is highly resilient. Even with explicit spatial penalties, the network prefers to distribute coordinate information across a low-dimensional manifold rather than aligning it perfectly with a single recruited axis ($|r| = 0.42 \pm 0.15$ vs. the target of $\ge 0.60$). This indicates that distributed population codes are the natural thermodynamic default for temporal surprise minimization.
+*   **The Inviolable Trade-Off of Single-Channel Latents:** Phase 9 results have definitively established that in a single-channel latent space, raw temporal prediction accuracy and spatial coordinate localization are mutually opposing optimization forces. Even with a dynamic, surprise-modulated curriculum (DSMC), forcing spatial localization degraded test prediction accuracy by 22.8%, failing the <15% safeguard.
+*   **Curriculum-Driven Stability:** DSMC with a step-clipping rate limiter (+/-0.002) successfully prevents the optimization oscillations common to active feedback loops. It achieved a 0.0% representation collapse rate across all seeds, demonstrating that dynamically adjusting regularization pressure in response to temporal surprise spikes is a robust way to guide structural representation changes.
+*   **The Limits of Adaptive Schedules:** While DSMC prevents collapse and provides a smoother Pareto-like trade-off than static aggressive penalties, it could not beat a statically tuned gentle bottleneck (decoding MSE of 73.46 vs 69.11). This indicates that dynamic coupling of temporal surprise to spatial regularization parameter schedules introduces sub-optimal local minima during joint optimization.
 
 ## 3. Loop & Bottleneck Detection
-*   **The "Disentanglement-Accuracy" Loop:** We are observing a fundamental trade-off loop. Increasing the spatial regularization penalty to force cleaner, axis-aligned representations directly conflicts with the temporal prediction objective (Pillar B). The model cannot reconstruct or predict complex temporal dynamics if its latent space is forced to behave as a pure, low-complexity spatial tracker.
-*   **Mitigation Strategy:** Move away from static spatial penalties. Future architectures should explore a *dual-channel latent space* (e.g., separating slowly-varying spatial/inertial coordinate representations from high-frequency dynamic physical properties) or employ *adaptive bottlenecking* where the spatial penalty is selectively relaxed once spatial tracking stability is achieved.
+*   **The "Disentanglement-Accuracy" Loop:** Attempts to resolve this loop via dynamic curricula (DSMC) have reached their mathematical limit within a single-channel architecture. The representational capacity required for precise temporal dynamics modeling is fundamentally compromised when forced to compress into low-entropy spatial coordinates.
+*   **Mitigation Strategy:** Decouple the pathways. We must physically separate the latent space into:
+    1. A low-capacity, highly bottlenecked *spatial tracking channel* (mapping coordinates).
+    2. A high-capacity, unregularized *predictive dynamics channel* (mapping temporal transitions).
 
 ## 4. Alternate Research Paths
-*   **Dual-Channel Latent Space (Architectural Split):** Partitioning the latent space into a low-capacity, highly bottlenecked spatial tracking channel (e.g. via a soft-argmax operator) and an unbottlenecked, high-capacity dynamic predictive channel.
-*   **Closed-Loop Surprise-Gated Motor Control:** Dynamically adjusting the closed-loop PD controller's gain based on the gating attention token's surprise value, testing whether "active play" naturally subsides as local prediction error approaches zero.
+*   **Dual-Channel Latent Space (Architectural Split):** (Now promoted to Primary Next Path) Partition the latent space into a soft-argmax spatial coordinate tracker and a recurrent temporal predictive model.
+*   **Surprise-Gated Dynamic Routing:** Instead of using surprise to modulate a global regularization parameter, use it as a routing gate to determine which channel (spatial vs. temporal) receives the attention token and plasticity updates.

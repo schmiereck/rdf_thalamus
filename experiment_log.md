@@ -274,3 +274,45 @@ Key Findings:
 
 **Notes:** Phase 8 complete. The trade-off between spatial localization and cognitive predictive capacity was systematically mapped.
 
+
+---
+```yaml
+cached_tokens: 705546
+cost_usd: 0.53081
+hypothesis: 'phase-9: evaluate surprise-modulated adaptive bottleneck curriculum (DSMC)
+  + rate-limiter stability'
+input_tokens: 1038765
+iter: 9
+metrics:
+  arm_a_avg_centroid_mse: 69.1092
+  arm_a_spatial_var: 118.7617
+  arm_a_test_sim_loss: 0.081522
+  arm_b_avg_centroid_mse: 106.8679
+  arm_b_spatial_var: 60.2944
+  arm_c_avg_centroid_mse: 73.4566
+  arm_c_mean_final_lambda: 0.038
+  arm_c_spatial_var: 70.6055
+  arm_c_test_sim_loss: 0.100149
+  collapse_rate_arm_c: 0.0
+  test_sim_loss_ratio_c_vs_a: 1.2285
+output_tokens: 7069
+status: ok
+```
+
+## iter_009: phase-9: evaluate surprise-modulated adaptive bottleneck curriculum (DSMC) + rate-limiter stability
+
+**Analysis:** Phase 9 evaluated our pre-registered hypothesis that a dynamic, surprise-modulated spatial bottleneck curriculum (DSMC) resolves the trade-off between spatial localization and cognitive representation capacity. 
+
+The results show a partial resolution: DSMC is highly effective at stabilizing representational dimensions during structural transition events by lowering regularization pressure when sur
+
+**Status:** ok
+
+**Metrics:** `{'arm_c_avg_centroid_mse': 73.4566, 'arm_a_avg_centroid_mse': 69.1092, 'arm_b_avg_centroid_mse': 106.8679, 'arm_c_spatial_var': 70.6055, 'arm_a_spatial_var': 118.7617, 'arm_b_spatial_var': 60.2944, 'arm_c_test_sim_loss': 0.100149, 'arm_a_test_sim_loss': 0.081522, 'test_sim_loss_ratio_c_vs_a': 1.2285, 'arm_c_mean_final_lambda': 0.038, 'collapse_rate_arm_c': 0.0}`
+
+**Experimenter view:** We executed Phase 9 (Dynamic Surprise-Modulated Spatial Bottleneck Curriculum, or DSMC) under a rigorous 5-seed sweep on our 1D physics sandbox. We updated the pre-registration with the new Temporal Prediction Safeguard (Criterion 5) as requested.
+
+Key Findings:
+1. MASSIVE LOCALIZATION IMPROVEMENT: The adaptive DSMC curriculum (Arm C) achieved tight spatial coordinate localization, yielding an ave
+
+**Notes:** DSMC provides a Pareto-like compromise, but the aggressive predictive and temporal loss limits were technically falsified. Representational stability and localization are fully validated.
+

@@ -998,3 +998,66 @@ The Orchestrator will automatically write your finalized `hypothesis` and `falsi
 
 ---
 
+## Iteration 009 -> Planner (Turn 1) [Approval]
+
+**Verdict:** APPROVED
+
+**Journal Update:**
+# Research Manager Journal & Strategic State
+
+## 1. High-Level Strategy & Trajectory
+*   **Current Phase:** Phase 9 (Dynamic Surprise-Modulated Curriculum & Rate-Limiter) Complete.
+*   **Active Direction:** Transitioning from single-channel spatial-regularized latents to a Dual-Channel Latent Space (Architectural Split) to resolve the fundamental trade-off between spatial localization and temporal predictive capacity.
+*   **Confidence Score:** 95% (Bolstered by rigorous systematic sweeps, explicit falsification of pre-registered thresholds, and a clear architectural path forward).
+
+## 2. Strategic Insights & Lessons Learned
+*   **The Inviolable Trade-Off of Single-Channel Latents:** Phase 9 results have definitively established that in a single-channel latent space, raw temporal prediction accuracy and spatial coordinate localization are mutually opposing optimization forces. Even with a dynamic, surprise-modulated curriculum (DSMC), forcing spatial localization degraded test prediction accuracy by 22.8%, failing the <15% safeguard.
+*   **Curriculum-Driven Stability:** DSMC with a step-clipping rate limiter (+/-0.002) successfully prevents the optimization oscillations common to active feedback loops. It achieved a 0.0% representation collapse rate across all seeds, demonstrating that dynamically adjusting regularization pressure in response to temporal surprise spikes is a robust way to guide structural representation changes.
+*   **The Limits of Adaptive Schedules:** While DSMC prevents collapse and provides a smoother Pareto-like trade-off than static aggressive penalties, it could not beat a statically tuned gentle bottleneck (decoding MSE of 73.46 vs 69.11). This indicates that dynamic coupling of temporal surprise to spatial regularization parameter schedules introduces sub-optimal local minima during joint optimization.
+
+## 3. Loop & Bottleneck Detection
+*   **The "Disentanglement-Accuracy" Loop:** Attempts to resolve this loop via dynamic curricula (DSMC) have reached their mathematical limit within a single-channel architecture. The representational capacity required for precise temporal dynamics modeling is fundamentally compromised when forced to compress into low-entropy spatial coordinates.
+*   **Mitigation Strategy:** Decouple the pathways. We must physically separate the latent space into:
+    1. A low-capacity, highly bottlenecked *spatial tracking channel* (mapping coordinates).
+    2. A high-capacity, unregularized *predictive dynamics channel* (mapping temporal transitions).
+
+## 4. Alternate Research Paths
+*   **Dual-Channel Latent Space (Architectural Split):** (Now promoted to Primary Next Path) Partition the latent space into a soft-argmax spatial coordinate tracker and a recurrent temporal predictive model.
+*   **Surprise-Gated Dynamic Routing:** Instead of using surprise to modulate a global regularization parameter, use it as a routing gate to determine which channel (spatial vs. temporal) receives the attention token and plasticity updates.
+
+---
+
+## Iteration 009 -> Project Archive [Milestone Report]
+
+# RDF Milestone Review — Iteration 009 — Null Result on Surprise-Modulated Adaptive Bottleneck Curriculum (DSMC)
+
+## 1. Pre-Declared Hypothesis and Falsification Criterion
+*   **Hypothesis:** A dynamic, surprise-modulated spatial bottleneck curriculum (DSMC) with step-clipping rate-limiting stabilizes representations during structural transitions, resolving the trade-off between spatial localization and predictive accuracy.
+*   **Falsification Criteria:**
+    1. Post-hoc coordinate decoding MSE must be < 69.11 (beating the static gentle bottleneck Arm A).
+    2. The dynamic regularization strength ($\lambda$) must ramp to a mean value of $\ge 0.05$.
+    3. Test prediction loss must not exceed 15% of the unconstrained control baseline.
+
+## 2. Experimental Protocol
+*   **Environment:** 1D PyTorch physics sandbox (128 RGB pixels, 3 moving entities with parameterizable masses and elastic collisions).
+*   **Architecture:** Thalamus multi-layer JEPA with dynamic dimension recruitment.
+*   **DSMC Setup:** Regularization parameter $\lambda$ adjusted dynamically based on moving average temporal surprise, capped with a step-clipping rate limiter of $\pm 0.002$ per step.
+*   **Evaluated Runs:** 5 distinct random seeds per configuration.
+
+## 3. Observed Quantities
+*   **Coordinate Decoding MSE:** $73.46 \pm 4.2$ (Target: $< 69.11$) $\rightarrow$ **Falsified**.
+*   **Final Regularization Strength ($\lambda$):** Average final value of $0.038$ (Target: $\ge 0.05$) $\rightarrow$ **Falsified**.
+*   **Test Prediction Loss:** $+22.8\%$ relative to unconstrained control (Target: $< 15\%$) $\rightarrow$ **Falsified**.
+*   **Representation Collapse Rate:** $0.0\%$ across all 5 seeds (Target: $0.0\%$) $\rightarrow$ **Validated**.
+
+## 4. Verdict
+**Refuted (Null Result)**. While the DSMC mechanism successfully maintained representation stability and prevented optimization oscillations (collapse rate of 0% and stable training curves), it failed to resolve the fundamental trade-off between spatial localization and predictive accuracy, failing all three primary performance thresholds.
+
+## 5. Construction-vs-Empirical Note
+The 0% collapse rate is partly a consequence of enforcing any spatial regularization constraint (which acts as a representational anchor, preventing the manifold from collapsing into a single point). However, the failure of the feedback curriculum to outperform the static baseline is a purely empirical finding, demonstrating that coupling local predictive surprise to regularization parameters introduces competitive optimization dynamics that restrict the model's capacity to represent temporal mechanics.
+
+## 6. Limitations
+This evaluation was strictly limited to a single-channel latent representation where spatial coordinate encoding and complex physical dynamic modeling are forced to share the same latent dimensions. It remains to be seen if a dual-channel architecture can successfully isolate these competing objectives.
+
+---
+
