@@ -4,21 +4,50 @@ import torch.nn.functional as F
 import numpy as np
 
 class SegmentEncoder(nn.Module):
-    def __init__(self, d_max=8):
+    def __init__(self, d_max=8, pos_encoding="none"):
         """
         Maps visual segment of shape (B, 3, 32) to latent space of shape (B, d_max).
         Uses 1D convolution layers.
         """
         super().__init__()
         self.d_max = d_max
-        self.conv1 = nn.Conv1d(3, 16, kernel_size=5, stride=2, padding=2)
+        self.pos_encoding = pos_encoding
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
         self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
         self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.fc = nn.Linear(64, d_max)
 
-    def forward(self, x):
+    def forward(self, x, segment_idx=None):
         # x: (B, 3, 32)
+        if self.pos_encoding != "none":
+            if segment_idx is not None:
+                coords = segment_idx * 32.0 + torch.arange(32, dtype=torch.float32, device=x.device)
+            else:
+                coords = torch.arange(32, dtype=torch.float32, device=x.device)
+            
+            B = x.shape[0]
+            if self.pos_encoding == "linear":
+                pos = coords / 127.0
+                pos = pos.unsqueeze(0).unsqueeze(0).expand(B, 1, -1)
+                x = torch.cat([x, pos], dim=1)
+            elif self.pos_encoding == "sinusoidal":
+                pos_sin_10 = torch.sin(coords / 10.0)
+                pos_cos_10 = torch.cos(coords / 10.0)
+                pos_sin_100 = torch.sin(coords / 100.0)
+                pos_cos_100 = torch.cos(coords / 100.0)
+                pos_embeds = torch.stack([pos_sin_10, pos_cos_10, pos_sin_100, pos_cos_100], dim=0)
+                pos_embeds = pos_embeds.unsqueeze(0).expand(B, -1, -1)
+                x = torch.cat([x, pos_embeds], dim=1)
+
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
@@ -93,15 +122,16 @@ class L2Predictor(nn.Module):
         return self.net(z_history)
 
 class ThalamusNet(nn.Module):
-    def __init__(self, d_max=8, h=3, cooldown=200, cooldown_alpha=1.0):
+    def __init__(self, d_max=8, h=3, cooldown=200, cooldown_alpha=1.0, pos_encoding="none"):
         super().__init__()
         self.d_max = d_max
         self.h = h
         self.cooldown = cooldown
         self.cooldown_alpha = cooldown_alpha
+        self.pos_encoding = pos_encoding
 
         # 4 L1 segment modules
-        self.l1_encoders = nn.ModuleList([SegmentEncoder(d_max) for _ in range(4)])
+        self.l1_encoders = nn.ModuleList([SegmentEncoder(d_max, pos_encoding=pos_encoding) for _ in range(4)])
         self.l1_predictors = nn.ModuleList([SegmentPredictor(d_max, h) for _ in range(4)])
 
         # Global L2 modules
@@ -293,14 +323,14 @@ class ThalamusNet(nn.Module):
         for i in range(4):
             x_hist_seg = x_hist[:, :, :, i*32:(i+1)*32] # (B, H, 3, 32)
             x_hist_seg_flat = x_hist_seg.reshape(B * H, 3, 32)
-            z_hist_seg_flat = self.l1_encoders[i](x_hist_seg_flat)
+            z_hist_seg_flat = self.l1_encoders[i](x_hist_seg_flat, segment_idx=i)
             z_hist_seg = z_hist_seg_flat.reshape(B, H, self.d_max)
             z_hist_segments.append(z_hist_seg)
 
         z_target_segments = []
         for i in range(4):
             x_target_seg = x_target[:, :, i*32:(i+1)*32] # (B, 3, 32)
-            z_target_seg = self.l1_encoders[i](x_target_seg)
+            z_target_seg = self.l1_encoders[i](x_target_seg, segment_idx=i)
             z_target_segments.append(z_target_seg)
 
         # 2. Predict L1 segments
@@ -516,13 +546,14 @@ class ThalamusNet(nn.Module):
 
 
 class NonGatedControlNet(nn.Module):
-    def __init__(self, d_max=8, h=3):
+    def __init__(self, d_max=8, h=3, pos_encoding="none"):
         super().__init__()
         self.d_max = d_max
         self.h = h
+        self.pos_encoding = pos_encoding
 
         # 4 L1 segment modules
-        self.l1_encoders = nn.ModuleList([SegmentEncoder(d_max) for _ in range(4)])
+        self.l1_encoders = nn.ModuleList([SegmentEncoder(d_max, pos_encoding=pos_encoding) for _ in range(4)])
         self.l1_predictors = nn.ModuleList([SegmentPredictor(d_max, h) for _ in range(4)])
 
         # Global L2 modules
@@ -613,14 +644,14 @@ class NonGatedControlNet(nn.Module):
         for i in range(4):
             x_hist_seg = x_hist[:, :, :, i*32:(i+1)*32]
             x_hist_seg_flat = x_hist_seg.reshape(B * H, 3, 32)
-            z_hist_seg_flat = self.l1_encoders[i](x_hist_seg_flat)
+            z_hist_seg_flat = self.l1_encoders[i](x_hist_seg_flat, segment_idx=i)
             z_hist_seg = z_hist_seg_flat.reshape(B, H, self.d_max)
             z_hist_segments.append(z_hist_seg)
 
         z_target_segments = []
         for i in range(4):
             x_target_seg = x_target[:, :, i*32:(i+1)*32]
-            z_target_seg = self.l1_encoders[i](x_target_seg)
+            z_target_seg = self.l1_encoders[i](x_target_seg, segment_idx=i)
             z_target_segments.append(z_target_seg)
 
         # 2. Predict L1 segments
@@ -887,4 +918,12 @@ if __name__ == "__main__":
     print(f"NonGatedControlNet physical tracking overlap: {overlap_c}")
     assert overlap_c.shape == (B,), f"Expected shape ({B},), got {overlap_c.shape}"
     
+    # 3. Verify positional encodings (linear and sinusoidal)
+    print("\n--- Verifying SegmentEncoder with Positional Encodings ---")
+    for enc_type in ["linear", "sinusoidal"]:
+        encoder_pe = SegmentEncoder(d_max=8, pos_encoding=enc_type)
+        z_pe = encoder_pe(torch.rand(B, 3, 32), segment_idx=1)
+        assert z_pe.shape == (B, 8)
+        print(f"SegmentEncoder with {enc_type} positional encoding passed successfully.")
+
     print("\nAll self-contained verifications PASSED successfully!")

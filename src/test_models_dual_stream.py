@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from src.models_dual_stream import (
     calculate_centroid_and_variance,
+    add_positional_encoding,
     DualStreamEncoder,
     DualStreamPredictor,
     DualStreamJEPASpatial,
@@ -283,6 +284,34 @@ def test_non_parametric_jepa_spatial():
     
     print("NonParametricJEPASpatial tests: PASSED")
 
+def test_positional_encodings():
+    print("Testing NonParametricJEPASpatial with positional encodings...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    for pe_type in ["linear", "sinusoidal"]:
+        model = NonParametricJEPASpatial(d_max=d_max, h=H, pos_encoding=pe_type)
+        assert model.pos_encoding == pe_type
+        assert model.encoder.pos_encoding == pe_type
+        
+        # Check input channel size of self.conv1
+        expected_in_channels = 4 if pe_type == "linear" else 7
+        assert model.encoder.conv1.in_channels == expected_in_channels
+        
+        # Test clone propagates positional encoding
+        cloned = model.clone()
+        assert cloned.pos_encoding == pe_type
+        assert cloned.encoder.pos_encoding == pe_type
+        
+        # Forward check
+        x_hist = torch.randn(B, H, C, W)
+        x_target = torch.randn(B, C, W)
+        loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target)
+        assert z_pred_c.shape == (B, d_max)
+        assert z_pred_d.shape == (B, d_max)
+        
+    print("Positional encodings verification: PASSED")
+
 if __name__ == "__main__":
     print("=" * 60)
     print("RUNNING DUAL-STREAM ARCHITECTURE TESTS")
@@ -293,6 +322,7 @@ if __name__ == "__main__":
     test_self_cloning()
     test_pdrc_jepa_spatial()
     test_non_parametric_jepa_spatial()
+    test_positional_encodings()
     print("=" * 60)
     print("ALL TESTS PASSED SUCCESSFULLY!")
     print("=" * 60)

@@ -19,6 +19,26 @@ def calculate_centroid_and_variance(a_spatial):
     var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
     return x_mean, var
 
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_linear = coords / max(1.0, float(W - 1))
+        pos_linear = pos_linear.unsqueeze(0).unsqueeze(0).expand(B, 1, -1)
+        return torch.cat([x, pos_linear], dim=1)
+    elif pos_encoding == "sinusoidal":
+        pos_sin_10 = torch.sin(coords / 10.0)
+        pos_cos_10 = torch.cos(coords / 10.0)
+        pos_sin_100 = torch.sin(coords / 100.0)
+        pos_cos_100 = torch.cos(coords / 100.0)
+        pos_embeds = torch.stack([pos_sin_10, pos_cos_10, pos_sin_100, pos_cos_100], dim=0)
+        pos_embeds = pos_embeds.unsqueeze(0).expand(B, -1, -1)
+        return torch.cat([x, pos_embeds], dim=1)
+    return x
+
 class DualStreamEncoder(nn.Module):
     def __init__(self, d_max=8):
         """
@@ -74,6 +94,7 @@ class DualStreamEncoder(nn.Module):
         z_coord, _ = calculate_centroid_and_variance(a_spatial)
         z_dyn = self.forward_dynamics(x)
         return z_coord, z_dyn
+
 
 class DualStreamPredictor(nn.Module):
     def __init__(self, d_max=8, h=3):
@@ -133,6 +154,7 @@ class DualStreamPredictor(nn.Module):
         pred_dyn_active = pred_dyn * out_mask
         
         return pred_coord_active, pred_dyn_active
+
 
 class DualStreamJEPASpatial(nn.Module):
     def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100):
@@ -576,10 +598,19 @@ class PDRCJEPASpatial(DualStreamJEPASpatial):
 
 
 class NonParametricEncoder(nn.Module):
-    def __init__(self, d_max=8):
+    def __init__(self, d_max=8, pos_encoding="none"):
         super().__init__()
         self.d_max = d_max
-        self.conv1 = nn.Conv1d(3, 16, kernel_size=5, stride=2, padding=2)
+        self.pos_encoding = pos_encoding
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
         self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
         self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
         self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
@@ -589,6 +620,7 @@ class NonParametricEncoder(nn.Module):
         """
         Returns spatial feature map of shape (B, d_max, 128) for the encoder.
         """
+        x = add_positional_encoding(x, self.pos_encoding)
         x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
@@ -610,15 +642,16 @@ class NonParametricEncoder(nn.Module):
 
 
 class NonParametricJEPASpatial(nn.Module):
-    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none"):
         super().__init__()
         self.d_max = d_max
         self.h = h
         self.k = k
         self.cooldown = cooldown
         self.stabilization_period = stabilization_period
+        self.pos_encoding = pos_encoding
         
-        self.encoder = NonParametricEncoder(d_max=d_max)
+        self.encoder = NonParametricEncoder(d_max=d_max, pos_encoding=pos_encoding)
         self.predictor = DualStreamPredictor(d_max=d_max, h=h)
         
         # Dynamic state tracking
@@ -757,7 +790,8 @@ class NonParametricJEPASpatial(nn.Module):
             h=self.h,
             k=self.k,
             cooldown=self.cooldown,
-            stabilization_period=self.stabilization_period
+            stabilization_period=self.stabilization_period,
+            pos_encoding=self.pos_encoding
         )
         cloned.d_t = self.d_t
         cloned.load_state_dict(self.state_dict())
