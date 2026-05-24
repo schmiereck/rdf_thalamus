@@ -15,7 +15,7 @@ Update `src/pre_registration.md` and implement the 5-arm Phase 11 sweep script `
      - Train 4 dedicated base models passively on $N=3$ for 1500 steps: Standard base model, Dual base model, PDRC base model (in `stage=1`), and NonParametric base model.
      - Clone/instantiate the 5 arms and train under active probing on $N=4$ for steps 1501 to 3000 (PDController tracks the 4th recruited channel, spatial bottleneck is applied to channel 3).
      - At step 1501, set Arm E's stage to 2 (`arm_e_model.stage = 2` which freezes the coordinate head weights and activates stop-gradients).
-     - Evaluate all arms on a fresh test set of 200 passive steps on $N=4$.
+     - Evaluate all arms on a fresh test set of 200 passive steps on $N=4.
 
 3. Save results and generate plots:
    - Save the full results table to `archive/iter_011/results/summary_phase11.csv`.
