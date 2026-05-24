@@ -1,0 +1,3 @@
+List all files under 'archive/iter_004/runs/' along with their line counts.
+Also search for any other files created under 'archive/iter_004/' (such as in 'results/').
+If the training script failed or was interrupted, read its traceback or printout from 'stdout.txt' or 'stderr.txt' of the previous runs (e.g. from the iter_4.2.6 or other sub-agent directories if they exist, or find them in the filesystem).
