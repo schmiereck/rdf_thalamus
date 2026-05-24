@@ -1,0 +1,1 @@
+Create a simple file 'src/test_write.py' containing print('Hello') and run it.
