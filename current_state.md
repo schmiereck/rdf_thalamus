@@ -1,26 +1,26 @@
 # Current Research State
-Phase: Phase 3 Complete (Closed-Loop Motor & Subsumption Motorics Evaluated)
+Phase: Phase 4 Complete (Generalization & Noise Robustness Evaluated)
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 3 goal was to implement Subsumption Motorics (Pillar E), attach progressive motor coupling, and evaluate causal sensitivity and tracking overlap.
+Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 4 goal was to evaluate Generalization (N=3 to N=4 transition) and Noise Robustness (global pixel noise and localized structured Noisy-TV distractor) under a 5-seed comparison sweep.
 
 ## Confirmed
-- ACTIVE PERCEPTION CAUSAL REDUCTION: Active probing via intentional collisions achieves a massive **75.05% reduction** in post-collision predictive error compared to the passive baseline M_no_motor (0.0236 vs 0.0948) and a **57.57% reduction** compared to the random baseline M_random (0.0236 vs 0.0557) (iter_005.2).
-- COOLDOWN ADAPTATION: Replacing the rigid 200-step cooldown with a surprise-modulated adaptive cooldown C_t operates seamlessly, enabling agile locus switching during high-surprise collisions (iter_005.1).
-- ATTENTION TRANSITION STABILITY: Transitioning from externally primed attention to self-generated attention is highly stable (ratio of 1.0593 vs the 1.15 limit) (iter_005.2).
-- REPRESENTATION-DEPENDENT CONTROL: The ablation study (Random network: 23.20%, Shuffled attention: 22.00% vs Normal: 22.80%) confirms that the agent's tracking behavior is causally reliant on the precise closed-loop integration of thalamic token locus selection and subsumption motorics (iter_005.2).
+- RELATIVISTIC ATTENTION RESILIENCE (iter_006.6): The attention watchdog is highly resilient to both global pixel noise (σ=0.15) and the localized, structured entropic Noisy-TV distractor, maintaining an outstanding relative tracking overlap efficiency of **93.86%** under both conditions (well above the 80.0% falsification threshold).
+- COOLDOWN & NORMALIZATION STABILITY (iter_006.6): Z-score surprise normalization successfully prevents the attention token from getting trapped by the unmodelable Noisy-TV entity, because the high background variance suppresses its normalized surprise numerator.
+- DYNAMIC RECRUITMENT curriculum (iter_006.6): Moving from N=3 to N=4 clean objects triggers dynamic recruitment of a 4th representation dimension with an **80.0% recruitment rate**. The dynamic model post-transition achieves a 6.0% prediction loss reduction over the rigid B1 baseline, and performs nearly identically to the statically over-parameterized B1_large baseline (0.07119 vs 0.07076).
 
 ## Refuted
-- REFUTED: M_active maintains physical pointer-to-object tracking overlap >= 70.0% (iter_005.2). The observed overlap was 22.80% in test and 19.38% in training. Actively perturbing objects creates high environmental entropy and pushes objects out of the segment, revealing a fundamental "active-perception entropy trade-off".
-- REFUTED: M_active achieves overall test prediction loss <= B1 baseline (iter_005.2). The active closed-loop test loss is 0.0861 vs B1's 0.0452, because the active closed-loop contains continuous pointer-object collisions and high-velocity movements that are absent in the static, pointer-free B1 environment.
+- REFUTED (iter_006.6): Dynamic recruitment model reduces prediction loss on N=4 by at least 30% relative to the rigid B1 baseline. The observed reduction was 6.0%, although the dynamic model achieved parity with the pre-allocated B1_large model.
+- REFUTED (iter_006.6): The recruited 4th latent dimension directly correlates with the physical position of the 4th object ($|r| \ge 0.7$). The observed Pearson correlation was $0.0456 \pm 0.032$, indicating that while GDASR recruits the needed modeling capacity, representation specialization does not automatically emerge without downstream task coupling or explicit spatial readouts.
 
 ## Best Result
-- Active Post-Collision L2 Prediction Loss: 0.0236 ± 0.0054 (iter_005.2)
-- Error reduction vs Passive baseline: 75.05% (iter_005.2)
+- Clean Test Attention Overlap: 0.2280 (iter_006.6)
+- Relative Tracking Overlap Efficiency under Noise: 93.86% (iter_006.6)
+- Dynamic JEPA N=4 Test Sim Loss: 0.07119 (iter_006.6)
 
 ## In Progress
-- Synthesizing active perception findings and preparing Phase 4 (Generalization & Reporting) scope.
+- Investigating downstream coupling or RL-driven objectives to specialize recruited latent dimensions.
 
 ## Open Questions
-- Can we formulate an information-theoretic attention metric (e.g., expected information gain) to replace raw spatial tracking overlap?
-- How quickly does the position readout adapt to novel physical parameters (like a 4th object with unseen mass) in a few-shot manner?
+- Can reinforcement learning or downstream task performance drive recruited dimensions to self-organize into specific coordinate representations?
+- Does the stabilization period duration affect coordinate alignment?
