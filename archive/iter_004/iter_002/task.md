@@ -1,0 +1,42 @@
+Perform the 5-seed systematic evaluation campaign for Phase 2 (Thalamic Gating).
+
+Follow these exact steps to ensure scientific rigor and precise falsification testing:
+
+1. Create a training and evaluation script (e.g., 'src/train_thalamus.py') that runs a 5-seed sweep (seeds [42, 123, 456, 789, 999]) for three model configurations:
+   - 'gated': ThalamusNet from src/thalamus.py
+   - 'nongated': NonGatedControlNet from src/thalamus.py
+   - 'b1': FixedJEPA with d_t=2, d_max=8 from src/models.py
+   
+   Configure the environment and training regime exactly as follows:
+   - Use PhysicsSandbox from src/environment.py.
+   - Run training for 5000 steps per seed.
+   - Start with PhysicsSandbox(N=2, seed=seed) for steps 1-1500.
+   - During steps 1-1500, use external priming: 'priming_mode="external"' with the target color query being the ground-truth color of object 0 (i.e. info["colors"][0]).
+   - At step 1501, transition to PhysicsSandbox(N=3, seed=seed) and clear/pre-fill the replay buffer.
+   - From step 1501-5000, use self-generated priming: 'priming_mode="self"'.
+   - Record the physical tracking overlap at each step during steps 1501-5000.
+   - Use Adam optimizer with lr=1e-3. Update weights of active/trainable layers at each training step.
+
+2. At the end of training (step 5000), evaluate all three models on a separate test environment (seed = seed + 10000) with N=3 for 100 steps.
+   - During evaluation, use self-generated priming 'priming_mode="self"' (or color query matching for B1, if B1 doesn't have a color readout, we can decode it or skip color similarity for B1 since B1 is single-layer and doesn't gate attention).
+   - Measure and log:
+     - Final test L2 prediction loss (similarity loss, i.e., 'l2_sim_loss' for gated/nongated, and the regular 'sim_loss' for B1).
+     - Final test tracking overlap (for gated and nongated).
+
+3. Aggregate and analyze the results across the 5 seeds:
+   - Compute the mean and standard deviation of L2 test prediction loss for all configurations.
+   - Compute Levene's test p-value comparing the variance of L2 test prediction loss between 'gated' and 'nongated'.
+   - Determine the step at which L2 prediction loss falls below 0.08 and stabilizes there for each configuration (measure sample efficiency).
+   - Compute the average target tracking overlap during self-generated attention (steps 1501-5000) and final test.
+   - Check all three pre-registered falsification criteria:
+     - Criterion 1: Does gated have a lower standard deviation of L2 test loss than nongated (p < 0.05 via Levene's test, or lower raw standard deviation)?
+     - Criterion 2: Does gated reach stable L2 loss < 0.08 in fewer steps than nongated?
+     - Criterion 3: Does gated maintain target tracking overlap > 0.85 and reduce prediction loss on the target object by >= 15% compared to B1?
+   - Save the results to 'archive/iter_004/results/summary.csv' and write an execution log.
+
+4. Generate visual plots under 'archive/iter_004/results/':
+   - 'learning_curves.png': Compare the L2 prediction loss over training steps for all three models (mean +/- std).
+   - 'tracking_overlap.png': Compare the physical tracking overlap over steps 1501-5000 for 'gated' vs 'nongated'.
+   - 'token_traces.png': Plot the attention token locus over training steps for 'gated' (average across seeds or for a representative seed) to show the gating/curriculum behavior.
+
+Ensure that the training and plots are done deterministically with fixed seeding, and handle any potential CPU/device mapping or memory constraints nicely. Run the script and output the final results.
