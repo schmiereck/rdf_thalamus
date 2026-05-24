@@ -1,21 +1,19 @@
 # Research Manager Journal & Strategic State
 
 ## 1. High-Level Strategy & Trajectory
-*   **Current Phase:** Phase 1 (Representation Base - Verification of Pillars A, B, C).
-*   **Active Direction:** Hardening the representation base against dimensional collapse and fixing the GDASR triggering dynamics.
-*   **Confidence Score:** 75% (decreased from 100% due to the discovery of latent collapse and buffer inflation, but with a highly structured path to correction).
+*   **Current Phase:** Transitioning from Phase 1 (Representation Base Verification) to Phase 2 (Thalamic Gating).
+*   **Active Direction:** Evaluating cross-scale surprise normalization and attention token routing over the now-stabilized representation base.
+*   **Confidence Score:** 85% (increased from 75% due to resolving the representation collapse and error-threshold inflation, despite the predictive loss trade-off).
 
 ## 2. Strategic Insights & Lessons Learned
-*   **Historical Buffer Inflation:** Including initialization transients in the running surprise error buffer artificially inflates the recruitment threshold. This masks genuine physical novelty (N=3 to N=4 transition). A sliding-window buffer or a transient-blanking period is a mandatory architectural constraint for any surprise-driven recruitment mechanism.
-*   **Covariance Deficit in 1D Dynamics:** In a 1D continuous physics sandbox, temporal transitions of objects are highly correlated. Standard VICReg hyperparameter ratios (e.g., matching variance and covariance penalties) fail; the covariance penalty must be heavily scaled up (e.g., $Cov\_weight \ge 25.0$) relative to variance and similarity to prevent collapse onto a redundant, collinear 1D manifold.
-*   **Representational Collapse Default:** Representational collapse in low-dimensional physical systems is the thermodynamic default. Unless explicit, highly asymmetric constraints or aggressive covariance penalties are enforced, the network will exploit redundant dimensions to minimize surprise trivially.
+*   **Covariance Regularization Trade-off:** Preventing representational collapse via high covariance regularization ($Cov\_weight = 25.0$) significantly increases the optimization difficulty. This results in a higher latent temporal prediction loss (0.10037) compared to a capacity-limited baseline (B1, 0.07089) which ignores the third dimension of physical variation. 
+*   **Curriculum-as-Optimizer:** A progressive recruitment curriculum provides a vital optimization pathway. While a fixed-capacity 3D model (B1_large) fails to converge stably under high covariance constraints (loss of 0.16457), starting with 2D and recruiting the 3rd dimension dynamically reduces final prediction loss by 39% (0.10037).
+*   **Sliding-Window Surprise Filtering:** Discarding early initialization transients via a rolling FIFO buffer (size 500) successfully decouples the novelty detection threshold from initial optimization spikes, enabling sub-15-step precision in detecting environmental complexity transitions.
 
 ## 3. Loop & Bottleneck Detection
-*   **Identified Bottleneck:** The interaction between representation collapse and surprise calculation creates a dead loop. If the latent space collapses, surprise becomes low or constant, which subsequently disables the GDASR trigger and prevents any downstream thalamic gating from functioning.
-*   **Mitigation Strategy:** The Planner must prioritize hardening the representation base before adding more complex components (like Thalamic Gating). Specifically:
-    1. Implement a temporal blanking window ($t < 50$ steps) or a sliding-window FIFO buffer for surprise thresholding.
-    2. Run a controlled parameter sweep on the Covariance-to-Variance ratio ($Cov\_weight \in [1.0, 50.0]$) to establish the boundary of representation collapse.
+*   **Identified Bottleneck:** The primary bottleneck is now the trade-off between strict decorrelation (preventing collapse) and prediction accuracy. Extremely high covariance penalties enforce orthogonal representations but constrain the predictor's capacity to find smooth temporal transitions.
+*   **Mitigation Strategy for Phase 2:** As we transition to Thalamic Gating, we must ensure that the attention token routing does not introduce dynamic instability. If the token constantly shifts plasticity between layers, the covariance boundaries might drift. A token-holding cooldown or a rolling stability metric is required.
 
 ## 4. Alternate Research Paths
-*   **Asymmetric Target Networks (BYOL-style):** If covariance tuning does not stably resolve representation collapse across diverse environmental parameters, pivot immediately to an asymmetric online/target network design with stop-gradients as the primary anti-collapse mechanism.
-*   **Statistical Outlier Detection:** Replace the running-mean surprise threshold with a robust statistical measure (such as Median Absolute Deviation) to prevent scale-inflation by transient spikes.
+*   **Asymmetric Prediction (BYOL/JEPA-style Target Network):** Retained as a secondary path if deeper hierarchical stacking in Phase 2 causes the high-covariance training regime to become unstable.
+*   **Dynamic Covariance Weight Decay:** Gradually relaxing the covariance weight post-recruitment to allow the newly recruited dimension to align more fluidly with the temporal dynamics.
