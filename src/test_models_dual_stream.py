@@ -4,7 +4,11 @@ from src.models_dual_stream import (
     calculate_centroid_and_variance,
     DualStreamEncoder,
     DualStreamPredictor,
-    DualStreamJEPASpatial
+    DualStreamJEPASpatial,
+    PDRCEncoder,
+    PDRCJEPASpatial,
+    NonParametricEncoder,
+    NonParametricJEPASpatial
 )
 
 def test_shapes():
@@ -166,6 +170,119 @@ def test_self_cloning():
         
     print("Self-cloning verification: PASSED")
 
+def test_pdrc_jepa_spatial():
+    print("Testing PDRCJEPASpatial...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    # 1. Initialize Stage 1
+    model = PDRCJEPASpatial(d_max=d_max, h=H, stage=1)
+    assert model.stage == 1, "Expected stage 1"
+    
+    # Verify requires_grad is True for all parameters in Stage 1
+    for p in model.parameters():
+        assert p.requires_grad, "All parameters must have requires_grad=True in Stage 1"
+        
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    # Forward check
+    loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target, lambda_spatial=1.0)
+    assert z_pred_c.shape == (B, d_max)
+    assert z_pred_d.shape == (B, d_max)
+    assert z_target_c.shape == (B, d_max)
+    assert z_target_d.shape == (B, d_max)
+    
+    # Test gradient flow in Stage 1
+    model.zero_grad()
+    loss_dict["sim_loss_coord"].backward()
+    
+    # Gradients should flow back to coordinate head
+    assert model.encoder.conv_spatial_coord.weight.grad is not None
+    assert torch.any(model.encoder.conv_spatial_coord.weight.grad != 0), "conv_spatial_coord should have gradients"
+    # Gradients should also flow to conv1-4 (the backbone) through the coordinate stream
+    assert model.encoder.conv1.weight.grad is not None
+    assert torch.any(model.encoder.conv1.weight.grad != 0), "Backbone conv1 should have gradients from coordinate stream in Stage 1"
+    
+    # 2. Transition to Stage 2
+    model.stage = 2
+    assert model.stage == 2, "Expected stage 2"
+    
+    # Verify requires_grad setup for Stage 2
+    for name, p in model.named_parameters():
+        if "encoder.conv_spatial_coord" in name:
+            assert not p.requires_grad, f"encoder.conv_spatial_coord parameter {name} should be frozen in Stage 2"
+        else:
+            assert p.requires_grad, f"Parameter {name} should be trainable in Stage 2"
+            
+    # Temporarily set requires_grad=True on conv_spatial_coord to test detachment in forward_spatial
+    for p in model.encoder.conv_spatial_coord.parameters():
+        p.requires_grad = True
+        
+    # Check that in forward_spatial, x is detached before conv_spatial_coord
+    model.zero_grad()
+    z_coord, _ = model.encoder(x_target)
+    z_coord.sum().backward()
+    
+    assert model.encoder.conv_spatial_coord.weight.grad is not None
+    assert torch.any(model.encoder.conv_spatial_coord.weight.grad != 0)
+    # conv1-4 should NOT have gradients
+    assert model.encoder.conv1.weight.grad is None or torch.all(model.encoder.conv1.weight.grad == 0), "Backbone should be detached from coordinate head in Stage 2"
+    
+    # Check that z_hist_coord and z_target_coord are detached before predictor/similarity loss in Stage 2
+    model.zero_grad()
+    loss_dict, _, _ = model(x_hist, x_target)
+    loss_dict["sim_loss_coord"].backward()
+    
+    # No gradients should flow back to conv_spatial_coord
+    assert model.encoder.conv_spatial_coord.weight.grad is None or torch.all(model.encoder.conv_spatial_coord.weight.grad == 0), "No gradients should flow back to coordinate head from sim_loss_coord in Stage 2"
+    
+    # Test clone in PDRCJEPASpatial
+    cloned = model.clone()
+    assert cloned.stage == model.stage, "Cloned model stage mismatch"
+    assert cloned.encoder.stage == model.encoder.stage, "Cloned encoder stage mismatch"
+    
+    print("PDRCJEPASpatial tests: PASSED")
+
+def test_non_parametric_jepa_spatial():
+    print("Testing NonParametricJEPASpatial...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    model = NonParametricJEPASpatial(d_max=d_max, h=H)
+    
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    # Forward check
+    loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target, lambda_spatial=1.0)
+    assert z_pred_c.shape == (B, d_max)
+    assert z_pred_d.shape == (B, d_max)
+    assert z_target_c.shape == (B, d_max)
+    assert z_target_d.shape == (B, d_max)
+    
+    # Check that there is only one encoder without separate heads and all parameters are trainable
+    for p in model.encoder.parameters():
+        assert p.requires_grad, "All encoder parameters should be trainable"
+        
+    # Check gradient flow: Backprop through coordinate stream similarity loss
+    model.zero_grad()
+    loss_dict["sim_loss_coord"].backward()
+    
+    # Gradients should flow back to all layers of the encoder since there are no stop-gradients
+    assert model.encoder.conv_spatial.weight.grad is not None
+    assert torch.any(model.encoder.conv_spatial.weight.grad != 0)
+    assert model.encoder.conv1.weight.grad is not None
+    assert torch.any(model.encoder.conv1.weight.grad != 0)
+    assert model.encoder.conv4.weight.grad is not None
+    assert torch.any(model.encoder.conv4.weight.grad != 0)
+    
+    # Test clone in NonParametricJEPASpatial
+    cloned = model.clone()
+    assert isinstance(cloned.encoder, NonParametricEncoder)
+    
+    print("NonParametricJEPASpatial tests: PASSED")
+
 if __name__ == "__main__":
     print("=" * 60)
     print("RUNNING DUAL-STREAM ARCHITECTURE TESTS")
@@ -174,6 +291,8 @@ if __name__ == "__main__":
     test_backprop_specificity()
     test_mask_coord()
     test_self_cloning()
+    test_pdrc_jepa_spatial()
+    test_non_parametric_jepa_spatial()
     print("=" * 60)
     print("ALL TESTS PASSED SUCCESSFULLY!")
     print("=" * 60)
