@@ -4,28 +4,30 @@
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
-A Dynamic Surprise-Modulated Spatial Bottleneck Curriculum (DSMC)—which dynamically scales the spatial variance penalty weight $\lambda_t$ as an inverse function of the running average of local prediction surprise $\bar{S}_t$ via $\lambda_t = \lambda_{max} \cdot \exp(-\gamma \cdot \bar{S}_t)$ (where $\lambda_{max} = 0.10$, $\gamma = 10.0$, and $\bar{S}_t$ is the exponentially-weighted moving average of local temporal prediction error)—resolves the trade-off between spatial localization and cognitive predictive capacity. Specifically, across a 5-seed comparative sweep under the 1D physics sandbox with the N=3 to N=4 generalization transition, DSMC will simultaneously achieve:
-1. Tight spatial localization: mean soft spatial variance of the recruited dimension $\le 120.0$ (comparable to the static strong bottleneck of $\lambda = 0.10$ which achieved $60.29$ but suffered from severe prediction degradation).
-2. Superior predictive capacity: mean post-hoc centroid decoding MSE $\le 69.11$ (matching or exceeding the gentle bottleneck of $\lambda = 0.01$, which achieved $69.11$ but had large spatial spread).
-3. Complete structural stability: 0.0% representation collapse rate across all 5 seeds (due to low-regularization exploration during early training phases and post-transition shock).
+An adaptive, surprise-modulated curriculum for the soft spatial variance regularization weight $\lambda(t)$—where $\lambda(t)$ starts near $0$ and scales up to $\lambda_{max} = 0.10$ as the running mean of local surprise $\bar{S}(t)$ decays (e.g., $\lambda(t) = \lambda_{max} \cdot [1 - \min(1, \bar{S}(t) / S_0)]$ where $S_0$ is a normalization constant)—will resolve the localization-prediction trade-off.
+Specifically, during the $N=3 \rightarrow N=4$ object generalization transition under a 5-seed sweep:
+1. It will achieve tight spatial localization of the recruited channel, yielding a final mean soft spatial variance of $< 100.0$ (comparable to the static $\lambda=0.1$ bottleneck).
+2. It will simultaneously preserve representation capacity, achieving a post-hoc linear centroid decoding MSE of $< 65.0$ (outperforming both the static $\lambda=0.01$ bottleneck's MSE of 69.11 and the static $\lambda=0.1$ bottleneck's MSE of 106.87).
+3. It will increase the mean absolute Pearson correlation $|r|$ of physical coordinates on the recruited dimension to $\ge 0.40$ (compared to $0.2907$ achieved by static $\lambda=0.1$).
 
 ## 2. Falsification Criterion
-The hypothesis will be falsified if the DSMC configuration:
-1. Fails to achieve a mean soft spatial variance of the recruited channel $\le 120.0$ across the 5 evaluation seeds, OR
-2. Fails to achieve a mean centroid decoding MSE $\le 70.0$ across the 5 evaluation seeds, OR
-3. Experiences a representation collapse rate $> 0.0\%$ (any of the 5 seeds collapsing).
-
-Curriculum Activity Sanity Check: To assert that the curriculum successfully executed, the final average penalty weight across the 5 seeds must satisfy Mean(\lambda_T) >= 0.05. If the curriculum fails to ramp up to this level of regularization but passes the other metrics, it must be reported as a failure of the curriculum to activate, not a successful resolution of the trade-off.
+The hypothesis will be falsified if ANY of the following outcomes are observed over the 5-seed comparative evaluation:
+1. The surprise-modulated curriculum fails to localize the channel, resulting in a mean soft spatial variance of $\ge 150.0$.
+2. The final centroid decoding MSE is $\ge 69.11$ (failing to outperform the static $\lambda=0.01$ baseline), or $\ge 83.12$ (failing to outperform the control/no-bottleneck baseline).
+3. The average absolute Pearson correlation $|r|$ of the physical centroid coordinate against the recruited latent dimension remains $< 0.35$.
+4. The representation collapse rate under the adaptive curriculum is $> 0.0\%$ (i.e., at least one of the 5 seeds experiences collapse).
 
 ## 3. Proposed Method
-1. Implement a local surprise tracker in the representation network module (e.g., in `src/models.py`) that computes the exponentially-weighted moving average (EWMA) of the local temporal-prediction surprise: $\bar{S}_t = \alpha \cdot \bar{S}_{t-1} + (1 - \alpha) \cdot S_t$, with smoothing factor $\alpha = 0.95$ and initialized at $1.0$.
-2. Implement the DSMC controller: at each training step, calculate the dynamic spatial bottleneck penalty weight $\lambda_t = \lambda_{max} \cdot \exp(-\gamma \cdot \bar{S}_t)$, where $\lambda_{max} = 0.10$ and scaling factor $\gamma = 10.0$. This ensures that when surprise is high (early in training or immediately post-transition), $\lambda_t \to 0$ to maximize representational capacity, and as surprise decays, $\lambda_t \to 0.10$ to enforce localization.
-3. Modify the training loop (e.g., in `src/train.py` or the corresponding training runner) to update, apply, and log $\lambda_t$ and $\bar{S}_t$ at each timestep.
-4. Run a 5-seed comparative sweep comparing three experimental conditions:
-   - Arm A (Gentle): Static bottleneck with fixed $\lambda = 0.01$.
-   - Arm B (Strong): Static bottleneck with fixed $\lambda = 0.10$.
-   - Arm C (Experimental): Dynamic bottleneck with DSMC ($\lambda_{max}=0.10, \gamma=10.0$).
-5. Evaluate each arm on: (a) average centroid decoding MSE, (b) average soft spatial variance of the recruited channel, (c) representation collapse rate, and (d) the dynamic trajectory of $\lambda_t$ and surprise across the transition.
+1. **Surprise-Modulated Controller**: Implement an adaptive controller for the spatial bottleneck weight $\lambda(t)$. $\bar{S}(t)$ will track the exponential moving average of local temporal-prediction surprise of the recruited dimension. The weight will be defined as $\lambda(t) = \lambda_{max} \cdot \max(0, 1 - \bar{S}(t) / S_0)$, where $\lambda_{max} = 0.10$ and $S_0 = 0.15$.
+2. **Experimental Run & Environment**:
+   - Use the 1D physics sandbox with parameterizable environmental variation.
+   - Start training with $N=3$ objects for 1000 steps (passive), then transition to $N=4$ objects for 1000 steps with active closed-loop probing.
+   - Trigger dimension recruitment and activate the adaptive bottleneck regulator on the newly recruited channel.
+3. **Comparative Sweeps**:
+   - Run a 5-seed sweep across 4 experimental branches: Control (static $\lambda = 0.0$), Static $\lambda = 0.01$, Static $\lambda = 0.10$, and the Adaptive $\lambda(t)$ curriculum.
+4. **Code and Scripts**:
+   - Continue or create the script `run_phase9_experiments.py` to run this 5-seed comparative evaluation.
+   - Calculate, log, and plot: soft spatial variance, centroid decoding MSE, absolute Pearson correlation $|r|$, and latent dimension variance (to check for collapse).
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*

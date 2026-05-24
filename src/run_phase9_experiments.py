@@ -127,8 +127,8 @@ def fit_linear_probe(z, y):
 
 def evaluate_linear_probe(z, y, w, b):
     y_pred = w * z + b
-    mse = np.mean((y - y_pred)**2)
-    return mse
+    mouse = np.mean((y - y_pred)**2)
+    return mouse
 
 def evaluate_branch(model, seed, device):
     set_seed(seed + 5000)
@@ -469,7 +469,7 @@ def main():
         ax1.plot(range(1501, 3001), dsmc_surprises[seed], label=f"Seed {seed}", alpha=0.8)
         ax2.plot(range(1501, 3001), dsmc_lambdas[seed], label=f"Seed {seed}", alpha=0.8)
     
-    ax1.set_title("EWMA Surprise ($\bar{S}_t$) Trajectory for Arm C", fontsize=12, fontweight="bold")
+    ax1.set_title(r"EWMA Surprise ($\bar{S}_t$) Trajectory for Arm C", fontsize=12, fontweight="bold")
     ax1.set_xlabel("Training Step", fontsize=11)
     ax1.set_ylabel("EWMA Surprise", fontsize=11)
     ax1.legend()
@@ -511,7 +511,7 @@ def main():
     # Phase 7: Analyze results and write Phase 9 Scientific Report
     # -------------------------------------------------------------
     # Group by arm and compute average metrics
-    agg = summary_df.groupby("arm").mean().reset_index()
+    agg = summary_df.groupby("arm").mean(numeric_only=True).reset_index()
     print("\nAggregated Results (Means):")
     print(agg[["arm", "abs_r_centroid", "abs_r_activation", "mse_cent", "mse_act", "mean_var_3", "lambda_final", "collapsed"]])
     
@@ -563,9 +563,9 @@ Our results demonstrate that the DSMC curriculum (Arm C) successfully bridges th
 
 ### Detailed Analysis of Falsification and Sanity Check Criteria:
 1. **Criterion 1 (Spatial Localization)**: Arm C (DSMC) achieved an average soft spatial variance of **{mean_var_c:.4f}** (pre-registered threshold: $\\le 120.0$), which confirms highly localized coordinates comparable to Arm B (Strong) and far superior to Arm A (Gentle).
-2. **Criterion 2 (Predictive Capacity)**: Arm C (DSMC) achieved an outstanding average centroid decoding MSE of **{mean_mse_c:.4f}** (pre-registered threshold: $\\le 70.0$). This matches or exceeds the gentle bottleneck (Arm A), proving that early-stage unconstrained exploration allows the model to build high-capacity predictive structures before bottlenecking them.
+2. **Criterion 2 (Predictive Capacity)**: Arm C achieved an average centroid decoding MSE of **{mean_mse_c:.4f}** (71.4021), which marginally fails (falsifies) the aggressive adjusted pre-registered threshold of $\\le$ 70.0 (though it is a massive improvement over Arm B's 106.8739 and extremely close to Arm A's 69.1121).
 3. **Criterion 3 (Representation Collapse)**: 0.0% of the seeds in Arm C experienced representation collapse, validating that DSMC provides structural stability during and immediately post-transition.
-4. **Curriculum Activity Sanity Check**: The average final penalty weight $\\lambda_T$ reached **{mean_lambda_T_c:.4f}** (threshold: $\\ge 0.05$). This successfully asserts that the curriculum activated, ramping up regularization as local surprise decayed!
+4. **Curriculum Activity Sanity Check**: The average final penalty weight $\\lambda_T$ reached **{mean_lambda_T_c:.4f}** (0.0498), which is just below the pre-registered sanity check of 0.05. According to the pre-registered sanity check mandate, this must be reported as a borderline failure of the curriculum to fully activate, not a successful resolution of the trade-off. This scientific finding suggests that the curriculum parameters (such as the scaling factor $\\gamma$ or initial EWMA surprise) require slight tuning to fully optimize the transition profile.
 
 ## 3. Comparative Performance Analysis (Across Arms)
 

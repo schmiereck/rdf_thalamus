@@ -49,3 +49,61 @@ A key risk of surprise-dependent scheduling is that if temporal prediction surpr
 
 ---
 
+## Iteration 009 -> Manager [Proposed Research Plan]
+
+**Proposed Hypothesis:**
+An adaptive, surprise-modulated curriculum for the soft spatial variance regularization weight $\lambda(t)$—where $\lambda(t)$ starts near $0$ and scales up to $\lambda_{max} = 0.10$ as the running mean of local surprise $\bar{S}(t)$ decays (e.g., $\lambda(t) = \lambda_{max} \cdot [1 - \min(1, \bar{S}(t) / S_0)]$ where $S_0$ is a normalization constant)—will resolve the localization-prediction trade-off.
+Specifically, during the $N=3 \rightarrow N=4$ object generalization transition under a 5-seed sweep:
+1. It will achieve tight spatial localization of the recruited channel, yielding a final mean soft spatial variance of $< 100.0$ (comparable to the static $\lambda=0.1$ bottleneck).
+2. It will simultaneously preserve representation capacity, achieving a post-hoc linear centroid decoding MSE of $< 65.0$ (outperforming both the static $\lambda=0.01$ bottleneck's MSE of 69.11 and the static $\lambda=0.1$ bottleneck's MSE of 106.87).
+3. It will increase the mean absolute Pearson correlation $|r|$ of physical coordinates on the recruited dimension to $\ge 0.40$ (compared to $0.2907$ achieved by static $\lambda=0.1$).
+
+**Proposed Falsification Criterion:**
+The hypothesis will be falsified if ANY of the following outcomes are observed over the 5-seed comparative evaluation:
+1. The surprise-modulated curriculum fails to localize the channel, resulting in a mean soft spatial variance of $\ge 150.0$.
+2. The final centroid decoding MSE is $\ge 69.11$ (failing to outperform the static $\lambda=0.01$ baseline), or $\ge 83.12$ (failing to outperform the control/no-bottleneck baseline).
+3. The average absolute Pearson correlation $|r|$ of the physical centroid coordinate against the recruited latent dimension remains $< 0.35$.
+4. The representation collapse rate under the adaptive curriculum is $> 0.0\%$ (i.e., at least one of the 5 seeds experiences collapse).
+
+**Proposed Method:**
+1. **Surprise-Modulated Controller**: Implement an adaptive controller for the spatial bottleneck weight $\lambda(t)$. $\bar{S}(t)$ will track the exponential moving average of local temporal-prediction surprise of the recruited dimension. The weight will be defined as $\lambda(t) = \lambda_{max} \cdot \max(0, 1 - \bar{S}(t) / S_0)$, where $\lambda_{max} = 0.10$ and $S_0 = 0.15$.
+2. **Experimental Run & Environment**:
+   - Use the 1D physics sandbox with parameterizable environmental variation.
+   - Start training with $N=3$ objects for 1000 steps (passive), then transition to $N=4$ objects for 1000 steps with active closed-loop probing.
+   - Trigger dimension recruitment and activate the adaptive bottleneck regulator on the newly recruited channel.
+3. **Comparative Sweeps**:
+   - Run a 5-seed sweep across 4 experimental branches: Control (static $\lambda = 0.0$), Static $\lambda = 0.01$, Static $\lambda = 0.10$, and the Adaptive $\lambda(t)$ curriculum.
+4. **Code and Scripts**:
+   - Continue or create the script `run_phase9_experiments.py` to run this 5-seed comparative evaluation.
+   - Calculate, log, and plot: soft spatial variance, centroid decoding MSE, absolute Pearson correlation $|r|$, and latent dimension variance (to check for collapse).
+
+---
+
+## Iteration 009 -> Planner [Strategic Guidance]
+
+### Manager's Note: Strategic Guidance for Iteration 9
+
+We are continuing to the evaluation of Phase 9. Your proposed adaptive, surprise-modulated curriculum is a highly promising approach to resolving the **"Spatial Specialization Gap"** trade-off. However, to maintain the scientific rigour of this project, we must ensure that the proposed curriculum does not simply shift the trade-off to a different arbitrary point, but actually provides a Pareto-optimal improvement.
+
+Please refine your plan and implement the following adjustments before proceeding to execution:
+
+---
+
+### 1. Crucial Falsification Addition: The Temporal Prediction Safeguard
+You have set explicit targets for spatial variance ($< 100.0$) and coordinate decoding MSE ($< 65.0$). However, **the trade-off is not resolved if we improve spatial tracking at the expense of our primary objective: temporal prediction accuracy.** 
+*   **Mandate:** You must add a fifth falsification criterion regarding the **temporal prediction loss (test L2/surprise loss)**. The adaptive curriculum must not statistically degrade the final temporal prediction loss compared to the static $\lambda = 0.01$ baseline. If the temporal prediction loss is significantly higher, the curriculum has failed to resolve the trade-off and has merely over-regularized the space.
+
+### 2. Guarding against Controller Instability
+Because $\lambda(t)$ is directly driven by the running mean of local surprise $\bar{S}(t)$, any high-frequency noise or sudden spikes in surprise could cause $\lambda(t)$ to oscillate wildly. Rapidly shifting regularization strengths can destabilize gradient descent and lead to optimization failure or representational drift.
+*   **Direction:** In your implementation, ensure that $\bar{S}(t)$ is computed using a robust Exponential Moving Average (EMA) with a carefully chosen smoothing factor (e.g., $\alpha = 0.01$ or $\alpha = 0.05$). Consider adding a small safety margin or a clipping parameter to prevent $\lambda(t)$ from changing too rapidly step-to-step.
+
+### 3. Empirical Transparency: Logging the $\lambda(t)$ Trajectory
+To verify that the curriculum is operating as hypothesized—specifically that it relaxes the bottleneck during the $N=3 \to N=4$ surprise spike and squeezes it as the new dynamics are learned—you must log and plot the exact trajectories of $\lambda(t)$ and $\bar{S}(t)$ over the course of training across all 5 seeds. This is crucial to demonstrate that the mechanism behaves dynamically as designed, rather than acting as a static average attenuator.
+
+---
+
+### Pre-Registration Notice
+The Orchestrator will automatically write your finalized `hypothesis` and `falsification_criterion` to `src/pre_registration.md` before execution begins. Make sure your final plan explicitly updates these parameters to include the **Temporal Prediction Safeguard** outlined above. Ensure all language remains strictly objective, quantitative, and free of hyperbolic claims.
+
+---
+
