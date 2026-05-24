@@ -1,28 +1,25 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 010
+*   **Iteration:** 011
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
-In the Thalamus architecture, decoupling each recruited representation channel into a dual-stream latent space—consisting of a highly localized Spatial Coordinate Stream ($z^{coord}$, subject to a strong spatial variance minimization penalty $\lambda$) and a parallel Temporal Dynamics Stream ($z^{dyn}$, free of the spatial penalty and optimized for transition dynamics)—resolves the fundamental trade-off between spatial localization and predictive capacity. Specifically, this Dual-Stream Decoupled Thalamus (DSDT) architecture will achieve a soft spatial variance $\le 75.0$ (matching the spatial localization of the DSMC/Strong Bottlenecks) while simultaneously reducing the test simulation prediction loss by at least 15% relative to the single-stream DSMC (Arm C of Phase 9), thereby achieving a test simulation loss ratio vs. the Gentle Bottleneck (Arm A) of $< 1.10$.
+In a dual-stream decoupled architecture, grounding the coordinate stream ($z^{coord}$) during an initial joint-training phase, followed by weight freezing (consolidation) and stop-gradient decoupling of $z^{coord}$ (Progressive Decoupling with Representational Consolidation, PDRC), will prevent semantic blindness and representation collapse while preserving high spatial localization and predictive capacity. Specifically, compared to the failed immediate-decoupling baseline (Arm D), PDRC (Arm E) will achieve a 0% collapse rate, average soft spatial variance $\le 100.0$, and a test prediction loss ratio vs the joint-training baseline (Arm A) of $\le 1.15$.
 
 ## 2. Falsification Criterion
-The hypothesis will be falsified if, across a 5-seed comparative sweep, any of the following occur:
-1. The mean soft spatial variance of the Spatial Coordinate Stream ($z^{coord}$) is $> 75.0$.
-2. The overall test simulation loss of the DSDT model is not reduced by at least 15% compared to Arm C of Phase 9 (i.e., the ratio of DSDT test simulation loss to Arm A's test simulation loss is $\ge 1.10$).
-3. The Dual-Stream representation suffers from structural instability or collapse (defined as a representation collapse rate $> 0.0\%$ across the 5 training seeds).
+The hypothesis will be falsified if any of the following occur over a 5-seed comparative sweep:
+1. The representation collapse rate of Arm E is $> 0\%$ (where collapse is defined as test prediction loss $> 1.0$ or soft spatial variance $> 500.0$).
+2. The average soft spatial variance of Arm E is $> 100.0$.
+3. The ratio of the average test prediction loss of Arm E to Arm A is $\ge 1.15$.
+4. The absolute correlation ($r$) of the coordinate stream with the physical object centroids is $< 0.25$, or the centroid decoding MSE is $> 85.0$ (signaling semantic blindness).
 
 ## 3. Proposed Method
-1. **Dual-Stream Architecture Implementation**: Modify the representation node structure in the model definition files (e.g., `src/models.py` or `src/thalamus.py`). For each recruited dimension, split the latent output into:
-   - $z^{coord}_t \in \mathbb{R}^1$: computed via a highly constrained spatial softmax/centroid bottleneck and regularized by the adaptive spatial variance loss $\mathcal{L}_{var} = \lambda(t) \cdot \text{Var}(z^{coord}_t)$.
-   - $z^{dyn}_t \in \mathbb{R}^d$: computed without spatial compression, preserving high-frequency visual and motion features.
-2. **Predictive Coupling and Stop-Gradients**: Implement the temporal prediction network such that $z^{dyn}_t$ is used to predict $z^{coord}_{t+1}$ and $z^{dyn}_{t+1}$. Apply a stop-gradient operator on $z^{coord}_t$ during the temporal prediction backpropagation. This ensures that temporal prediction gradients do not bleed into and dilute the spatial localization of the coordinate stream, while allowing the dynamics stream to leverage spatial coordinate context.
-3. **Control and Experimental Setup**:
-   - **Arm A (Control 1)**: Gentle Spatial Bottleneck (re-run or compared with Phase 9 baseline).
-   - **Arm C (Control 2)**: Single-stream DSMC (from Phase 9).
-   - **Arm D (Experimental)**: Dual-Stream Decoupled Thalamus (DSDT) with adaptive spatial variance penalty $\lambda(t)$.
-4. **Multi-Seed Evaluation Sweep**: Train all arms over a 5-seed sweep under the parameterized 1D physics environment (including the $N=3 \to N=4$ object transition event).
-5. **Metrics Logging**: Log soft spatial variance, centroid decoding MSE (using a linear probe as a diagnostic check of coordinate quality), test simulation prediction loss, and representation collapse rates.
+1. Extend the existing codebase in `src/` to support Arm E: Progressive Decoupling with Representational Consolidation (PDRC).
+2. Implement a two-stage training schedule:
+   - Stage 1 (Grounding, $0 \le t < T_{ground}$): Jointly train both $z^{coord}$ (with spatial bottleneck) and $z^{dyn}$ streams with prediction gradients.
+   - Stage 2 (Decoupled, $t \ge T_{ground}$): Inject a stop-gradient at the output of $z^{coord}$ before it feeds into the temporal predictor, and freeze the weights of the coordinate stream encoder. The dynamics stream and predictor continue to train.
+3. Run a 5-seed sweep comparing Arm A (Gentle Bottleneck), Arm C (DSMC), Arm D (DSDT), and Arm E (PDRC) on the 1D physics sandbox.
+4. Measure and log test prediction loss, soft spatial variance, centroid decoding MSE, and coordinate-centroid correlation across all arms.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*

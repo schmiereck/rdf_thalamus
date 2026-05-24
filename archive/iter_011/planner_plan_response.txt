@@ -1,0 +1,60 @@
+I will list the files in the directory to find the relevant source code files and understand the current implementation.
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: Tool not available: list_dir]
+
+I will list all past iterations to understand what has been completed so far and check their parameters.
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: Tool not available: list_iterations]
+
+I will search for `class` definitions in the `src/` directory to see what components already exist.
+
+[Tool Call: grep_search({'pattern': 'class'})]
+
+[Tool Result: Tool not available: grep_search]
+
+I will read the details of iteration 10 to inspect its configuration and findings.
+
+[Tool Call: read_iteration({'iter_num': 10})]
+
+[Tool Result: Tool not available: read_iteration]
+
+I will try to read the `current_state.md` file using the `read_file` tool to gather more context if possible.
+
+[Tool Call: read_file({'path': 'current_state.md'})]
+
+[Tool Result: Tool not available: read_file]
+
+```yaml
+hypothesis: |
+  In a dual-stream decoupled architecture, grounding the coordinate stream ($z^{coord}$) during an initial joint-training phase, followed by weight freezing (consolidation) and stop-gradient decoupling of $z^{coord}$ (Progressive Decoupling with Representational Consolidation, PDRC), will prevent semantic blindness and representation collapse while preserving high spatial localization and predictive capacity. Specifically, compared to the failed immediate-decoupling baseline (Arm D), PDRC (Arm E) will achieve a 0% collapse rate, average soft spatial variance $\le 100.0$, and a test prediction loss ratio vs the joint-training baseline (Arm A) of $\le 1.15$.
+falsification_criterion: |
+  The hypothesis will be falsified if any of the following occur over a 5-seed comparative sweep:
+  1. The representation collapse rate of Arm E is $> 0\%$ (where collapse is defined as test prediction loss $> 1.0$ or soft spatial variance $> 500.0$).
+  2. The average soft spatial variance of Arm E is $> 100.0$.
+  3. The ratio of the average test prediction loss of Arm E to Arm A is $\ge 1.15$.
+  4. The absolute correlation ($r$) of the coordinate stream with the physical object centroids is $< 0.25$, or the centroid decoding MSE is $> 85.0$ (signaling semantic blindness).
+proposed_method: |
+  1. Extend the existing codebase in `src/` to support Arm E: Progressive Decoupling with Representational Consolidation (PDRC).
+  2. Implement a two-stage training schedule:
+     - Stage 1 (Grounding, $0 \le t < T_{ground}$): Jointly train both $z^{coord}$ (with spatial bottleneck) and $z^{dyn}$ streams with prediction gradients.
+     - Stage 2 (Decoupled, $t \ge T_{ground}$): Inject a stop-gradient at the output of $z^{coord}$ before it feeds into the temporal predictor, and freeze the weights of the coordinate stream encoder. The dynamics stream and predictor continue to train.
+  3. Run a 5-seed sweep comparing Arm A (Gentle Bottleneck), Arm C (DSMC), Arm D (DSDT), and Arm E (PDRC) on the 1D physics sandbox.
+  4. Measure and log test prediction loss, soft spatial variance, centroid decoding MSE, and coordinate-centroid correlation across all arms.
+pre_registration_file: "src/pre_registration.md"
+```
+
+### Analysis of Current State & Failure Modes
+In Phase 10, the Dual-Stream Decoupled Thalamus (DSDT, Arm D) attempted to bypass the regularization-prediction trade-off by completely isolating the spatial coordinate stream $z^{coord}$ from prediction gradients. This triggered a catastrophic failure: without prediction or visual gradients, $z^{coord}$ suffered from **semantic blindness**, failing to ground to actual physical objects. This resulted in a 100% collapse rate, extremely high spatial variance (1356.52), and high prediction loss (13.44).
+
+To resolve this, we propose **Progressive Decoupling with Representational Consolidation (PDRC, Arm E)**. By initially training both streams jointly, the coordinate stream is forced to ground itself on physical features to minimize prediction error. Once grounded, its weights are consolidated (frozen) to prevent drift, and stop-gradients are introduced to protect the spatial bottleneck from being diluted by subsequent dynamics learning.
+
+### Experimental Protocol
+- **Arm A (Control)**: Gentle spatial bottleneck with joint training (no decoupling).
+- **Arm C (Control)**: Surprise-modulated adaptive bottleneck curriculum (DSMC).
+- **Arm D (Control)**: Immediate decoupling (DSDT from Phase 10).
+- **Arm E (Proposed)**: PDRC with $T_{ground}$ set to 50% of the total training epochs.
+- All arms will be evaluated using the 5-seed comparative sweep. We will strictly report confidence intervals, decoding metrics, and compute profiles.
