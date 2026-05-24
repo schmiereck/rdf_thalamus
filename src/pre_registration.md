@@ -1,38 +1,24 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 012
+*   **Iteration:** 013
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
-Coupling the stable non-parametric soft-argmax projection of Arm F with a Closed-Loop Thalamic Subsumption (CLTS) motor policy (Arm G)—where a high-level epistemic collision controller is dynamically activated (subsumed) proportional to the local predictive surprise of the attended object—will significantly accelerate the adaptation and predictive accuracy of physical dynamics under parameter shifts (such as a 2x shift in object mass) compared to both passive observation and random exploration, without destabilizing the representational grounding of the coordinate encoder.
-
-Specifically, CLTS will:
-1. Accelerate the convergence of temporal prediction models on post-collision dynamics.
-2. Maintain representational stability (soft spatial variance < 20.0, centroid decoding MSE < 85.0) despite active, self-generated physical manipulation of the environment.
+Integrating explicit pixel-position encodings (Linear Normalized or Sinusoidal) into the input of the convolutional backbone in the Thalamus architecture (increasing input channels from 3 to 4 or more) under Closed-Loop Thalamic Subsumption Motorics (CLTS) will resolve the marginal spatial representation drift observed under active control. Specifically, the centroid decoding MSE of the novel object under CLTS control will decrease from the Phase 12 baseline of 85.85 to below 75.0, while maintaining a soft spatial variance below 10.0 and a post-collision test simulation loss below 0.050.
 
 ## 2. Falsification Criterion
-The hypothesis will be proven false if any of the following quantitative conditions are met:
-1. Predictive Performance: Arm G (CLTS) does not achieve at least a 20% lower post-collision latent prediction MSE compared to the random exploration baseline (Arm F-Random) within 1500 steps of evaluation after a 2x mass perturbation is introduced.
-2. Representational Instability: The soft spatial variance of Arm G's coordinate encoder increases above 20.0, or the centroid decoding MSE exceeds 85.0 during active closed-loop interaction, showing that the closed-loop feedback loop destabilizes the non-parametric projection.
-3. Adaptation Efficiency: The number of interaction steps required for the model's prediction error to return to pre-perturbation baseline is not at least 15% shorter than that of the random exploration baseline.
+The hypothesis will be falsified if:
+1. The centroid decoding MSE of the novel object under active CLTS control with positional encoding is >= 75.0; OR
+2. The soft spatial variance of the coordinate encoder exceeds 10.0; OR
+3. The post-collision test simulation loss exceeds 0.050.
 
 ## 3. Proposed Method
-1. Implement the Closed-Loop Thalamic Subsumption (CLTS) Controller:
-   - Design a 3-layer subsumption controller:
-     * Layer 1 (Reflexive): Align the agent's 1D pointer with the spatial coordinate of the object currently holding the Thalamic Attention Token (based on highest normalized local surprise).
-     * Layer 2 (Kinematic Tracking): Match the velocity of the attended object.
-     * Layer 3 (Epistemic Probing): When local prediction error (surprise) of the attended object exceeds a dynamic threshold, override lower layers to accelerate directly towards the object and trigger a "push" action to induce an active collision.
-2. Run a 5-seed comparative sweep across three experimental arms:
-   - Arm F-Passive: Passive observation (no motor actions, objects move naturally).
-   - Arm F-Random: Random motor actions (uniform random acceleration and push).
-   - Arm G (CLTS): The proposed closed-loop surprise-modulated subsumption motorics.
-3. Introduce Perturbation Phase:
-   - Train normally for 1500 steps.
-   - At step 1501, abruptly change the mass and elasticity of one of the objects by a factor of 2x.
-   - Track the post-collision prediction error recovery curves, coordinate soft spatial variance, and centroid decoding MSE for all arms.
-4. Modified/Created Files:
-   - Create/modify `src/motor.py` to define the CLTS controller.
-   - Modify `src/train.py` or the corresponding experiment execution script to support closed-loop motor coupling, online mass perturbation, and metric logging.
+1. Modify `src/thalamus.py` to support explicit positional encodings at the input level:
+   - Arm H (Linear Pos): 4 input channels, where the 4th channel is the linear normalized position `pos_i = i / 127.0`.
+   - Arm I (Sinusoidal Pos): 7 input channels, with 3 RGB channels and 4 sinusoidal positional embeddings (using frequencies of 10 and 100).
+2. Maintain the same CLTS active control scheme in `src/motor.py` as established in Phase 12.
+3. Create `src/run_phase13_experiments.py` to run a 5-seed comparative sweep of Arm H (Linear Pos) and Arm I (Sinusoidal Pos) against the original RGB-only CLTS baseline.
+4. Log and evaluate post-collision test simulation loss, centroid decoding MSE of the novel object (generalization test), soft spatial variance, and pointer spatial entropy.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
