@@ -1,4 +1,4 @@
-Please execute the Phase 9 experimental sweep using the virtual environment's python executable:
+Please run the Phase 9 experimental sweep using the virtual environment's python executable:
 `C:\Users\thomas\Projekte\uroboros-rdf\.venv\Scripts\python.exe src/run_phase9_experiments.py`
 
 This will execute the 5-seed comparative sweep across the three arms:
