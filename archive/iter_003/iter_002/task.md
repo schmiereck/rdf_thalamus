@@ -1,0 +1,1 @@
+Read the 5 dynamic runs under `archive/iter_003/runs/` and find the exact step where `active_dims` transitions from 2 to 3 for each seed. Print these steps and compute their mean and standard deviation.
