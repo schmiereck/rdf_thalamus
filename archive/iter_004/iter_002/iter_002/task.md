@@ -1,0 +1,1 @@
+Create a file 'src/train_thalamus.py' with a basic python structure. Just import torch and print a message. Let's verify that file creation works first.
