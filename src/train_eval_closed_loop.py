@@ -313,7 +313,13 @@ def run_ablation_test(model, seed, ablation_mode, device):
                 x_target_t,
                 external_query=color_0_t
             )
-            overlaps.append(overlap_tensor.mean().item())
+            if hasattr(overlap_tensor, "mean"):
+                overlap_val = overlap_tensor.mean().item()
+            elif hasattr(overlap_tensor, "item"):
+                overlap_val = overlap_tensor.item()
+            else:
+                overlap_val = float(overlap_tensor)
+            overlaps.append(overlap_val)
             
     return np.mean(overlaps)
 
@@ -362,19 +368,33 @@ if __name__ == "__main__":
     seeds = [42, 123, 456, 789, 999]
     device = torch.device("cpu")
     
-    print("Starting parallel training of 15 runs...")
-    
-    futures = []
-    with concurrent.futures.ProcessPoolExecutor(max_workers=3) as executor:
-        for model_name in model_names:
-            for seed in seeds:
-                futures.append(executor.submit(train_worker, model_name, seed))
-                
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                print(f"A worker crashed with exception: {e}")
+    # Check if all 15 .csv and .pt checkpoints exist
+    all_checkpoints_exist = True
+    for model_name in model_names:
+        for seed in seeds:
+            csv_path = f"archive/iter_005/runs/{model_name}_seed{seed}.csv"
+            pt_path = f"archive/iter_005/runs/{model_name}_seed{seed}.pt"
+            if not (os.path.exists(csv_path) and os.path.exists(pt_path)):
+                all_checkpoints_exist = False
+                break
+        if not all_checkpoints_exist:
+            break
+
+    if all_checkpoints_exist:
+        print("All 15 .csv and .pt checkpoints found in archive/iter_005/runs/. Skipping the training phase!")
+    else:
+        print("Starting parallel training of 15 runs...")
+        futures = []
+        with concurrent.futures.ProcessPoolExecutor(max_workers=3) as executor:
+            for model_name in model_names:
+                for seed in seeds:
+                    futures.append(executor.submit(train_worker, model_name, seed))
+                    
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"A worker crashed with exception: {e}")
                 
     print("Parallel training complete. Loading models and conducting evaluations...")
     
