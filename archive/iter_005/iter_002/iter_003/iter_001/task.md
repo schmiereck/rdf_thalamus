@@ -1,0 +1,1 @@
+Run the python script `hello.py` using python interpreter, verify that it prints 'Hello, World!', and report the output.
