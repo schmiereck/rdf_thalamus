@@ -1,24 +1,24 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 013
+*   **Iteration:** 014
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
-Integrating explicit pixel-position encodings (Linear Normalized or Sinusoidal) into the input of the convolutional backbone in the Thalamus architecture (increasing input channels from 3 to 4 or more) under Closed-Loop Thalamic Subsumption Motorics (CLTS) will resolve the marginal spatial representation drift observed under active control. Specifically, the centroid decoding MSE of the novel object under CLTS control will decrease from the Phase 12 baseline of 85.85 to below 75.0, while maintaining a soft spatial variance below 10.0 and a post-collision test simulation loss below 0.050.
+Applying Contrastive Coordinate Regularization (CCR)—comprising temporal smoothness (minimizing consecutive-frame coordinate distance) and spatial separation (either via a pairwise hinge-loss or a VICReg-style covariance regularization) directly on the non-parametric soft-argmax bottleneck—will constrain active-perception coordinate drift without introducing input-level optimization shortcuts. This self-supervised constraint will reduce the centroid decoding MSE of the novel object under active control to below 70.0 (compared to 85.85 in Arm G), while maintaining a post-collision test simulation loss below 0.050.
 
 ## 2. Falsification Criterion
-The hypothesis will be falsified if:
-1. The centroid decoding MSE of the novel object under active CLTS control with positional encoding is >= 75.0; OR
-2. The soft spatial variance of the coordinate encoder exceeds 10.0; OR
-3. The post-collision test simulation loss exceeds 0.050.
+The hypothesis will be falsified if any of the following outcomes are observed:
+1. The mean centroid decoding MSE of the novel object under active CLTS control for the best CCR arm (Arm J or K) is >= 75.0.
+2. The mean post-collision test simulation loss at step 3000 for the best CCR arm exceeds 0.050 (indicating that coordinate regularization degrades physics prediction).
+3. The pointer spatial entropy under active CLTS control drops below 3.5 (indicating that the regularization constrains the agent's exploratory behaviors).
+4. The soft spatial variance of the coordinate encoder exceeds 10.0 (indicating a loss of spatial tightness of the bottleneck).
 
 ## 3. Proposed Method
-1. Modify `src/thalamus.py` to support explicit positional encodings at the input level:
-   - Arm H (Linear Pos): 4 input channels, where the 4th channel is the linear normalized position `pos_i = i / 127.0`.
-   - Arm I (Sinusoidal Pos): 7 input channels, with 3 RGB channels and 4 sinusoidal positional embeddings (using frequencies of 10 and 100).
-2. Maintain the same CLTS active control scheme in `src/motor.py` as established in Phase 12.
-3. Create `src/run_phase13_experiments.py` to run a 5-seed comparative sweep of Arm H (Linear Pos) and Arm I (Sinusoidal Pos) against the original RGB-only CLTS baseline.
-4. Log and evaluate post-collision test simulation loss, centroid decoding MSE of the novel object (generalization test), soft spatial variance, and pointer spatial entropy.
+1. Modify `src/models_dual_stream.py` and `src/thalamus.py` to compute and backpropagate the Contrastive Coordinate Regularization (CCR) loss from the non-parametric soft-argmax projection bottleneck.
+2. Implement Arm J (CCR-Hinge): Add a loss term combining temporal smoothness (L2-distance of coordinates between time t and t-1) and spatial separation (a hinge-loss on pairwise coordinate distance with a minimum margin epsilon = 0.15).
+3. Implement Arm K (CCR-Covariance): Add a loss term combining temporal smoothness and VICReg-style covariance regularization (penalizing off-diagonal covariance terms of the coordinate channels) to keep coordinate channels decorrelated and active.
+4. Run a matched 5-seed comparative sweep: Train Arm G (Original RGB CLTS baseline), Arm J (CCR-Hinge), and Arm K (CCR-Covariance) on matched environment sequences (N=3 passive pre-training, N=4 active CLTS training).
+5. Evaluate and Analyze: Extract centroid decoding MSE, test simulation loss, soft spatial variance, and pointer entropy. Run Welch's t-test and Levene's test to statistically compare CCR performance against the baseline.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
