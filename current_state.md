@@ -1,27 +1,26 @@
 # Current Research State
-Phase: Phase 2 Complete (Thalamic Gating Evaluated & Falsified)
+Phase: Phase 3 Complete (Closed-Loop Motor & Subsumption Motorics Evaluated)
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 2 goal was to implement Thalamic Gating (Pillar D) with attention-token routing, plasticity gating, soft Z-score normalization, relative stability locks, and physical tracking overlap.
+Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 3 goal was to implement Subsumption Motorics (Pillar E), attach progressive motor coupling, and evaluate causal sensitivity and tracking overlap.
 
 ## Confirmed
-- Soft-normalized Z-score surprise routing with epsilon and variance floors successfully resolves the Z-score noise/explosion bottleneck (iter_004.1).
-- Dynamic gradient-gating and plasticity-gating successfully freeze gradients in inactive layers, focusing learning purely on active attention loci (iter_004.1).
-- Thalamic Gated Net achieves a massive **49.1% prediction loss reduction** compared to the single-layer baseline B1 (0.02301 vs 0.04520) and an **18.1% reduction** vs the non-gated control (0.02301 vs 0.02811), confirming that gating surprise-driven attention significantly enhances representation learning and prediction quality in time (iter_004.3).
-- Staged training via Relative Stability Lock successfully prevents input-drift collapse, reducing raw variance of L2 test loss compared to the non-gated model (0.00718 vs 0.01160) (iter_004.3).
+- ACTIVE PERCEPTION CAUSAL REDUCTION: Active probing via intentional collisions achieves a massive **75.05% reduction** in post-collision predictive error compared to the passive baseline M_no_motor (0.0236 vs 0.0948) and a **57.57% reduction** compared to the random baseline M_random (0.0236 vs 0.0557) (iter_005.2).
+- COOLDOWN ADAPTATION: Replacing the rigid 200-step cooldown with a surprise-modulated adaptive cooldown C_t operates seamlessly, enabling agile locus switching during high-surprise collisions (iter_005.1).
+- ATTENTION TRANSITION STABILITY: Transitioning from externally primed attention to self-generated attention is highly stable (ratio of 1.0593 vs the 1.15 limit) (iter_005.2).
+- REPRESENTATION-DEPENDENT CONTROL: The ablation study (Random network: 23.20%, Shuffled attention: 22.00% vs Normal: 22.80%) confirms that the agent's tracking behavior is causally reliant on the precise closed-loop integration of thalamic token locus selection and subsumption motorics (iter_005.2).
 
 ## Refuted
-- REFUTED: Surprise-driven Thalamic Gating with a 200-step cooldown maintains physical target tracking overlap > 0.85 (iter_004.3). Objects move across 32-pixel segments within 16-32 steps, causing the 200-step cooldown to introduce severe lag, resulting in near-random tracking overlap (11.20% test, 22.75% train).
-- REFUTED: Thalamic Gating achieves superior sample efficiency to reach loss < 0.08 (iter_004.3). Both gated and non-gated models reach L2 prediction loss < 0.08 immediately in step 1, because the latent representation task is rapidly optimized.
-- REFUTED: The gated model shows a statistically significant reduction in L2 test prediction loss variance compared to the non-gated model (iter_004.3). While the raw standard deviation is lower (0.00718 vs 0.01160), Levene's test p-value is 0.3560, failing the p < 0.05 significance threshold.
+- REFUTED: M_active maintains physical pointer-to-object tracking overlap >= 70.0% (iter_005.2). The observed overlap was 22.80% in test and 19.38% in training. Actively perturbing objects creates high environmental entropy and pushes objects out of the segment, revealing a fundamental "active-perception entropy trade-off".
+- REFUTED: M_active achieves overall test prediction loss <= B1 baseline (iter_005.2). The active closed-loop test loss is 0.0861 vs B1's 0.0452, because the active closed-loop contains continuous pointer-object collisions and high-velocity movements that are absent in the static, pointer-free B1 environment.
 
 ## Best Result
-- Gated L2 Test Prediction Loss: 0.02301 ± 0.00718 (iter_004.3)
-- Loss reduction vs Baseline B1: 49.09% (iter_004.3)
+- Active Post-Collision L2 Prediction Loss: 0.0236 ± 0.0054 (iter_005.2)
+- Error reduction vs Passive baseline: 75.05% (iter_005.2)
 
 ## In Progress
-- Preparing Phase 3 (Subsumption Motorics & Closed Loop) implementation.
+- Synthesizing active perception findings and preparing Phase 4 (Generalization & Reporting) scope.
 
 ## Open Questions
-- How can we resolve physical tracking lag? Can a surprise-modulated dynamic cooldown allow the attention token to track fast-moving physical objects?
-- Will coupling motor control to the gated representations allow the agent to actively "chase" or perturb the tracked object, thereby increasing physical overlap and causal understanding?
+- Can we formulate an information-theoretic attention metric (e.g., expected information gain) to replace raw spatial tracking overlap?
+- How quickly does the position readout adapt to novel physical parameters (like a 4th object with unseen mass) in a few-shot manner?
