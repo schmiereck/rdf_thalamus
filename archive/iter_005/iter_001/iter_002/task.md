@@ -1,0 +1,1 @@
+Write a hello world script and run it to verify python environment.
