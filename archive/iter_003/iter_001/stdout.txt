@@ -1,0 +1,302 @@
+I will list the files in the current working directory to get a sense of the codebase.
+
+[Tool Call: list_dir({'path': '.'})]
+
+[Tool Result: [DIR] .git
+[DIR] .venv
+[DIR] archive
+      config.toml
+      current_state.md
+      experiment_log.md
+      goal.md
+      manager_log.md
+      RESEARCH-RESULT-002.md
+      research_journal.md
+[DIR] src]
+
+I will list the contents of the `src` directory to locate the files we need to update.
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      env_report.txt
+      environment.py
+      models.py
+      pre_registration.md
+      test_integration.py
+      train.py]
+
+I will read `src/pre_registration.md` to see its current contents.
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 003
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+Increasing the VICReg covariance regularization weight to 25.0, in conjunction with a 1000-step representation-warmup phase, will prevent representation collapse (reducing the mean absolute cross-dimension correlation $r$ from >0.99 to <0.30). Furthermore, replacing the cumulative error buffer with a rolling sliding-window error buffer of size 500 (cleared post-warmu...]
+
+I will read `current_state.md` to see the current state of the project.
+
+[Tool Call: read_file({'path': 'current_state.md'})]
+
+[Tool Result: # Current Research State
+Phase: Phase 2 Complete (Representation Base Evaluated)
+
+## Goal
+Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 1 goal was to validate passive representation learning (Pillars A, B, C) and GDASR recruitment.
+
+## Confirmed
+- Workspace environment and CPU-only PyTorch execution validated (iter_001.2).
+- 1D Physics Sandbox successfully simulates continuous elastic boundary and inter-object collisions (iter_002....]
+
+I will read `experiment_log.md` to see if there are details about the corrected hypothesis and methods.
+
+[Tool Call: read_file({'path': 'experiment_log.md'})]
+
+[Tool Result: 
+---
+```yaml
+cached_tokens: 815942
+cost_usd: 0.52873
+hypothesis: 'phase-2: evaluate representation base and identify triggers for GDASR
+  failure and representation collapse'
+input_tokens: 1117195
+iter: 2
+metrics:
+  b1_large_mean_abs_corr: 0.89865
+  b1_large_mean_test_sim_loss: 0.07697
+  b1_mean_abs_corr: 0.9996
+  b1_mean_test_sim_loss: 0.06662
+  dynamic_mean_abs_corr: 0.9996
+  dynamic_mean_test_sim_loss: 0.06662
+  dynamic_recruitment_rate: 0.0
+  representation_collapse_rate: 1.0
+output_tokens: ...]
+
+I will read `manager_log.md` to find instructions or context about the corrected hypothesis.
+
+[Tool Call: read_file({'path': 'manager_log.md'})]
+
+[Tool Result: # Research Manager Log
+
+## Iteration 002 -> Manager [Proposed Research Plan]
+
+**Proposed Hypothesis:**
+A Dynamic Representation Network (Thalamus Phase 1) using Gradient-Driven Active Subspace Recruitment (GDASR) combined with VICReg-style anti-collapse regularization will:
+1. Dynamically recruit new representational dimensions (incrementing active dimension count $d_t$) when transitioned from a low-complexity training environment (2 objects) to a high-complexity evaluation environment (3 object...]
+
+I will read the contents of `src/models.py` to understand the existing implementation of the models.
+
+[Tool Call: read_file({'start_line': 1, 'path': 'src/models.py'})]
+
+[Tool Result: --- lines 1 to 265 of 265 ---
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class Encoder(nn.Module):
+    def __init__(self, d_max=8):
+        """
+        1D CNN mapping input of shape (B, 3, 128) to latent space of shape (B, D_max).
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.conv1 = nn.Conv1d(3, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        se...]
+
+I will update `src/models.py` to implement the requested changes (including importing `collections`, using `deque(maxlen=500)`, adding `reset_error_buffer`, and setting default `cov_weight` to `25.0`).
+
+[Tool Call: write_file({'content': 'import numpy as np\nimport torch\nimport torch.nn as nn\nimport torch.nn.functional as F\nimport collections\n\nclass Encoder(nn.Module):\n    def __init__(self, d_max=8):\n        """\n        1D CNN mapping input of shape (B, 3, 128) to latent space of shape (B, D_max).\n        """\n        super().__init__()\n        self.d_max = d_max\n        self.conv1 = nn.Conv1d(3, 16, kernel_size=5, stride=2, padding=2)\n        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)\n        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)\n        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)\n        self.pool = nn.AdaptiveAvgPool1d(1)\n        self.fc = nn.Linear(128, d_max)\n        \n    def forward(self, x):\n        x = F.relu(self.conv1(x))\n        x = F.relu(self.conv2(x))\n        x = F.relu(self.conv3(x))\n        x = F.relu(self.conv4(x))\n        x = self.pool(x).squeeze(-1)\n        z = self.fc(x)\n        return z\n\nclass Predictor(nn.Module):\n    def __init__(self, d_max=8, h=3):\n        """\n        MLP forecasting latent states z_{t+1} of size (B, D_max)\n        from history of active latent states (B, H * D_max).\n        Inactive dimensions are padded/zeroed out.\n        """\n        super().__init__()\n        self.d_max = d_max\n        self.h = h\n        self.net = nn.Sequential(\n            nn.Linear(h * d_max, 64),\n            nn.ReLU(),\n            nn.Linear(64, 64),\n            nn.ReLU(),\n            nn.Linear(64, d_max)\n        )\n        \n    def forward(self, z_history, d_t):\n        """\n        Args:\n            z_history (Tensor): Shape (B, H, D_max)\n            d_t (int): Current active latent dimension.\n        """\n        # Zero out inactive dimensions (index >= d_t) in-place/out-of-place\n        mask = torch.zeros_like(z_history)\n        mask[:, :, :d_t] = 1.0\n        z_history_active = z_history * mask\n        \n        # Flatten history\n        z_history_flat = z_history_active.reshape(-1, self.h * self.d_max)\n        \n        # Predict\n        z_pred = self.net(z_history_flat)\n        \n        # Zero out inactive dimensions in the output\n        out_mask = torch.zeros_like(z_pred)\n        out_mask[:, :d_t] = 1.0\n        z_pred_active = z_pred * out_mask\n        \n        return z_pred_active\n\nclass FixedJEPA(nn.Module):\n    def __init__(self, d_t=2, d_max=8, h=3):\n        """\n        Fixed Joint Embedding Predictive Architecture with a fixed active dimension d_t.\n        """\n        super().__init__()\n        self.d_t = d_t\n        self.d_max = d_max\n        self.h = h\n        self.encoder = Encoder(d_max=d_max)\n        self.predictor = Predictor(d_max=d_max, h=h)\n        \n    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0):\n        """\n        Args:\n            x_hist (Tensor): shape (B, H, 3, 128)\n            x_target (Tensor): shape (B, 3, 128)\n        """\n        B, H, C, W = x_hist.shape\n        x_hist_flat = x_hist.reshape(B * H, C, W)\n        z_hist_flat = self.encoder(x_hist_flat)\n        z_hist = z_hist_flat.reshape(B, H, self.d_max)\n        \n        z_target = self.encoder(x_target)\n        \n        z_pred = self.predictor(z_hist, self.d_t)\n        \n        # Active dimensions only\n        z_pred_active = z_pred[:, :self.d_t]\n        z_target_active = z_target[:, :self.d_t]\n        \n        # 1. Invariance (similarity) loss\n        sim_loss = F.mse_loss(z_pred_active, z_target_active)\n        \n        # 2. Variance loss\n        def calc_var_loss(x, gamma=1.0, eps=1e-4):\n            mean = x.mean(dim=0)\n            var = torch.mean((x - mean)**2, dim=0)\n            std = torch.sqrt(var + eps)\n            return torch.mean(F.relu(gamma - std))\n            \n        var_loss = 0.5 * (calc_var_loss(z_pred_active) + calc_var_loss(z_target_active))\n        \n        # 3. Covariance loss\n        def calc_cov_loss(x):\n            B, d = x.shape\n            if B <= 1 or d <= 1:\n                return torch.tensor(0.0, device=x.device, dtype=x.dtype)\n            mean = x.mean(dim=0, keepdim=True)\n            x_centered = x - mean\n            cov = (x_centered.T @ x_centered) / (B - 1)\n            diag = torch.diagonal(cov)\n            off_diag = cov - torch.diag(diag)\n            return (off_diag ** 2).sum() / d\n            \n        cov_loss = 0.5 * (calc_cov_loss(z_pred_active) + calc_cov_loss(z_target_active))\n        \n        loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss\n        \n        return {\n            "loss": loss,\n            "sim_loss": sim_loss,\n            "var_loss": var_loss,\n            "cov_loss": cov_loss\n        }, z_pred, z_target\n\nclass DynamicJEPA(nn.Module):\n    def __init__(self, d_max=8, h=3, k=4, cooldown=500, stabilization_period=200):\n        """\n        Dynamic Joint Embedding Predictive Architecture with GDASR (Gradient-Driven Active Subspace Recruitment).\n        """\n        super().__init__()\n        self.d_max = d_max\n        self.h = h\n        self.k = k\n        self.cooldown = cooldown\n        self.stabilization_period = stabilization_period\n        \n        self.encoder = Encoder(d_max=d_max)\n        self.predictor = Predictor(d_max=d_max, h=h)\n        \n        # Dynamic state tracking\n        self.d_t = 2\n        self.steps_since_recruitment = cooldown  # start outside of cooldown\n        self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable N=2\n        self.ema_error = None\n        self.ema_alpha = 0.05\n        \n    def reset_error_buffer(self):\n        self.error_buffer.clear()\n        self.ema_error = None\n\n    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0):\n        """\n        Args:\n            x_hist (Tensor): shape (B, H, 3, 128)\n            x_target (Tensor): shape (B, 3, 128)\n        """\n        B, H, C, W = x_hist.shape\n        x_hist_flat = x_hist.reshape(B * H, C, W)\n        z_hist_flat = self.encoder(x_hist_flat)\n        z_hist = z_hist_flat.reshape(B, H, self.d_max)\n        \n        z_target = self.encoder(x_target)\n        \n        # Apply stabilization stop-gradient logic to history and target representations\n        # During stabilization, detach the first d_t - 1 dimensions.\n        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:\n            z_hist_stable = torch.cat([\n                z_hist[:, :, :self.d_t-1].detach(),\n                z_hist[:, :, self.d_t-1:]\n            ], dim=-1)\n            z_target_stable = torch.cat([\n                z_target[:, :self.d_t-1].detach(),\n                z_target[:, self.d_t-1:]\n            ], dim=-1)\n        else:\n            z_hist_stable = z_hist\n            z_target_stable = z_target\n            \n        z_pred = self.predictor(z_hist_stable, self.d_t)\n        \n        # Apply stabilization stop-gradient logic to predictor output\n        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:\n            z_pred_stable = torch.cat([\n                z_pred[:, :self.d_t-1].detach(),\n                z_pred[:, self.d_t-1:]\n            ], dim=-1)\n        else:\n            z_pred_stable = z_pred\n            \n        # Active dimensions only\n        z_pred_active = z_pred_stable[:, :self.d_t]\n        z_target_active = z_target_stable[:, :self.d_t]\n        \n        # 1. Invariance (similarity) loss\n        sim_loss = F.mse_loss(z_pred_active, z_target_active)\n        \n        # 2. Variance loss\n        def calc_var_loss(x, gamma=1.0, eps=1e-4):\n            mean = x.mean(dim=0)\n            var = torch.mean((x - mean)**2, dim=0)\n            std = torch.sqrt(var + eps)\n            return torch.mean(F.relu(gamma - std))\n            \n        var_loss = 0.5 * (calc_var_loss(z_pred_active) + calc_var_loss(z_target_active))\n        \n        # 3. Covariance loss\n        def calc_cov_loss(x):\n            B, d = x.shape\n            if B <= 1 or d <= 1:\n                return torch.tensor(0.0, device=x.device, dtype=x.dtype)\n            mean = x.mean(dim=0, keepdim=True)\n            x_centered = x - mean\n            cov = (x_centered.T @ x_centered) / (B - 1)\n            diag = torch.diagonal(cov)\n            off_diag = cov - torch.diag(diag)\n            return (off_diag ** 2).sum() / d\n            \n        cov_loss = 0.5 * (calc_cov_loss(z_pred_active) + calc_cov_loss(z_target_active))\n        \n        loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss\n        \n        return {\n            "loss": loss,\n            "sim_loss": sim_loss,\n            "var_loss": var_loss,\n            "cov_loss": cov_loss\n        }, z_pred, z_target\n\n    def update_recruitment_logic(self, error_val):\n        """\n        Updates EMA of prediction error and checks recruitment criteria.\n        Args:\n            error_val (float): Current prediction error (sim_loss.item())\n        """\n        # 1. Update EMA\n        if self.ema_error is None:\n            self.ema_error = error_val\n        else:\n            self.ema_error = self.ema_alpha * error_val + (1.0 - self.ema_alpha) * self.ema_error\n            \n        # 2. Increment steps\n        self.steps_since_recruitment += 1\n        \n        # 3. Buffer stable 2-object errors\n        if self.d_t == 2:\n            self.error_buffer.append(self.ema_error)\n            \n        # 4. Check recruitment condition\n        if self.d_t == 2 and self.steps_since_recruitment > self.cooldown:\n            if len(self.error_buffer) >= 200:\n                mean = np.mean(self.error_buffer)\n                std = np.std(self.error_buffer)\n                if self.ema_error > mean + self.k * std:\n                    # Recruit new dimension\n                    self.d_t = 3\n                    self.steps_since_recruitment = 0\n                    print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")\n', 'path': 'src/models.py'})]
+
+[Tool Result: Successfully wrote to src/models.py]
+
+I will read the contents of `src/train.py` to examine the current training process.
+
+[Tool Call: read_file({'path': 'src/train.py', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 512 of 512 ---
+import os
+import sys
+import csv
+import time
+import random
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Ensure src directory is in the path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import FixedJEPA, DynamicJEPA
+
+# Replay Buffer s...]
+
+I will run a search to find any other instances of `archive/iter_002` in the codebase.
+
+[Tool Call: grep_search({'pattern': 'archive/iter_002'})]
+
+[Tool Result: src\train.py:186: os.makedirs("archive/iter_002/runs", exist_ok=True)
+src\train.py:187: csv_path = f"archive/iter_002/runs/{model_type}_seed{seed}.csv"
+src\train.py:371: os.makedirs("archive/iter_002/results", exist_ok=True)
+src\train.py:372: pd.DataFrame(summary_data).to_csv("archive/iter_002/results/summary.csv", index=False)
+src\train.py:373: print("Summary saved to archive/iter_002/results/summary.csv")
+src\train.py:507: plt.savefig("archive/iter_002/results/learning_curves.png", dpi=200)
+sr...]
+
+I will read lines 100 to 220 of `src/train.py` to get the exact lines around the training loop and saving logic.
+
+[Tool Call: read_file({'path': 'src/train.py', 'start_line': 100, 'end_line': 220})]
+
+[Tool Result: --- lines 100 to 220 of 512 ---
+    prefill_buffer(env, replay_buffer, history, num_transitions=100)
+    
+    logs = []
+    recruitment_step = None
+    
+    # Training loop: 5000 steps total
+    for step in range(1, 5001):
+        if step == 1501:
+            # Transition to PhysicsSandbox(N=3)
+            print(f"[Step {step}] Transitioning to PhysicsSandbox(N=3)...")
+            env = PhysicsSandbox(N=3, seed=seed)
+            obs = env.reset()
+            history.clear()
+            history.a...]
+
+I will read lines 221 to 512 of `src/train.py` to examine the rest of the file.
+
+[Tool Call: read_file({'start_line': 221, 'path': 'src/train.py', 'end_line': 512})]
+
+[Tool Result: --- lines 221 to 512 of 512 ---
+    z_target_eval_np = z_target_eval.detach().cpu().numpy()
+    final_active_dims = model.d_t
+    
+    # Compute stds for active dimensions
+    eval_active_stds = np.std(z_target_eval_np[:, :final_active_dims], axis=0, ddof=0).tolist()
+    
+    # Compute mean absolute correlation and cross-correlation matrix
+    if final_active_dims > 1:
+        corr_matrix = np.corrcoef(z_target_eval_np[:, :final_active_dims], rowvar=False)
+        corr_matrix = np.atleast_2d(cor...]
+
+I will write the complete updated version of `src/train.py` containing the 1000-step representation-warmup logic, `cov_weight=25.0` parameters, output path updates, and transition safety logic.
+
+[Tool Call: write_file({'path': 'src/train.py', 'content': 'import os\nimport sys\nimport csv\nimport time\nimport random\nimport collections\nimport numpy as np\nimport torch\nimport torch.nn as nn\nimport torch.nn.functional as F\nimport torch.optim as optim\nimport matplotlib.pyplot as plt\nimport pandas as pd\n\n# Ensure src directory is in the path\nsys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))\n\nfrom src.environment import PhysicsSandbox\nfrom src.models import FixedJEPA, DynamicJEPA\n\n# Replay Buffer storing (x_hist, x_target)\nclass ReplayBuffer:\n    def __init__(self, capacity=2000):\n        self.capacity = capacity\n        self.buffer = []\n        self.position = 0\n\n    def push(self, x_hist, x_target):\n        if len(self.buffer) < self.capacity:\n            self.buffer.append(None)\n        self.buffer[self.position] = (x_hist, x_target)\n        self.position = (self.position + 1) % self.capacity\n\n    def sample(self, batch_size):\n        batch = random.sample(self.buffer, batch_size)\n        x_hist_batch, x_target_batch = zip(*batch)\n        return np.stack(x_hist_batch, axis=0), np.stack(x_target_batch, axis=0)\n\n    def clear(self):\n        self.buffer = []\n        self.position = 0\n\n    def __len__(self):\n        return len(self.buffer)\n\ndef set_seed(seed):\n    random.seed(seed)\n    np.random.seed(seed)\n    torch.manual_seed(seed)\n    if torch.cuda.is_available():\n        torch.cuda.manual_seed_all(seed)\n    # Ensure deterministic behavior\n    torch.backends.cudnn.deterministic = True\n    torch.backends.cudnn.benchmark = False\n\ndef prefill_buffer(env, replay_buffer, history, num_transitions):\n    # Ensure there\'s at least one frame in history to start stepping\n    if len(history) == 0:\n        obs = env.reset()\n        history.append(obs)\n        \n    while len(replay_buffer) < num_transitions:\n        obs, info = env.step()\n        history.append(obs)\n        if len(history) == 4:\n            x_hist = np.stack(list(history)[:3], axis=0) # shape (3, 3, 128)\n            x_target = history[3] # shape (3, 128)\n            replay_buffer.push(x_hist, x_target)\n\ndef run_experiment(model_type, seed, device):\n    print(f"\\n" + "="*60)\n    print(f"RUNNING EXPERIMENT: Model = {model_type:<10} | Seed = {seed}")\n    print("="*60)\n    \n    set_seed(seed)\n    \n    # Initialize Model\n    if model_type == \'b1\':\n        model = FixedJEPA(d_t=2, d_max=8, h=3)\n    elif model_type == \'b1_large\':\n        model = FixedJEPA(d_t=3, d_max=8, h=3)\n    elif model_type == \'dynamic\':\n        model = DynamicJEPA(d_max=8, h=3, k=4, cooldown=500, stabilization_period=200)\n    else:\n        raise ValueError(f"Unknown model type: {model_type}")\n        \n    model = model.to(device)\n    optimizer = optim.Adam(model.parameters(), lr=1e-3)\n    \n    # Training Environment (starts with N=2)\n    env = PhysicsSandbox(N=2, seed=seed)\n    obs = env.reset()\n    \n    history = collections.deque(maxlen=4)\n    history.append(obs)\n    \n    replay_buffer = ReplayBuffer(capacity=2000)\n    \n    # Pre-fill replay buffer before training loop starts to ensure immediate training\n    prefill_buffer(env, replay_buffer, history, num_transitions=100)\n    \n    logs = []\n    recruitment_step = None\n    \n    # Training loop: 5000 steps total\n    for step in range(1, 5001):\n        if step == 1501:\n            # Transition to PhysicsSandbox(N=3)\n            print(f"[Step {step}] Transitioning to PhysicsSandbox(N=3)...")\n            env = PhysicsSandbox(N=3, seed=seed)\n            obs = env.reset()\n            history.clear()\n            history.append(obs)\n            replay_buffer.clear()\n            \n            # Pre-fill buffer with N=3 transitions before starting training again\n            prefill_buffer(env, replay_buffer, history, num_transitions=100)\n            \n        # Environment interaction\n        obs, info = env.step()\n        history.append(obs)\n        if len(history) == 4:\n            x_hist = np.stack(list(history)[:3], axis=0)\n            x_target = history[3]\n            replay_buffer.push(x_hist, x_target)\n            \n        # Draw a batch from the replay buffer\n        batch_x_hist_np, batch_x_target_np = replay_buffer.sample(32)\n        batch_x_hist = torch.tensor(batch_x_hist_np, dtype=torch.float32).to(device)\n        batch_x_target = torch.tensor(batch_x_target_np, dtype=torch.float32).to(device)\n        \n        # Training step\n        model.train()\n        optimizer.zero_grad()\n        loss_dict, z_pred, z_target = model(batch_x_hist, batch_x_target, cov_weight=25.0)\n        loss = loss_dict["loss"]\n        loss.backward()\n        optimizer.step()\n        \n        sim_loss_val = loss_dict["sim_loss"].item()\n        \n        # If \'dynamic\', update GDASR recruitment logic with 1000-step representation-warmup\n        if model_type == \'dynamic\':\n            if step == 1001:\n                model.reset_error_buffer()\n            if step > 1000:\n                model.update_recruitment_logic(sim_loss_val)\n                \n            if model.d_t == 3 and recruitment_step is None:\n                recruitment_step = step\n                print(f" >>> [GDASR] Seed {seed} recruited 3rd dimension at Step {step}! <<<")\n                \n        # Calculate diagnostics on the training batch\n        active_dims = model.d_t\n        z_target_np = z_target.detach().cpu().numpy()\n        stds = np.std(z_target_np, axis=0, ddof=0)\n        if len(stds) < 8:\n            stds = np.pad(stds, (0, 8 - len(stds)), \'constant\', constant_values=0.0)\n            \n        # Correlation of active dimensions\n        z_active = z_target_np[:, :active_dims]\n        if active_dims > 1:\n            corr_matrix = np.corrcoef(z_active, rowvar=False)\n            corr_matrix = np.atleast_2d(corr_matrix)\n            triu_indices = np.triu_indices(active_dims, k=1)\n            abs_corrs = np.abs(corr_matrix[triu_indices])\n            mean_abs_corr = np.mean(abs_corrs) if len(abs_corrs) > 0 else 0.0\n        else:\n            mean_abs_corr = 0.0\n            \n        # Store log\n        step_log = {\n            "step": step,\n            "loss": loss.item(),\n            "sim_loss": sim_loss_val,\n            "var_loss": loss_dict["var_loss"].item(),\n            "cov_loss": loss_dict["cov_loss"].item(),\n            "active_dims": active_dims,\n            "mean_abs_corr": mean_abs_corr\n        }\n        for i in range(8):\n            step_log[f"std_dim{i}"] = stds[i]\n            \n        logs.append(step_log)\n        \n        if step % 500 == 0:\n            print(f"Step {step:4d}/5000 | Loss: {loss.item():.4f} | Sim Loss: {sim_loss_val:.4f} | Active Dims: {active_dims} | Mean Abs Corr: {mean_abs_corr:.4f}")\n            \n    # Save step-by-step logs for each step\n    os.makedirs("archive/iter_003/runs", exist_ok=True)\n    csv_path = f"archive/iter_003/runs/{model_type}_seed{seed}.csv"\n    headers = ["step", "loss", "sim_loss", "var_loss", "cov_loss", "active_dims"] + [f"std_dim{i}" for i in range(8)] + ["mean_abs_corr"]\n    with open(csv_path, "w", newline="") as f:\n        writer = csv.DictWriter(f, fieldnames=headers)\n        writer.writeheader()\n        for log in logs:\n            writer.writerow(log)\n            \n    # Evaluation at the end of training on N=3 (seed+10000)\n    print(f"Evaluating model on separate test environment (seed={seed+10000})...")\n    test_env = PhysicsSandbox(N=3, seed=seed+10000)\n    test_obs = test_env.reset(seed=seed+10000)\n    test_history = collections.deque(maxlen=4)\n    test_history.append(test_obs)\n    \n    test_x_hist_list = []\n    test_x_target_list = []\n    while len(test_x_hist_list) < 100:\n        obs_t, info_t = test_env.step()\n        test_history.append(obs_t)\n        if len(test_history) == 4:\n            x_hist_t = np.stack(list(test_history)[:3], axis=0)\n            x_target_t = test_history[3]\n            test_x_hist_list.append(x_hist_t)\n            test_x_target_list.append(x_target_t)\n            \n    test_x_hist = torch.tensor(np.stack(test_x_hist_list, axis=0), dtype=torch.float32).to(device)\n    test_x_target = torch.tensor(np.stack(test_x_target_list, axis=0), dtype=torch.float32).to(device)\n    \n    model.eval()\n    with torch.no_grad():\n        test_loss_dict, z_pred_eval, z_target_eval = model(test_x_hist, test_x_target, cov_weight=25.0)\n        \n    final_test_sim_loss = test_loss_dict["sim_loss"].item()\n    z_target_eval_np = z_target_eval.detach().cpu().numpy()\n    final_active_dims = model.d_t\n    \n    # Compute stds for active dimensions\n    eval_active_stds = np.std(z_target_eval_np[:, :final_active_dims], axis=0, ddof=0).tolist()\n    \n    # Compute mean absolute correlation and cross-correlation matrix\n    if final_active_dims > 1:\n        corr_matrix = np.corrcoef(z_target_eval_np[:, :final_active_dims], rowvar=False)\n        corr_matrix = np.atleast_2d(corr_matrix)\n        triu_indices = np.triu_indices(final_active_dims, k=1)\n        abs_corrs = np.abs(corr_matrix[triu_indices])\n        final_mean_abs_corr = np.mean(abs_corrs) if len(abs_corrs) > 0 else 0.0\n    else:\n        corr_matrix = np.ones((final_active_dims, final_active_dims))\n        final_mean_abs_corr = 0.0\n        \n    r_0_2 = None\n    r_1_2 = None\n    if model_type == \'dynamic\' and final_active_dims >= 3:\n        r_0_2 = corr_matrix[0, 2]\n        r_1_2 = corr_matrix[1, 2]\n        \n    print(f"Evaluation Results | Test Sim Loss: {final_test_sim_loss:.4f} | Final Active Dims: {final_active_dims}")\n    print(f"Active Stds: {eval_active_stds} | Mean Abs Corr: {final_mean_abs_corr:.4f}")\n    if r_0_2 is not None:\n        print(f"Orthogonality: r_0_2 = {r_0_2:.4f}, r_1_2 = {r_1_2:.4f}")\n        \n    return {\n        "model_type": model_type,\n        "seed": seed,\n        "final_test_sim_loss": final_test_sim_loss,\n        "recruitment_step": recruitment_step if recruitment_step is not None else np.nan,\n        "active_dims": final_active_dims,\n        "active_stds": eval_active_stds,\n        "mean_abs_corr": final_mean_abs_corr,\n        "r_0_2": r_0_2 if r_0_2 is not None else np.nan,\n        "r_1_2": r_1_2 if r_1_2 is not None else np.nan,\n        "logs": logs\n    }\n\ndef main():\n    device = torch.device(\'cuda\' if torch.cuda.is_available() else \'cpu\')\n    print(f"Using device: {device}")\n    \n    seeds = [42, 123, 456, 789, 999]\n    model_types = [\'b1\', \'b1_large\', \'dynamic\']\n    \n    all_results = []\n    all_run_logs = {model_type: [] for model_type in model_types}\n    \n    start_time = time.time()\n    \n    # Run the 15 experiments\n    for model_type in model_types:\n        for seed in seeds:\n            res = run_experiment(model_type, seed, device)\n            all_results.append(res)\n            all_run_logs[model_type].append(res["logs"])\n            \n    total_duration = time.time() - start_time\n    print(f"\\nTraining of all 15 models completed in {total_duration/60:.2f} minutes.")\n    \n    # Aggregation and Analysis\n    df_results = pd.DataFrame(all_results)\n    \n    summary_data = []\n    \n    print("\\n" + "="*80)\n    print("AGGREGATED RESULTS ACROSS SEEDS (Mean ± Std)")\n    print("="*80)\n    \n    for model_type in model_types:\n        sub_df = df_results[df_results["model_type"] == model_type]\n        \n        # Test Sim Loss\n        mean_loss = sub_df["final_test_sim_loss"].mean()\n        std_loss = sub_df["final_test_sim_loss"].std()\n        \n        # Recruitment Step\n        valid_recruits = sub_df["recruitment_step"].dropna()\n        if len(valid_recruits) > 0:\n            mean_rec_step = valid_recruits.mean()\n            std_rec_step = valid_recruits.std()\n            rec_step_str = f"{mean_rec_step:.1f} ± {std_rec_step:.1f}"\n        else:\n            mean_rec_step, std_rec_step = np.nan, np.nan\n            rec_step_str = "N/A"\n            \n        # Mean Absolute Correlation\n        mean_mac = sub_df["mean_abs_corr"].mean()\n        std_mac = sub_df["mean_abs_corr"].std()\n        \n        # Orthogonality r_0_2\n        valid_r02 = sub_df["r_0_2"].dropna()\n        if len(valid_r02) > 0:\n            mean_r02 = valid_r02.mean()\n            std_r02 = valid_r02.std()\n            r02_str = f"{mean_r02:.4f} ± {std_r02:.4f}"\n        else:\n            mean_r02, std_r02 = np.nan, np.nan\n            r02_str = "N/A"\n            \n        # Orthogonality r_1_2\n        valid_r12 = sub_df["r_1_2"].dropna()\n        if len(valid_r12) > 0:\n            mean_r12 = valid_r12.mean()\n            std_r12 = valid_r12.std()\n            r12_str = f"{mean_r12:.4f} ± {std_r12:.4f}"\n        else:\n            mean_r12, std_r12 = np.nan, np.nan\n            r12_str = "N/A"\n            \n        # Representation collapse checking\n        collapse_count = 0\n        for idx, row in sub_df.iterrows():\n            stds = row["active_stds"]\n            mac = row["mean_abs_corr"]\n            # Collapse if any active std <= 0.1 or mean absolute corr >= 0.3\n            has_collapsed = any(s <= 0.1 for s in stds) or mac >= 0.3\n            if has_collapsed:\n                collapse_count += 1\n                \n        collapse_rate = collapse_count / len(sub_df)\n        \n        print(f"Model: {model_type:<10}")\n        print(f"  Final Test Sim Loss       : {mean_loss:.5f} ± {std_loss:.5f}")\n        print(f"  Recruitment Step          : {rec_step_str}")\n        print(f"  Mean Abs Correlation     : {mean_mac:.5f} ± {std_mac:.5f}")\n        print(f"  Orthogonality r_0_2       : {r02_str}")\n        print(f"  Orthogonality r_1_2       : {r12_str}")\n        print(f"  Representation Collapse   : {collapse_count}/{len(sub_df)} runs ({collapse_rate*100:.1f}%)")\n        print("-" * 50)\n        \n        summary_data.append({\n            "model_type": model_type,\n            "mean_test_sim_loss": mean_loss,\n            "std_test_sim_loss": std_loss,\n            "mean_recruitment_step": mean_rec_step,\n            "std_recruitment_step": std_rec_step,\n            "mean_abs_corr": mean_mac,\n            "std_abs_corr": std_mac,\n            "mean_r_0_2": mean_r02,\n            "std_r_0_2": std_r02,\n            "mean_r_1_2": mean_r12,\n            "std_r_1_2": std_r12,\n            "collapse_rate": collapse_rate,\n        })\n        \n    # Save summary.csv\n    os.makedirs("archive/iter_003/results", exist_ok=True)\n    pd.DataFrame(summary_data).to_csv("archive/iter_003/results/summary.csv", index=False)\n    print("Summary saved to archive/iter_003/results/summary.csv")\n    \n    # ----------------------------------------------------\n    # Preregistered Falsification Criteria Checklist\n    # ----------------------------------------------------\n    print("\\n" + "="*80)\n    print("PREREGISTERED FALSIFICATION CRITERIA CHECKLIST")\n    print("="*80)\n    \n    dynamic_df = df_results[df_results["model_type"] == \'dynamic\']\n    b1_df = df_results[df_results["model_type"] == \'b1\']\n    \n    # Criterion 1: Did \'dynamic\' always recruit a 3rd dimension (d_t=3) within 3500 steps of N=3?\n    # Exposure of N=3 starts at step 1500, training ends at step 5000. So recruitment step must be within [1501, 5000]\n    recruited_count = dynamic_df["recruitment_step"].notna().sum()\n    all_recruited = recruited_count == len(seeds)\n    c1_passed = all_recruited\n    c1_status = "SUPPORTED" if c1_passed else "FALSIFIED"\n    print(f"Criterion 1: Always recruit 3rd dimension (d_t=3) within 3500 steps of N=3?")\n    print(f"  - Status: {c1_status}")\n    print(f"  - Detail: Dynamic model recruited in {recruited_count}/{len(seeds)} runs.")\n    if recruited_count > 0:\n        steps_list = dynamic_df["recruitment_step"].dropna().tolist()\n        print(f"  - Recruitment steps: {steps_list}")\n        \n    # Criterion 2: Is the final N=3 prediction error of \'dynamic\' at least 30% lower than \'b1\'?\n    mean_loss_dyn = dynamic_df["final_test_sim_loss"].mean()\n    mean_loss_b1 = b1_df["final_test_sim_loss"].mean()\n    pct_improvement = (mean_loss_b1 - mean_loss_dyn) / mean_loss_b1 * 100\n    c2_passed = pct_improvement >= 30.0\n    c2_status = "SUPPORTED" if c2_passed else "FALSIFIED"\n    print(f"Criterion 2: Is the final N=3 prediction error of \'dynamic\' at least 30% lower than \'b1\'?")\n    print(f"  - Status: {c2_status}")\n    print(f"  - Detail: \'b1\' Loss = {mean_loss_b1:.5f}, \'dynamic\' Loss = {mean_loss_dyn:.5f} ({pct_improvement:.1f}% lower)")\n    \n    # Criterion 3: Did representation collapse occur (any active dim std <= 0.1 or mean absolute corr >= 0.3)?\n    # We check if *any* active dimension standard deviation in the evaluation batch is <= 0.1\n    # or if the average absolute correlation between active dimensions is >= 0.3.\n    # We\'ll check this for \'dynamic\' first, and also generally.\n    dyn_collapsed_count = 0\n    for idx, row in dynamic_df.iterrows():\n        stds = row["active_stds"]\n        mac = row["mean_abs_corr"]\n        if any(s <= 0.1 for s in stds) or mac >= 0.3:\n            dyn_collapsed_count += 1\n            \n    c3_passed = dyn_collapsed_count == 0\n    c3_status = "SUPPORTED" if c3_passed else "FALSIFIED"\n    print(f"Criterion 3: No representation collapse (any active dim std <= 0.1 or mean absolute corr >= 0.3)?")\n    print(f"  - Status: {c3_status}")\n    print(f"  - Detail: Dynamic model collapsed in {dyn_collapsed_count}/{len(seeds)} runs.")\n    for idx, row in dynamic_df.iterrows():\n        print(f"    * Seed {row[\'seed\']}: active stds = {[round(s, 3) for s in row[\'active_stds\']]}, mean abs corr = {row[\'mean_abs_corr\']:.4f}")\n        \n    # Overall Hypothesis Status\n    overall_supported = c1_passed and c2_passed and c3_passed\n    print("\\n" + "="*80)\n    print(f"OVERALL HYPOTHESIS STATUS: " + ("SUPPORTED" if overall_supported else "FALSIFIED"))\n    print("="*80)\n    \n    # ----------------------------------------------------\n    # Plotting Learning Curves\n    # ----------------------------------------------------\n    print("\\nGenerating learning curve plots...")\n    \n    # Helper for smoothing\n    def smooth_curve(y, box_pts=50):\n        return pd.Series(y).rolling(window=box_pts, min_periods=1).mean().values\n        \n    fig, axes = plt.subplots(2, 1, figsize=(11, 10), sharex=True)\n    \n    colors = {\n        \'b1\': \'#1f77b4\',       # Muted blue\n        \'b1_large\': \'#2ca02c\', # Muted green\n        \'dynamic\': \'#ff7f0e\'   # Muted orange\n    }\n    \n    labels = {\n        \'b1\': \'Baseline B1 (Fixed $d_t=2$)\',\n        \'b1_large\': \'Baseline B1 Large (Fixed $d_t=3$)\',\n        \'dynamic\': \'Thalamus Dynamic (GDASR)\'\n    }\n    \n    steps = np.arange(1, 5001)\n    \n    # Panel 1: Prediction Error (sim_loss)\n    for model_type in model_types:\n        sim_losses = np.array([[log[\'sim_loss\'] for log in run] for run in all_run_logs[model_type]])\n        mean_loss = np.mean(sim_losses, axis=0)\n        std_loss = np.std(sim_losses, axis=0)\n        \n        # Smooth both mean and std\n        mean_loss_smooth = smooth_curve(mean_loss, box_pts=50)\n        std_loss_smooth = smooth_curve(std_loss, box_pts=50)\n        \n        axes[0].plot(steps, mean_loss_smooth, color=colors[model_type], label=labels[model_type], linewidth=2.0)\n        axes[0].fill_between(\n            steps, \n            np.maximum(mean_loss_smooth - std_loss_smooth, 0), \n            mean_loss_smooth + std_loss_smooth, \n            color=colors[model_type], \n            alpha=0.15\n        )\n        \n    axes[0].axvline(x=1500, color=\'#d62728\', linestyle=\'--\', linewidth=1.5, label=\'Transition to N=3 Objects\')\n    axes[0].set_ylabel(\'Prediction Error ($sim\\_loss$)\', fontsize=12)\n    axes[0].set_title(\'A. Temporal Prediction Error over Training Steps\', fontsize=14, fontweight=\'bold\', loc=\'left\')\n    axes[0].legend(fontsize=10, loc=\'upper right\')\n    axes[0].grid(True, linestyle=\':\', alpha=0.6)\n    \n    # Panel 2: Active Dimensions (d_t)\n    for model_type in model_types:\n        active_dims = np.array([[log[\'active_dims\'] for log in run] for run in all_run_logs[model_type]])\n        mean_active = np.mean(active_dims, axis=0)\n        std_active = np.std(active_dims, axis=0)\n        \n        axes[1].plot(steps, mean_active, color=colors[model_type], label=labels[model_type], linewidth=2.0)\n        if np.max(std_active) > 0.0:\n            axes[1].fill_between(\n                steps, \n                mean_active - std_active, \n                mean_active + std_active, \n                color=colors[model_type], \n                alpha=0.15\n            )\n            \n    axes[1].axvline(x=1500, color=\'#d62728\', linestyle=\'--\', linewidth=1.5, label=\'Transition to N=3 Objects\')\n    axes[1].set_xlabel(\'Training Steps\', fontsize=12)\n    axes[1].set_ylabel(\'Active Latent Dimensions ($d_t$)\', fontsize=12)\n    axes[1].set_title(\'B. Active Latent Space Size ($d_t$) over Training Steps\', fontsize=14, fontweight=\'bold\', loc=\'left\')\n    axes[1].legend(fontsize=10, loc=\'lower right\')\n    axes[1].grid(True, linestyle=\':\', alpha=0.6)\n    \n    plt.tight_layout()\n    plt.savefig("archive/iter_003/results/learning_curves.png", dpi=200)\n    plt.close()\n    print("Learning curve plot generated and saved to: archive/iter_003/results/learning_curves.png")\n\nif __name__ == "__main__":\n    main()'})]
+
+[Tool Result: Successfully wrote to src/train.py]
+
+I will write the updated pre-registration file `src/pre_registration.md` incorporating the corrected hypothesis, falsification criteria, and methods.
+
+[Tool Call: write_file({'content': '# RDF Scientific Pre-Registration\n\n*   **Iteration:** 003\n*   **Pre-Registration File:** src/pre_registration.md\n\n## 1. Hypothesis\nIncreasing the VICReg covariance regularization weight to 25.0, in conjunction with a 1000-step representation-warmup phase across all models, will prevent representation collapse (reducing the mean absolute cross-dimension correlation $r$ from >0.99 to <0.30). Furthermore, replacing the cumulative error buffer with a rolling sliding-window error buffer of size 500 (cleared only post-warmup at step 1000, with no Oracle reset during environmental transitions) will enable sensitive and reliable recruitment of a new dimension (recruitment rate >80%) when transitioning from 2 to 3 objects in the 1D physics sandbox, without increasing the temporal prediction simulation loss compared to the baseline B1.\n\n## 2. Falsification Criterion\nThe hypothesis will be falsified if any of the following occur:\n1. The mean absolute correlation ($r$) between representation dimensions is >= 0.30 at the end of training.\n2. The dynamic recruitment rate for the GDASR model upon the N=3 object transition is <= 80%.\n3. The final temporal prediction simulation loss of the recruiting DynamicJEPA model is > 0.080 (or more than 10% worse than the non-recruiting B1 baseline of 0.06662).\n\n## 3. Proposed Method\n1. Modify the training and model configuration files (e.g., in `src/`) to increase `cov_weight` from 1.0 to 25.0 in the VICReg loss calculation for all models.\n2. Implement a representation-warmup phase of 1000 steps during which gradient updates are performed normally but dimension recruitment is disabled across all models.\n3. Replace the cumulative error buffer in the GDASR recruitment module with a rolling sliding-window buffer of size 500.\n4. Programmatically reset/clear this error buffer immediately following the warmup phase (at step 1001), but do NOT programmatically reset or clear the error buffer or change any parameters during the N=2 to N=3 transition at step 1501.\n5. Run the full evaluation suite of 15 experiments (DynamicJEPA, B1, and B1_large across 5 deterministic seeds) on the 1D physics sandbox.\n6. Measure and log: mean absolute correlation between dimensions, recruitment rate upon N=3 transition, and final temporal prediction simulation loss.\n', 'path': 'src/pre_registration.md'})]
+
+[Tool Result: Successfully wrote to src/pre_registration.md]
+
+I will read the contents of `src/test_integration.py` to see what integration tests are defined.
+
+[Tool Call: read_file({'path': 'src/test_integration.py'})]
+
+[Tool Result: import torch
+import torch.optim as optim
+import numpy as np
+import os
+import sys
+
+# Ensure src directory is in path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import Encoder, Predictor, FixedJEPA, DynamicJEPA
+
+def test_physics_sandbox():
+    print("--- Testing PhysicsSandbox ---")
+    for N in [2, 3]:
+        print(f"Testing with N={N}...")
+        env = PhysicsSandbox(N=N, substeps=10, sigma_blur=0....]
+
+I will run the integration tests using the bash tool to verify that our model modifications compile and function correctly.
+
+[Tool Call: bash({'command': 'python src/test_integration.py'})]
+
+[Tool Result: exit_code: 1
+stdout: 
+stderr: Traceback (most recent call last):
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\test_integration.py", line 1, in <module>
+    import torch
+ModuleNotFoundError: No module named 'torch'
+]
+
+I will run the integration tests using the virtual environment's Python executable.
+
+[Tool Call: bash({'command': '.venv\\Scripts\\python src/test_integration.py'})]
+
+[Tool Result: exit_code: 0
+stdout: --- Testing PhysicsSandbox ---
+Testing with N=2...
+Testing with N=3...
+Testing seeding in PhysicsSandbox...
+Seeding in PhysicsSandbox tested successfully!
+PhysicsSandbox tests passed successfully!
+
+--- Testing FixedJEPA and DynamicJEPA Models ---
+Testing FixedJEPA...
+FixedJEPA forward/backward/step completed without errors.
+Testing DynamicJEPA...
+DynamicJEPA forward/backward/step completed without errors.
+
+--- Testing DynamicJEPA Recruitment and Stabilization Lo...]
+
+I will run the full 15-experiment training and evaluation suite using the virtual environment's Python executable. This will train DynamicJEPA, B1, and B1_large models across 5 seeds and save the output CSV logs, summary, and plots to `archive/iter_003/`.
+
+[Tool Call: bash({'command': '.venv\\Scripts\\python src/train.py'})]
+
+[Tool Result: exit_code: timed_out (limit: 300s)
+stdout: Using device: cpu
+
+============================================================
+RUNNING EXPERIMENT: Model = b1         | Seed = 42
+============================================================
+Step  500/5000 | Loss: 4.5081 | Sim Loss: 0.0283 | Active Dims: 2 | Mean Abs Corr: 0.2601
+Step 1000/5000 | Loss: 0.7160 | Sim Loss: 0.0162 | Active Dims: 2 | Mean Abs Corr: 0.0042
+Step 1500/5000 | Loss: 3.9666 | Sim Loss: 0.0279 | Active Dims: 2 | Mean Abs C...]
+
+I will list the files in `archive/iter_003/results/` to confirm that the training run output the summary CSV and learning curves plot successfully.
+
+[Tool Call: list_dir({'path': 'archive/iter_003/results'})]
+
+[Tool Result:       learning_curves.png
+      summary.csv]
+
+I will check the files in `archive/iter_003/runs/` to verify that all seed-specific logs were written properly.
+
+[Tool Call: list_dir({'path': 'archive/iter_003/runs'})]
+
+[Tool Result:       b1_large_seed123.csv
+      b1_large_seed42.csv
+      b1_large_seed456.csv
+      b1_large_seed789.csv
+      b1_large_seed999.csv
+      b1_seed123.csv
+      b1_seed42.csv
+      b1_seed456.csv
+      b1_seed789.csv
+      b1_seed999.csv
+      dynamic_seed123.csv
+      dynamic_seed42.csv
+      dynamic_seed456.csv
+      dynamic_seed789.csv
+      dynamic_seed999.csv]
+
+
+[NUDGE RESPONSE]
+I will read the generated `summary.csv` file to extract the exact metric values for the report.

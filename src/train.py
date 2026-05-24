@@ -132,16 +132,20 @@ def run_experiment(model_type, seed, device):
         # Training step
         model.train()
         optimizer.zero_grad()
-        loss_dict, z_pred, z_target = model(batch_x_hist, batch_x_target)
+        loss_dict, z_pred, z_target = model(batch_x_hist, batch_x_target, cov_weight=25.0)
         loss = loss_dict["loss"]
         loss.backward()
         optimizer.step()
         
         sim_loss_val = loss_dict["sim_loss"].item()
         
-        # If 'dynamic', update GDASR recruitment logic
+        # If 'dynamic', update GDASR recruitment logic with 1000-step representation-warmup
         if model_type == 'dynamic':
-            model.update_recruitment_logic(sim_loss_val)
+            if step == 1001:
+                model.reset_error_buffer()
+            if step > 1000:
+                model.update_recruitment_logic(sim_loss_val)
+                
             if model.d_t == 3 and recruitment_step is None:
                 recruitment_step = step
                 print(f" >>> [GDASR] Seed {seed} recruited 3rd dimension at Step {step}! <<<")
@@ -183,8 +187,8 @@ def run_experiment(model_type, seed, device):
             print(f"Step {step:4d}/5000 | Loss: {loss.item():.4f} | Sim Loss: {sim_loss_val:.4f} | Active Dims: {active_dims} | Mean Abs Corr: {mean_abs_corr:.4f}")
             
     # Save step-by-step logs for each step
-    os.makedirs("archive/iter_002/runs", exist_ok=True)
-    csv_path = f"archive/iter_002/runs/{model_type}_seed{seed}.csv"
+    os.makedirs("archive/iter_003/runs", exist_ok=True)
+    csv_path = f"archive/iter_003/runs/{model_type}_seed{seed}.csv"
     headers = ["step", "loss", "sim_loss", "var_loss", "cov_loss", "active_dims"] + [f"std_dim{i}" for i in range(8)] + ["mean_abs_corr"]
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
@@ -215,7 +219,7 @@ def run_experiment(model_type, seed, device):
     
     model.eval()
     with torch.no_grad():
-        test_loss_dict, z_pred_eval, z_target_eval = model(test_x_hist, test_x_target)
+        test_loss_dict, z_pred_eval, z_target_eval = model(test_x_hist, test_x_target, cov_weight=25.0)
         
     final_test_sim_loss = test_loss_dict["sim_loss"].item()
     z_target_eval_np = z_target_eval.detach().cpu().numpy()
@@ -368,9 +372,9 @@ def main():
         })
         
     # Save summary.csv
-    os.makedirs("archive/iter_002/results", exist_ok=True)
-    pd.DataFrame(summary_data).to_csv("archive/iter_002/results/summary.csv", index=False)
-    print("Summary saved to archive/iter_002/results/summary.csv")
+    os.makedirs("archive/iter_003/results", exist_ok=True)
+    pd.DataFrame(summary_data).to_csv("archive/iter_003/results/summary.csv", index=False)
+    print("Summary saved to archive/iter_003/results/summary.csv")
     
     # ----------------------------------------------------
     # Preregistered Falsification Criteria Checklist
@@ -504,9 +508,9 @@ def main():
     axes[1].grid(True, linestyle=':', alpha=0.6)
     
     plt.tight_layout()
-    plt.savefig("archive/iter_002/results/learning_curves.png", dpi=200)
+    plt.savefig("archive/iter_003/results/learning_curves.png", dpi=200)
     plt.close()
-    print("Learning curve plot generated and saved to: archive/iter_002/results/learning_curves.png")
+    print("Learning curve plot generated and saved to: archive/iter_003/results/learning_curves.png")
 
 if __name__ == "__main__":
     main()

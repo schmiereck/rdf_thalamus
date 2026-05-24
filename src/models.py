@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import collections
 
 class Encoder(nn.Module):
     def __init__(self, d_max=8):
@@ -80,7 +81,7 @@ class FixedJEPA(nn.Module):
         self.encoder = Encoder(d_max=d_max)
         self.predictor = Predictor(d_max=d_max, h=h)
         
-    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=1.0):
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0):
         """
         Args:
             x_hist (Tensor): shape (B, H, 3, 128)
@@ -152,11 +153,15 @@ class DynamicJEPA(nn.Module):
         # Dynamic state tracking
         self.d_t = 2
         self.steps_since_recruitment = cooldown  # start outside of cooldown
-        self.error_buffer = []  # collects EMA of error during stable N=2
+        self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable N=2
         self.ema_error = None
         self.ema_alpha = 0.05
         
-    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=1.0):
+    def reset_error_buffer(self):
+        self.error_buffer.clear()
+        self.ema_error = None
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0):
         """
         Args:
             x_hist (Tensor): shape (B, H, 3, 128)
