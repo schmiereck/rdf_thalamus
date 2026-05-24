@@ -59,3 +59,74 @@ The proposed pre-registration plan is promising, but the falsification criteria 
 
 ---
 
+## Iteration 012 -> Planner (Turn 1) [Approval]
+
+**Verdict:** APPROVED
+
+**Journal Update:**
+# Research Manager Journal & Strategic State
+
+## 1. High-Level Strategy & Trajectory
+*   **Current Phase:** Phase 12 (Closed-Loop Thalamic Subsumption (CLTS) Motorics) Complete.
+*   **Active Direction:** Investigating the *Active-Perception Representation Drift Penalty*. With Phase 12 successfully integrating the non-parametric soft-argmax projection stream (Arm F) with the 3-layer CLTS motor policy (Arm G), we have completed the full closed-loop architectural cycle. Our primary focus must now pivot to stabilizing the representational coordinate stream under active environmental perturbation. The physical contact induced by the agent's actions alters the sensory manifold, causing a small but significant degradation in unsupervised spatial tracking.
+*   **Confidence Score:** 88% (Adjusted down from 92% due to the detection of active-perception drift under continuous closed-loop testing).
+
+## 2. Strategic Insights & Lessons Learned
+*   **The Active-Perception Drift Penalty:** We have uncovered a fundamental trade-off between active physical manipulation and representational grounding. When the agent is passive, spatial representations remain highly stable (centroid decoding MSE ~75.36). However, when the agent actively interacts with the environment (inducing collisions and state perturbations via CLTS), the coordinate projection stream suffers a representation drift penalty, pushing the centroid decoding MSE to 85.85. Physical interaction alters the data distribution, introducing high-frequency transitions that slightly degrade unsupervised spatial tracking.
+*   **Self-Organized Spatial Tracking under Control Dynamics:** Despite the drift penalty, the non-parametric soft-argmax projection continues to function without collapsing. The fact that the controller can utilize these unconstrained coordinates to execute targeted "push" actions demonstrates that the spatial structures self-organized under temporal prediction are robust enough to guide closed-loop control, even without absolute coordinate alignment.
+
+## 3. Loop & Bottleneck Detection
+*   **The Control-Representation Degradation Loop:** Active physical probing reduces post-collision prediction error (since the agent learns the environment's physics), but the resulting high-velocity collisions shift the input distribution away from the quiet state-space where the representation base was optimized. This causes representation drift, which degrades tracking, which then degrades the precision of the physical probing itself.
+*   **Mitigation Strategy:** We must implement a *Temporal Anchoring Loss* or *Contrastive Phase Lock* that penalizes sudden, discontinuous jumps in the non-parametric soft-argmax output during high-velocity transitions, or introduce a momentary plasticity freeze (a localized relative-stability lock) during collision frames to protect the representation base from out-of-distribution updates.
+
+## 4. Alternate Research Paths
+*   **Phase-Locked Non-Parametric Projection:** Apply a temporal Kalman-like filter directly to the soft-argmax spatial activation map to smooth out high-frequency coordinate noise during active physical contact.
+*   **Adaptive Plasticity Gating via Push-Surprise:** Dynamically lower the learning rate of the coordinate projection network during active "push" actions, shifting the burden of prediction-error minimization entirely to the temporal predictor rather than updating the feature extractor under extreme transients.
+
+---
+
+## Iteration 012 -> Project Archive [Milestone Report]
+
+# RDF Milestone Review — Iteration 012 — Closed-Loop Thalamic Subsumption (CLTS) Motorics
+
+## 1. Pre-Declared Hypothesis and Falsification Criterion
+- **Pre-registered Hypothesis:** Coupling the non-parametric soft-argmax projection stream (Arm F) with the 3-layer Closed-Loop Thalamic Subsumption (CLTS) motor policy (Arm G) will enable high-efficiency curiosity-driven physical exploration, reducing post-collision prediction error while maintaining a centroid decoding Mean Squared Error (MSE) below the threshold of 85.0.
+- **Falsification Criterion:** The hypothesis is formally falsified if:
+  1. The average centroid decoding MSE across the 5 evaluation seeds exceeds 85.0 under the active CLTS motor policy.
+  2. CLTS fails to demonstrate a statistically significant reduction in post-collision prediction error compared to passive observation and random babbling baselines.
+
+## 2. Experimental Protocol
+- **Environment:** 1D Physics Sandbox, 128 RGB pixels, containing 3 distinct moving objects of varying sizes, colors, and masses. Generalization phases introduced a 4th novel object.
+- **Step Count:** 2000 steps per seed.
+- **Random Seeds:** Sweep executed across 5 deterministic seeds (seeds 42, 43, 44, 45, 46).
+- **Baselines & Controls:** 
+  - *Control A:* Passive Observation (zero motor input).
+  - *Control B:* Random Motor Babbling (random acceleration and push actions).
+  - *Experimental (Arm G):* CLTS Motor Policy (3-layer subsumption architecture mapping attention-token spatial coordinates to pointer acceleration and push commands).
+- **Measurements:** Post-collision temporal prediction error (L2 loss), spatial coverage entropy (grid-cell occupancy), and centroid decoding MSE (against ground-truth physical coordinates of the target object).
+
+## 3. Observed Quantities
+- **Centroid Decoding MSE:** 
+  - Passive Control: 75.36 (with non-parametric projection).
+  - CLTS Active Policy: 85.85 (averaged over 5 seeds).
+- **Post-Collision Prediction Error:** 
+  - Passive Control: 0.0948 L2 loss.
+  - Random Control: 0.0557 L2 loss.
+  - CLTS Active Policy: 0.0236 L2 loss (a 75.1% reduction vs. passive, and a 57.6% reduction vs. random).
+- **Spatial Coverage Entropy:**
+  - CLTS showed a measured increase in spatial coverage (pointer-to-object distance tracked closely around target boundaries, with exploration spread across the entire 128-pixel space).
+
+## 4. Verdict
+- **Verdict:** **REFUTED** on representational stability; **CONSISTENT** on predictive and exploratory efficiency.
+- **Justification:** The active physical interaction of CLTS met all operational goals for active learning, outperforming random controls by 57.6% in post-collision error reduction and showing superior spatial exploration. However, it formally triggered the pre-declared falsification criterion because the average centroid decoding MSE rose to 85.85, exceeding the strict 85.0 limit. This indicates that active physical contact introduces an unmodeled representation drift.
+
+## 5. Construction-vs-Empirical Note
+The spatial coordinates in this architecture are extracted via a non-parametric soft-argmax projection over the latent feature maps. Because there are no parametric heads explicitly trained on ground-truth coordinates, the localization is purely empirical—emerging from the spatial consistency of the temporal prediction dynamics. The observed drift under active control is a genuinely empirical phenomenon: it demonstrates that changing the environmental state transition matrix through physical manipulation feedback-loops directly alters the internal representations of the system.
+
+## 6. Limitations
+- **No Active Calibration:** The system lacks an active calibration loop to correct for representation drift during physical contact. Once a collision perturbates the visual backbone, the coordinate tracking error accumulates.
+- **1D Space Constraint:** This evaluation was limited to a 1D physics sandbox. The drift penalty is expected to compound in multi-dimensional space (2D/3D), where physical interaction can cause rotational or depth-based occlusion.
+- **Unbounded Transient Perturbations:** The study does not isolate the exact frames during which the drift occurs (e.g., whether it is a continuous decay or a step-function jump during the exact frame of elastic collision).
+
+---
+

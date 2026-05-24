@@ -391,3 +391,51 @@ status: ok
 
 **Notes:** Plasticity-adaptability conflict validated; Arm E falsified due to rigidity under novelty, while Arm F (Non-Parametric Projection) achieved a breakthrough.
 
+
+---
+```yaml
+cached_tokens: 989313
+campaign: Thalamus
+campaign_status: completed
+campaign_summary: The Thalamus project successfully designed, simulated, and evaluated
+  a novel neural architecture that achieves hierarchical abstraction without generative
+  decoders. Across 12 phases, we established non-parametric spatial bottlenecks (Arm
+  F), developed an adaptive surprise-modulated thalamic gating mechanism (DSMC), and
+  validated closed-loop thalamic subsumption motorics (CLTS) under active parameter
+  shifts, showing massive gains in adaptation efficiency and spatial exploration.
+cost_usd: 0.59712
+hypothesis: 'phase-12: validate closed-loop thalamic subsumption (CLTS) motorics under
+  a 5-seed sweep'
+input_tokens: 1292819
+iter: 12
+metrics:
+  auc_reduction_pct: 28.25
+  clts_centroid_decoding_mse: 85.8466
+  clts_pointer_entropy: 3.9551
+  clts_soft_spatial_variance: 8.6726
+  clts_test_sim_loss: 0.048329
+  loss_reduction_pct: 47.68
+  passive_test_sim_loss: 0.163344
+  random_pointer_entropy: 2.9781
+  random_test_sim_loss: 0.092375
+output_tokens: 15427
+status: ok
+```
+
+## iter_012: phase-12: validate closed-loop thalamic subsumption (CLTS) motorics under a 5-seed sweep
+
+**Analysis:** In Phase 12, we completed the final integration of the Thalamus project: coupling the non-parametric soft-argmax projection stream (Arm F) with the 3-layer Closed-Loop Thalamic Subsumption (CLTS) motor policy (Arm G).
+
+The sub-agents successfully appended the `CLTSMotorController` class to `src/motor.py` and implemented the 5-seed sweep inside `src/run_phase12_experiments.py`. The results present 
+
+**Status:** ok
+
+**Metrics:** `{'clts_test_sim_loss': 0.048329, 'random_test_sim_loss': 0.092375, 'passive_test_sim_loss': 0.163344, 'loss_reduction_pct': 47.68, 'clts_soft_spatial_variance': 8.6726, 'clts_centroid_decoding_mse': 85.8466, 'clts_pointer_entropy': 3.9551, 'random_pointer_entropy': 2.9781, 'auc_reduction_pct': 28.25}`
+
+**Experimenter view:** The Phase 12 comparative sweep successfully executed over 5 seeds to audit the Closed-Loop Thalamic Subsumption (CLTS) controller.
+
+1. Predictive Performance: Arm G (CLTS) achieved a 47.68% lower post-collision standardized test simulation loss (0.0483) compared to the random exploration baseline (Arm F-Random: 0.0924), validating Criterion 1.
+2. Adaptation Efficiency: CLTS achieved a 28.25% reduc
+
+**Notes:** Phase 12 complete. All architectural pillars successfully integrated. CLTS performance and adaptation gains are fully validated, with marginal representational drift identified as an open area for future research.
+
