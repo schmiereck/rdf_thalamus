@@ -15,6 +15,7 @@ The hypothesis will be proven FALSE if any of the following outcomes are observe
 2. The average post-hoc linear decoding MSE of the novel object's coordinate is >= 55.0 (failing to achieve a 25% improvement over the 73.65 baseline).
 3. The average soft spatial variance of the active/recruited channel is not reduced by at least 40% compared to the unconstrained active probing baseline.
 4. The recruitment rate of the 4th dimension during active probing drops below 100% (5 out of 5 seeds).
+5. Criterion 5 (Non-Collapse & Activity Threshold): The hypothesis is falsified if the recruited channel k undergoes representation collapse. Specifically, its mean activation magnitude must remain active (e.g., E[|a_k|] >= 0.1 * 1/C sum_c E[|a_c|]) and its temporal standard deviation must be non-trivial (std(x_mean_k) > 5.0 pixels), proving it has not collapsed into an inactive channel or a static, non-responsive spatial spike.
 
 ## 3. Proposed Method
 1. Spatial Centroid & Variance Computation: For each channel c of the 1D latent representation, compute the spatial centroid x_mean_c = sum_i(i * softmax(a_{c, i})) and the soft spatial variance Var_c = sum_i((i - x_mean_c)^2 * softmax(a_{c, i})), where a_{c, i} is the activation of channel c at spatial index i of the 1D feature map.
@@ -22,6 +23,11 @@ The hypothesis will be proven FALSE if any of the following outcomes are observe
 3. Output-as-Input Active Probing: Modify the motor controller to receive the spatial centroid x_mean_k of the attended channel as the target coordinate, driving the continuous physical pointer to target and probe this localized entity.
 4. Control vs. Experimental Sweep: Run a 5-seed comparison sweep comparing this "Spatial Bottleneck + Output-as-Input Active Probing" model (Experimental) against the "Unconstrained Active Probing" model from Phase 7 (Control).
 5. Measurement: Measure and report the Pearson correlation |r| of the recruited channel with the true coordinate, the post-hoc linear coordinate decoding MSE, the spatial variance of activations, and the dimension recruitment rate.
+
+## 4. Hyperparameter Search Space
+We pre-register the hyperparameter search space for lambda to be:
+*   $\lambda \in \{0.01, 0.1, 1.0\}$
+*   Default selection: $\lambda = 0.1$
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
