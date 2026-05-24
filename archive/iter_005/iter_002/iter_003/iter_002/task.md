@@ -1,0 +1,1 @@
+Execute the command 'python hello.py' using the terminal / shell execution tool to run the hello world script and capture its output. Check if it outputs 'Hello, World!' and report the exact output.
