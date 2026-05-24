@@ -153,7 +153,7 @@ class DynamicJEPA(nn.Module):
         # Dynamic state tracking
         self.d_t = 2
         self.steps_since_recruitment = cooldown  # start outside of cooldown
-        self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable N=2
+        self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable periods
         self.ema_error = None
         self.ema_alpha = 0.05
         
@@ -239,12 +239,16 @@ class DynamicJEPA(nn.Module):
             "cov_loss": cov_loss
         }, z_pred, z_target
 
-    def update_recruitment_logic(self, error_val):
+    def update_recruitment_logic(self, error_val, target_dim=None):
         """
         Updates EMA of prediction error and checks recruitment criteria.
         Args:
             error_val (float): Current prediction error (sim_loss.item())
+            target_dim (int, optional): The dimension we are recruiting from. Defaults to self.d_t.
         """
+        if target_dim is None:
+            target_dim = self.d_t
+
         # 1. Update EMA
         if self.ema_error is None:
             self.ema_error = error_val
@@ -254,17 +258,17 @@ class DynamicJEPA(nn.Module):
         # 2. Increment steps
         self.steps_since_recruitment += 1
         
-        # 3. Buffer stable 2-object errors
-        if self.d_t == 2:
+        # 3. Buffer stable target_dim errors
+        if self.d_t == target_dim:
             self.error_buffer.append(self.ema_error)
             
         # 4. Check recruitment condition
-        if self.d_t == 2 and self.steps_since_recruitment > self.cooldown:
+        if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
             if len(self.error_buffer) >= 200:
                 mean = np.mean(self.error_buffer)
                 std = np.std(self.error_buffer)
                 if self.ema_error > mean + self.k * std:
                     # Recruit new dimension
-                    self.d_t = 3
+                    self.d_t = target_dim + 1
                     self.steps_since_recruitment = 0
                     print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
