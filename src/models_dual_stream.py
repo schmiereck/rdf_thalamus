@@ -1,0 +1,347 @@
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+class DualStreamEncoder(nn.Module):
+    def __init__(self, d_max=8):
+        """
+        1D CNN mapping input of shape (B, 3, 128) to decoupled coordinate and dynamics streams.
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.conv1 = nn.Conv1d(3, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+        
+        # Dual stream heads
+        self.conv_spatial_coord = nn.Conv1d(128, d_max, kernel_size=1)
+        self.conv_spatial_dyn = nn.Conv1d(128, d_max, kernel_size=1)
+        
+    def forward_spatial(self, x):
+        """
+        Returns spatial feature map of shape (B, d_max, 128) for the coordinate stream.
+        To ensure backprop through loss_spatial only flows to conv_spatial_coord,
+        we detach the output of conv4 before passing to conv_spatial_coord.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        # Detach before conv_spatial_coord to stop gradients flowing to conv1-4
+        x_coord = self.conv_spatial_coord(x.detach())  # (B, d_max, 8)
+        x_coord = F.interpolate(x_coord, size=128, mode='linear', align_corners=False) # (B, d_max, 128)
+        return x_coord
+
+    def forward_dynamics(self, x):
+        """
+        Returns the dynamics representation of shape (B, d_max).
+        Gradients on this stream flow back to conv_spatial_dyn and conv1-4.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        x_dyn = self.conv_spatial_dyn(x) # (B, d_max, 8)
+        return x_dyn.mean(dim=-1) # (B, d_max)
+
+    def forward(self, x):
+        """
+        Returns both streams:
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations, shape (B, d_max)
+        """
+        a_spatial = self.forward_spatial(x)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        z_dyn = self.forward_dynamics(x)
+        return z_coord, z_dyn
+
+class DualStreamPredictor(nn.Module):
+    def __init__(self, d_max=8, h=3):
+        """
+        MLP forecasting target z_{t+1} of size (B, 2 * D_max)
+        from history of active latent states (B, H * 2 * D_max).
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.net = nn.Sequential(
+            nn.Linear(h * 2 * d_max, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2 * d_max)
+        )
+        
+    def forward(self, z_coord_history, z_dyn_history, d_t, mask_coord=False):
+        """
+        Args:
+            z_coord_history (Tensor): Shape (B, H, D_max)
+            z_dyn_history (Tensor): Shape (B, H, D_max)
+            d_t (int): Current active latent dimension.
+            mask_coord (bool): If True, zero out the coordinate input.
+        """
+        # Option to zero out coordinate input completely
+        if mask_coord:
+            z_coord_history = torch.zeros_like(z_coord_history)
+            
+        # Zero out inactive dimensions (index >= d_t)
+        mask_c = torch.zeros_like(z_coord_history)
+        mask_c[:, :, :d_t] = 1.0
+        z_coord_active = z_coord_history * mask_c
+        
+        mask_d = torch.zeros_like(z_dyn_history)
+        mask_d[:, :, :d_t] = 1.0
+        z_dyn_active = z_dyn_history * mask_d
+        
+        # Concatenate coordinate and dynamics histories along feature dimension: (B, H, 2 * d_max)
+        z_history = torch.cat([z_coord_active, z_dyn_active], dim=-1)
+        
+        # Flatten history: (B, H * 2 * d_max)
+        z_history_flat = z_history.reshape(-1, self.h * 2 * self.d_max)
+        
+        # Predict both streams
+        pred = self.net(z_history_flat) # (B, 2 * d_max)
+        
+        # Split into coord and dyn predictions
+        pred_coord, pred_dyn = torch.split(pred, self.d_max, dim=-1)
+        
+        # Zero out inactive dimensions in the outputs
+        out_mask = torch.zeros_like(pred_coord)
+        out_mask[:, :d_t] = 1.0
+        
+        pred_coord_active = pred_coord * out_mask
+        pred_dyn_active = pred_dyn * out_mask
+        
+        return pred_coord_active, pred_dyn_active
+
+class DualStreamJEPASpatial(nn.Module):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100):
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        
+        self.encoder = DualStreamEncoder(d_max=d_max)
+        self.predictor = DualStreamPredictor(d_max=d_max, h=h)
+        
+        # Dynamic state tracking
+        self.d_t = 2
+        self.steps_since_recruitment = cooldown  # start outside of cooldown
+        self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable periods
+        self.ema_error = None
+        self.ema_alpha = 0.05
+
+    def reset_error_buffer(self):
+        self.error_buffer.clear()
+        self.ema_error = None
+
+    def calculate_centroid_and_variance(self, a_spatial):
+        return calculate_centroid_and_variance(a_spatial)
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False):
+        """
+        Args:
+            x_hist (Tensor): shape (B, H, 3, 128)
+            x_target (Tensor): shape (B, 3, 128)
+            sim_weight (float): VICReg invariance loss weight
+            var_weight (float): VICReg variance loss weight
+            cov_weight (float): VICReg covariance loss weight
+            lambda_spatial (float): spatial bottleneck loss weight
+            k_chan (int, optional): channel index to minimize spatial variance on. Defaults to d_t - 1.
+            mask_coord (bool): whether to zero out coordinate history in predictor.
+        """
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+        
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
+        
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+        
+        # Apply stabilization stop-gradient logic to history and target representations
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_hist_coord_stable = torch.cat([
+                z_hist_coord[:, :, :self.d_t-1].detach(),
+                z_hist_coord[:, :, self.d_t-1:]
+            ], dim=-1)
+            z_hist_dyn_stable = torch.cat([
+                z_hist_dyn[:, :, :self.d_t-1].detach(),
+                z_hist_dyn[:, :, self.d_t-1:]
+            ], dim=-1)
+            
+            z_target_coord_stable = torch.cat([
+                z_target_coord[:, :self.d_t-1].detach(),
+                z_target_coord[:, self.d_t-1:]
+            ], dim=-1)
+            z_target_dyn_stable = torch.cat([
+                z_target_dyn[:, :self.d_t-1].detach(),
+                z_target_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_hist_coord_stable = z_hist_coord
+            z_hist_dyn_stable = z_hist_dyn
+            
+            z_target_coord_stable = z_target_coord
+            z_target_dyn_stable = z_target_dyn
+            
+        # Predictive Coupling & Stop-Gradients on coordinate stream
+        # This prevents prediction gradients from flowing to the coordinate stream representation
+        z_hist_coord_pred = z_hist_coord_stable.detach()
+        z_target_coord_pred = z_target_coord_stable.detach()
+        
+        # Predict target representations
+        z_pred_coord, z_pred_dyn = self.predictor(
+            z_hist_coord_pred, 
+            z_hist_dyn_stable, 
+            self.d_t, 
+            mask_coord=mask_coord
+        )
+        
+        # Apply stabilization stop-gradient to predictor outputs
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_pred_coord_stable = torch.cat([
+                z_pred_coord[:, :self.d_t-1].detach(),
+                z_pred_coord[:, self.d_t-1:]
+            ], dim=-1)
+            z_pred_dyn_stable = torch.cat([
+                z_pred_dyn[:, :self.d_t-1].detach(),
+                z_pred_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_pred_coord_stable = z_pred_coord
+            z_pred_dyn_stable = z_pred_dyn
+            
+        # Select active dimensions
+        z_pred_coord_active = z_pred_coord_stable[:, :self.d_t]
+        z_target_coord_active = z_target_coord_stable[:, :self.d_t]
+        
+        z_pred_dyn_active = z_pred_dyn_stable[:, :self.d_t]
+        z_target_dyn_active = z_target_dyn_stable[:, :self.d_t]
+        
+        # 1. Similarity (Invariance) Loss
+        sim_loss_coord = F.mse_loss(z_pred_coord_active, z_target_coord_pred[:, :self.d_t])
+        sim_loss_dyn = F.mse_loss(z_pred_dyn_active, z_target_dyn_active)
+        sim_loss = sim_loss_coord + sim_loss_dyn
+        
+        # 2. Variance Loss
+        def calc_var_loss(x, gamma=1.0, eps=1e-4):
+            mean = x.mean(dim=0)
+            var = torch.mean((x - mean)**2, dim=0)
+            std = torch.sqrt(var + eps)
+            return torch.mean(F.relu(gamma - std))
+            
+        var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+        var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+        var_loss = var_loss_coord + var_loss_dyn
+        
+        # 3. Covariance Loss
+        def calc_cov_loss(x):
+            B, d = x.shape
+            if B <= 1 or d <= 1:
+                return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            mean = x.mean(dim=0, keepdim=True)
+            x_centered = x - mean
+            cov = (x_centered.T @ x_centered) / (B - 1)
+            diag = torch.diagonal(cov)
+            off_diag = cov - torch.diag(diag)
+            return (off_diag ** 2).sum() / d
+            
+        cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
+        cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+        cov_loss = cov_loss_coord + cov_loss_dyn
+        
+        base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+        
+        # 4. Spatial Bottleneck Loss
+        if lambda_spatial > 0:
+            z_target_spatial = self.encoder.forward_spatial(x_target)
+            _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+            if k_chan is None:
+                k_chan = self.d_t - 1
+            var_k = var_all[:, k_chan]
+            loss_spatial = lambda_spatial * var_k.mean()
+            loss = base_loss + loss_spatial
+        else:
+            loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            loss = base_loss
+            
+        return {
+            "loss": loss,
+            "sim_loss": sim_loss,
+            "sim_loss_coord": sim_loss_coord,
+            "sim_loss_dyn": sim_loss_dyn,
+            "var_loss": var_loss,
+            "var_loss_coord": var_loss_coord,
+            "var_loss_dyn": var_loss_dyn,
+            "cov_loss": cov_loss,
+            "cov_loss_coord": cov_loss_coord,
+            "cov_loss_dyn": cov_loss_dyn,
+            "loss_spatial": loss_spatial
+        }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def update_recruitment_logic(self, error_val, target_dim=None):
+        if target_dim is None:
+            target_dim = self.d_t
+
+        if self.ema_error is None:
+            self.ema_error = error_val
+        else:
+            self.ema_error = self.ema_alpha * error_val + (1.0 - self.ema_alpha) * self.ema_error
+            
+        self.steps_since_recruitment += 1
+        
+        if self.d_t == target_dim:
+            self.error_buffer.append(self.ema_error)
+            
+        if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+            if len(self.error_buffer) >= 200:
+                mean = np.mean(self.error_buffer)
+                std = np.std(self.error_buffer)
+                if self.ema_error > mean + self.k * std:
+                    self.d_t = target_dim + 1
+                    self.steps_since_recruitment = 0
+                    print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+
+    def clone(self):
+        """
+        Self-cloning capability: Returns a copy of this model with identical parameters and dynamic state.
+        """
+        import copy
+        cloned = DualStreamJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        return cloned
