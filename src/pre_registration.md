@@ -12,8 +12,10 @@ A Dynamic Surprise-Modulated Spatial Bottleneck Curriculum (DSMC)—which dynami
 ## 2. Falsification Criterion
 The hypothesis will be falsified if the DSMC configuration:
 1. Fails to achieve a mean soft spatial variance of the recruited channel $\le 120.0$ across the 5 evaluation seeds, OR
-2. Fails to achieve a mean centroid decoding MSE $\le 72.0$ across the 5 evaluation seeds, OR
+2. Fails to achieve a mean centroid decoding MSE $\le 70.0$ across the 5 evaluation seeds, OR
 3. Experiences a representation collapse rate $> 0.0\%$ (any of the 5 seeds collapsing).
+
+Curriculum Activity Sanity Check: To assert that the curriculum successfully executed, the final average penalty weight across the 5 seeds must satisfy Mean(\lambda_T) >= 0.05. If the curriculum fails to ramp up to this level of regularization but passes the other metrics, it must be reported as a failure of the curriculum to activate, not a successful resolution of the trade-off.
 
 ## 3. Proposed Method
 1. Implement a local surprise tracker in the representation network module (e.g., in `src/models.py`) that computes the exponentially-weighted moving average (EWMA) of the local temporal-prediction surprise: $\bar{S}_t = \alpha \cdot \bar{S}_{t-1} + (1 - \alpha) \cdot S_t$, with smoothing factor $\alpha = 0.95$ and initialized at $1.0$.
