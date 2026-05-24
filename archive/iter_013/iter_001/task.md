@@ -1,0 +1,1 @@
+Run pytest in the project directory to check if existing tests pass.
