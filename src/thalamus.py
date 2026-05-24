@@ -93,11 +93,12 @@ class L2Predictor(nn.Module):
         return self.net(z_history)
 
 class ThalamusNet(nn.Module):
-    def __init__(self, d_max=8, h=3, cooldown=200):
+    def __init__(self, d_max=8, h=3, cooldown=200, cooldown_alpha=1.0):
         super().__init__()
         self.d_max = d_max
         self.h = h
         self.cooldown = cooldown
+        self.cooldown_alpha = cooldown_alpha
 
         # 4 L1 segment modules
         self.l1_encoders = nn.ModuleList([SegmentEncoder(d_max) for _ in range(4)])
@@ -110,9 +111,15 @@ class ThalamusNet(nn.Module):
         # Color Readout for self-generation
         self.color_readout = nn.Linear(d_max, 3)
 
+        # Trainable linear position readout mapping L1 latents to target position
+        self.pos_readout = nn.Linear(d_max, 1)
+
         # Token Routing & Cooldown
         self.token_locus = 0  # locus in {0, 1, 2, 3, 4}
         self.steps_since_change = cooldown  # startup can change immediately
+        self.prev_E = 0.0
+        self.current_cooldown_val = float(cooldown)
+        self.last_delta_E = 0.0
 
         # Surprise Watchdog EMAs (0..3: L1 segments, 4: L2)
         self.register_buffer('surprise_mean', torch.zeros(5))
@@ -161,9 +168,9 @@ class ThalamusNet(nn.Module):
     def update_plasticity_gating(self):
         """
         Plasticity Gating: dynamically sets requires_grad based on active token locus.
-        If L1 active (locus 0-3), only L1 parameters are trainable.
+        If L1 active (locus 0-3), L1 parameters and pos_readout are trainable.
         If L2 active (locus 4), only L2 parameters (and color readout) are trainable.
-        If L2 is locked, L2 parameters are always frozen, and we fall back to training L1.
+        If L2 is locked, L2 parameters are always frozen, and we fall back to training L1 (and pos_readout).
         """
         locus = getattr(self, "current_forward_locus", self.token_locus)
         locked = getattr(self, "current_forward_locked", self.l2_locked)
@@ -178,6 +185,8 @@ class ThalamusNet(nn.Module):
         for param in self.l1_encoders.parameters():
             param.requires_grad = l1_active
         for param in self.l1_predictors.parameters():
+            param.requires_grad = l1_active
+        for param in self.pos_readout.parameters():
             param.requires_grad = l1_active
 
         for param in self.l2_encoder.parameters():
@@ -208,6 +217,9 @@ class ThalamusNet(nn.Module):
             for param in self.l1_predictors.parameters():
                 if param.grad is not None:
                     param.grad.zero_()
+            for param in self.pos_readout.parameters():
+                if param.grad is not None:
+                    param.grad.zero_()
         if not l2_active:
             for param in self.l2_encoder.parameters():
                 if param.grad is not None:
@@ -218,6 +230,47 @@ class ThalamusNet(nn.Module):
             for param in self.color_readout.parameters():
                 if param.grad is not None:
                     param.grad.zero_()
+
+    def compute_attended_centroid(self, x_target, locus=None):
+        if locus is None:
+            locus = getattr(self, 'token_locus', 4)
+            
+        B = x_target.shape[0]
+        device = x_target.device
+        coords = torch.arange(32, device=device, dtype=torch.float32) + 0.5 # (32,)
+        
+        # Segment intensities for all 4 segments: shape (B, 4, 32)
+        seg_ints = []
+        for i in range(4):
+            # Mean over color channels: (B, 32)
+            seg_ints.append(torch.mean(x_target[:, :, i*32:(i+1)*32], dim=1))
+        seg_ints = torch.stack(seg_ints, dim=1) # (B, 4, 32)
+        
+        if locus == 4:
+            # Segment means: shape (B, 4)
+            seg_means = torch.mean(seg_ints, dim=-1)
+            best_segs = torch.argmax(seg_means, dim=-1) # (B,)
+            
+            # Extract intensities of selected segments: shape (B, 32)
+            b_indices = torch.arange(B, device=device)
+            chosen_ints = seg_ints[b_indices, best_segs] # (B, 32)
+            
+            total_int = torch.sum(chosen_ints, dim=-1, keepdim=True) # (B, 1)
+            # Center coordinates
+            centroid_rel = torch.sum(chosen_ints * coords, dim=-1, keepdim=True) / (total_int + 1e-5)
+            centroid_rel = torch.where(total_int < 1e-3, torch.tensor(16.0, device=device), centroid_rel)
+            
+            global_centroid = centroid_rel + best_segs.unsqueeze(-1).float() * 32.0
+            return global_centroid
+        else:
+            # Locus is specific
+            chosen_ints = seg_ints[:, locus] # (B, 32)
+            total_int = torch.sum(chosen_ints, dim=-1, keepdim=True) # (B, 1)
+            centroid_rel = torch.sum(chosen_ints * coords, dim=-1, keepdim=True) / (total_int + 1e-5)
+            centroid_rel = torch.where(total_int < 1e-3, torch.tensor(16.0, device=device), centroid_rel)
+            
+            global_centroid = centroid_rel + locus * 32.0
+            return global_centroid
 
     def forward(self, x_hist, x_target, external_query=None, priming_mode="none", similarity_bias_weight=1.0, sim_weight=25.0, var_weight=25.0, cov_weight=25.0):
         """
@@ -326,9 +379,18 @@ class ThalamusNet(nn.Module):
         theta_conv = torch.max(torch.tensor(0.25, device=raw_surprises.device), 1.5 * self.l1_surprise_min)
         self.l2_locked = (self.l1_running_surprise_ema > theta_conv).item()
 
-        # 8. Token Routing & Cooldown
+        # 8. Surprise-modulated adaptive cooldown
+        E_t = raw_surprises[self.token_locus].item()
+        delta_E = E_t - self.prev_E
+        self.prev_E = E_t
+        self.last_delta_E = delta_E
+        
+        epsilon = 1e-5
+        C_t = np.clip(self.cooldown_alpha / (abs(delta_E) + epsilon), 10.0, 30.0)
+        self.current_cooldown_val = float(C_t)
+
         self.steps_since_change += 1
-        if self.steps_since_change >= self.cooldown:
+        if self.steps_since_change >= self.current_cooldown_val:
             if self.l2_locked:
                 candidate_locus = torch.argmax(normalized_surprises[:4]).item()
             else:
@@ -356,16 +418,28 @@ class ThalamusNet(nn.Module):
         total_l1_loss = torch.stack(l1_losses).mean()
         l2_loss, l2_sim, l2_var, l2_cov = self.calc_vicreg_loss(z_pred_l2, z_target_l2, sim_weight, var_weight, cov_weight)
 
-        # Return active layer loss
+        # 11. Compute pos_readout training loss
+        pos_losses = []
+        for i in range(4):
+            pred_pos_i = self.pos_readout(z_pred_segments[i]) # (B, 1)
+            target_pos_i = self.compute_attended_centroid(x_target, locus=i) # (B, 1)
+            loss_i = F.mse_loss(pred_pos_i / 128.0, target_pos_i / 128.0)
+            pos_losses.append(loss_i)
+        pos_loss = torch.stack(pos_losses).mean()
+
+        # Return active layer loss plus pos_loss
         if self.current_forward_locus == 4 and self.current_forward_locked:
             active_loss = total_l1_loss
         else:
             active_loss = total_l1_loss if (self.current_forward_locus in [0, 1, 2, 3]) else l2_loss
 
+        active_loss = active_loss + pos_loss
+
         loss_dict = {
             "loss": active_loss,
             "total_l1_loss": total_l1_loss,
             "l2_loss": l2_loss,
+            "pos_loss": pos_loss,
             "l1_sim_loss": torch.stack(l1_sims).mean(),
             "l1_var_loss": torch.stack(l1_vars).mean(),
             "l1_cov_loss": torch.stack(l1_covs).mean(),
@@ -374,7 +448,9 @@ class ThalamusNet(nn.Module):
             "l2_cov_loss": l2_cov,
             "token_locus": self.token_locus,
             "l2_locked": self.l2_locked,
-            "theta_conv": theta_conv.item()
+            "theta_conv": theta_conv.item(),
+            "current_cooldown": self.current_cooldown_val,
+            "delta_E": delta_E
         }
 
         return loss_dict, z_pred_segments, z_pred_l2
@@ -456,6 +532,9 @@ class NonGatedControlNet(nn.Module):
         # Color Readout
         self.color_readout = nn.Linear(d_max, 3)
 
+        # Trainable linear position readout mapping L1 latents to target position
+        self.pos_readout = nn.Linear(d_max, 1)
+
         self.last_query = None
 
     def calc_vicreg_loss(self, z_pred, z_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0):
@@ -487,6 +566,42 @@ class NonGatedControlNet(nn.Module):
 
         loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
         return loss, sim_loss, var_loss, cov_loss
+
+    def compute_attended_centroid(self, x_target, locus=None):
+        if locus is None:
+            locus = getattr(self, 'token_locus', 4)
+            
+        B = x_target.shape[0]
+        device = x_target.device
+        coords = torch.arange(32, device=device, dtype=torch.float32) + 0.5 # (32,)
+        
+        # Segment intensities for all 4 segments: shape (B, 4, 32)
+        seg_ints = []
+        for i in range(4):
+            seg_ints.append(torch.mean(x_target[:, :, i*32:(i+1)*32], dim=1))
+        seg_ints = torch.stack(seg_ints, dim=1) # (B, 4, 32)
+        
+        if locus == 4:
+            seg_means = torch.mean(seg_ints, dim=-1)
+            best_segs = torch.argmax(seg_means, dim=-1) # (B,)
+            
+            b_indices = torch.arange(B, device=device)
+            chosen_ints = seg_ints[b_indices, best_segs] # (B, 32)
+            
+            total_int = torch.sum(chosen_ints, dim=-1, keepdim=True) # (B, 1)
+            centroid_rel = torch.sum(chosen_ints * coords, dim=-1, keepdim=True) / (total_int + 1e-5)
+            centroid_rel = torch.where(total_int < 1e-3, torch.tensor(16.0, device=device), centroid_rel)
+            
+            global_centroid = centroid_rel + best_segs.unsqueeze(-1).float() * 32.0
+            return global_centroid
+        else:
+            chosen_ints = seg_ints[:, locus] # (B, 32)
+            total_int = torch.sum(chosen_ints, dim=-1, keepdim=True) # (B, 1)
+            centroid_rel = torch.sum(chosen_ints * coords, dim=-1, keepdim=True) / (total_int + 1e-5)
+            centroid_rel = torch.where(total_int < 1e-3, torch.tensor(16.0, device=device), centroid_rel)
+            
+            global_centroid = centroid_rel + locus * 32.0
+            return global_centroid
 
     def forward(self, x_hist, x_target, external_query=None, priming_mode="none", similarity_bias_weight=1.0, sim_weight=25.0, var_weight=25.0, cov_weight=25.0):
         B, H, C, W = x_hist.shape
@@ -553,12 +668,22 @@ class NonGatedControlNet(nn.Module):
         total_l1_loss = torch.stack(l1_losses).mean()
         l2_loss, l2_sim, l2_var, l2_cov = self.calc_vicreg_loss(z_pred_l2, z_target_l2, sim_weight, var_weight, cov_weight)
 
-        active_loss = total_l1_loss + l2_loss
+        # 6. Compute pos_readout training loss
+        pos_losses = []
+        for i in range(4):
+            pred_pos_i = self.pos_readout(z_pred_segments[i]) # (B, 1)
+            target_pos_i = self.compute_attended_centroid(x_target, locus=i) # (B, 1)
+            loss_i = F.mse_loss(pred_pos_i / 128.0, target_pos_i / 128.0)
+            pos_losses.append(loss_i)
+        pos_loss = torch.stack(pos_losses).mean()
+
+        active_loss = total_l1_loss + l2_loss + pos_loss
 
         loss_dict = {
             "loss": active_loss,
             "total_l1_loss": total_l1_loss,
             "l2_loss": l2_loss,
+            "pos_loss": pos_loss,
             "l1_sim_loss": torch.stack(l1_sims).mean(),
             "l1_var_loss": torch.stack(l1_vars).mean(),
             "l1_cov_loss": torch.stack(l1_covs).mean(),
@@ -648,6 +773,7 @@ if __name__ == "__main__":
     print("Keys in loss_dict:", list(loss_dict.keys()))
     print(f"Token locus: {loss_dict['token_locus']}")
     print(f"L2 locked: {loss_dict['l2_locked']}")
+    print(f"Position readout loss: {loss_dict['pos_loss'].item()}")
     
     # Verify backward pass and plasticity gating (gradient routing)
     # Test L1 holds token
@@ -676,9 +802,16 @@ if __name__ == "__main__":
             l2_has_grad = True
             break
             
-    print(f"When L1 holds token: L1 Has Gradients = {l1_has_grad}, L2 Has Gradients = {l2_has_grad}")
+    pos_readout_has_grad = False
+    for p in thalamus_net.pos_readout.parameters():
+        if p.grad is not None and p.grad.abs().sum() > 0:
+            pos_readout_has_grad = True
+            break
+
+    print(f"When L1 holds token: L1 Has Gradients = {l1_has_grad}, L2 Has Gradients = {l2_has_grad}, Pos Readout Has Gradients = {pos_readout_has_grad}")
     assert l1_has_grad, "L1 parameters must receive gradients when L1 holds the token."
     assert not l2_has_grad, "L2 parameters must receive zero gradients when L1 holds the token."
+    assert pos_readout_has_grad, "pos_readout must receive gradients when L1 is active."
     
     # Test L2 holds token
     thalamus_net.token_locus = 4  # L2 holds token
@@ -704,9 +837,16 @@ if __name__ == "__main__":
             l2_has_grad = True
             break
             
-    print(f"When L2 holds token: L1 Has Gradients = {l1_has_grad}, L2 Has Gradients = {l2_has_grad}")
+    pos_readout_has_grad = False
+    for p in thalamus_net.pos_readout.parameters():
+        if p.grad is not None and p.grad.abs().sum() > 0:
+            pos_readout_has_grad = True
+            break
+
+    print(f"When L2 holds token: L1 Has Gradients = {l1_has_grad}, L2 Has Gradients = {l2_has_grad}, Pos Readout Has Gradients = {pos_readout_has_grad}")
     assert not l1_has_grad, "L1 parameters must receive zero gradients when L2 holds the token."
     assert l2_has_grad, "L2 parameters must receive gradients when L2 holds the token."
+    assert not pos_readout_has_grad, "pos_readout must receive zero gradients when L2 is active."
     
     # Verify physical tracking overlap
     overlap = thalamus_net.compute_physical_tracking_overlap(target_positions, x_target, external_query=external_query)
