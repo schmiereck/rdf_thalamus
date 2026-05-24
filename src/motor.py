@@ -120,3 +120,93 @@ class SubsumptionMotorController:
         self.prev_error = error
         
         return {"acc": float(acc), "push": push}
+
+
+class CLTSMotorController:
+    def __init__(self, Kp=2.0, Kd=0.5, Kv=0.5, push_cooldown=15, push_magnitude=15.0, dt=1.0):
+        self.Kp = Kp
+        self.Kd = Kd
+        self.Kv = Kv
+        self.push_cooldown = push_cooldown
+        self.push_magnitude = push_magnitude
+        self.dt = dt
+        
+        self.prev_error = {}
+        self.prev_target_pos = {}
+        self.push_cooldown_timer = 0
+        
+        # Running statistics for surprise per channel
+        self.mu = np.zeros(8)
+        self.sigma = np.ones(8)
+        self.ema_alpha = 0.05
+        
+        self.token_locus = 0
+        self.attention_cooldown = 0
+        self.attention_cooldown_max = 15
+
+    def reset(self):
+        self.prev_error = {}
+        self.prev_target_pos = {}
+        self.push_cooldown_timer = 0
+        self.token_locus = 0
+        self.attention_cooldown = 0
+        self.mu = np.zeros(8)
+        self.sigma = np.ones(8)
+
+    def get_action(self, model, obs, info, z_pred_coord, z_target_coord, z_pred_dyn, z_target_dyn, d_t, centroids):
+        surprises = []
+        for c in range(d_t):
+            err_coord = torch.mean((z_pred_coord[:, c] - z_target_coord[:, c])**2).item()
+            err_dyn = torch.mean((z_pred_dyn[:, c] - z_target_dyn[:, c])**2).item()
+            s = err_coord + err_dyn
+            surprises.append(s)
+            
+            # Update running statistics (online EMA mean and variance)
+            self.mu[c] = (1 - self.ema_alpha) * self.mu[c] + self.ema_alpha * s
+            diff_sq = (s - self.mu[c]) ** 2
+            var_c = (1 - self.ema_alpha) * (self.sigma[c]**2) + self.ema_alpha * diff_sq
+            self.sigma[c] = np.sqrt(var_c + 1e-8)
+            
+        norm_surprises = []
+        for c in range(d_t):
+            norm_s = (surprises[c] - self.mu[c]) / (self.sigma[c] + 1e-8)
+            norm_surprises.append(norm_s)
+            
+        if self.attention_cooldown > 0:
+            self.attention_cooldown -= 1
+        else:
+            self.token_locus = int(np.argmax(norm_surprises[:d_t]))
+            self.attention_cooldown = self.attention_cooldown_max
+            
+        target_pos = centroids[0, self.token_locus].item()
+        pointer_pos = info["pointer_pos"]
+        pointer_vel = info["pointer_vel"]
+        
+        error = target_pos - pointer_pos
+        prev_err = self.prev_error.get(self.token_locus, error)
+        dedt = (error - prev_err) / self.dt
+        self.prev_error[self.token_locus] = error
+        a_reflexive = self.Kp * error + self.Kd * dedt
+        
+        prev_target = self.prev_target_pos.get(self.token_locus, target_pos)
+        v_target = (target_pos - prev_target) / self.dt
+        self.prev_target_pos[self.token_locus] = target_pos
+        a_predictive = self.Kv * (v_target - pointer_vel)
+        
+        if self.push_cooldown_timer > 0:
+            self.push_cooldown_timer -= 1
+            
+        surprise_val = surprises[self.token_locus]
+        surprise_threshold = self.mu[self.token_locus] + 1.0 * self.sigma[self.token_locus]
+        
+        push = False
+        if surprise_val > surprise_threshold and self.push_cooldown_timer == 0:
+            direction = 1.0 if error >= 0 else -1.0
+            acc = self.push_magnitude * direction
+            if abs(error) <= 6.0:
+                push = True
+                self.push_cooldown_timer = self.push_cooldown
+        else:
+            acc = a_reflexive + a_predictive
+            
+        return {"acc": float(acc), "push": push}, self.token_locus, surprises
