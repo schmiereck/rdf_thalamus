@@ -668,7 +668,7 @@ class NonParametricJEPASpatial(nn.Module):
     def calculate_centroid_and_variance(self, a_spatial):
         return calculate_centroid_and_variance(a_spatial)
 
-    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False):
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0):
         B, H, C, W = x_hist.shape
         x_hist_flat = x_hist.reshape(B * H, C, W)
         
@@ -746,6 +746,41 @@ class NonParametricJEPASpatial(nn.Module):
             loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
             loss = base_loss
             
+        # 5. Contrastive Coordinate Regularization (CCR)
+        ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+        ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+        
+        if ccr_mode != 'none':
+            z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1) # (B, 4, d_max)
+            z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0 # (B, 4, d_t)
+            
+            diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1] # (B, 3, d_t)
+            ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
+            
+            if ccr_mode == 'hinge':
+                hinge_losses = []
+                for f in range(4):
+                    z_f = z_all_norm[:, f]
+                    if self.d_t > 1:
+                        diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
+                        triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
+                        diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
+                        hinge = F.relu(0.15 - diff_pairs)
+                        hinge_losses.append(hinge.mean())
+                    else:
+                        hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
+                ccr_spatial_loss = torch.stack(hinge_losses).mean()
+                
+            elif ccr_mode == 'covariance':
+                cov_losses = []
+                for f in range(4):
+                    z_f = z_all_norm[:, f]
+                    cov_losses.append(calc_cov_loss(z_f))
+                ccr_spatial_loss = torch.stack(cov_losses).mean()
+                
+            ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss
+            loss = loss + ccr_total
+            
         return {
             "loss": loss,
             "sim_loss": sim_loss,
@@ -757,7 +792,9 @@ class NonParametricJEPASpatial(nn.Module):
             "cov_loss": cov_loss,
             "cov_loss_coord": cov_loss_coord,
             "cov_loss_dyn": cov_loss_dyn,
-            "loss_spatial": loss_spatial
+            "loss_spatial": loss_spatial,
+            "ccr_smooth_loss": ccr_smooth_loss,
+            "ccr_spatial_loss": ccr_spatial_loss
         }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
 
     def update_recruitment_logic(self, error_val, target_dim=None):
