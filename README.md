@@ -28,3 +28,5 @@ hierarchical abstraction **without generative decoders**. The system must:
 * [Iteration 003 — Null Result: Predictor Loss vs Capacity-Limited](RESEARCH-RESULT-003.md)
 * [Iteration 004 — Refuted Hypothesis: Rigid-Cooldown Thalamic Gating](RESEARCH-RESULT-004.md)
 * [Iteration 005 — Closed-Loop Motor Coupling & Subsumption Motorics](RESEARCH-RESULT-005.md)
+* [Iteration 006 — Phase 4: Generalization & Noise Robustness](RESEARCH-RESULT-006.md)
+
