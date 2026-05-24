@@ -26,3 +26,5 @@ hierarchical abstraction **without generative decoders**. The system must:
 ### Milestones
 * [Iteration 002 — GDASR Trigger Failure & Latent Collapse](RESEARCH-RESULT-002.md)
 * [Iteration 003 — Null Result: Predictor Loss vs Capacity-Limited](RESEARCH-RESULT-003.md)
+* [Iteration 004 — Refuted Hypothesis: Rigid-Cooldown Thalamic Gating](RESEARCH-RESULT-004.md)
+* [Iteration 005 — Closed-Loop Motor Coupling & Subsumption Motorics](RESEARCH-RESULT-005.md)
