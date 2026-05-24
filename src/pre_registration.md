@@ -1,31 +1,32 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 005
+*   **Iteration:** 006
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
-1. Replacing the rigid 200-step attention cooldown with an adaptive, surprise-modulated cooldown ($C_t \in [10, 30]$ steps) combined with a Proportional-Derivative (PD) reflexive motor tracking controller in $M_{active}$ will resolve the physical tracking lag from Phase 2, increasing the physical pointer-to-object tracking overlap $\mathcal{O}_{track}$ from $11.20\%$ to $\ge 70.0\%$ in the test environment.
-2. Progressive training of the Subsumption Motorics hierarchy (Lower-layer tracking -> Upper-layer perturbation) will allow the agent to learn the physical dynamics of hidden mass via intentional collisions. This causal sensitivity advantage will manifest such that, when evaluated on post-collision velocity predictions with altered hidden masses, $M_{active}$ will achieve an L2 prediction loss $\mathcal{L}_{collision}$ that is at least $35\%$ lower than both the passive control ($M_{no\_motor}$) and the random control ($M_{random}$).
-3. Transitioning from externally primed attention queries (guided by color/size) to self-generated attention queries (output-as-input loop) will remain stable, with the test prediction loss on the attended locus increasing by no more than $15\%$ relative to the primed attention baseline.
+In the Phase 4 Generalization and Noise Robustness evaluation:
+1. Under clean conditions, introducing a 4th unseen object to a network trained on N=3 objects will trigger dynamic dimension recruitment in ThalamusNet within 500 timesteps, reducing few-shot prediction loss on the novel object by at least 30% relative to a fixed-dimension JEPA (B1) baseline.
+2. Under dynamic background noise (i.i.d. pixel-level Gaussian noise, σ = 0.15), ThalamusNet's hierarchical latent representations and VICReg-based covariance regularization will project out high-frequency spatial-temporal noise, resulting in a prediction loss ratio (L_noise / L_clean) that is at least 2.0x lower than that of B1 (JEPA) and B2 (NGC) baselines.
+3. The Thalamic Attention watch-dog is resilient to the Noisy-TV trap; the attention token will spend at least 70% of its active timesteps tracking the structured physical entities rather than the unpredictable background noise.
 
 ## 2. Falsification Criterion
-The hypothesis will be proven false if any of the following occur:
-1. The physical tracking overlap $\mathcal{O}_{track}$ of $M_{active}$ across the 5-seed test suite is $< 70.0\%$.
-2. The post-collision L2 prediction loss ratio $\frac{\mathcal{L}_{collision}(M_{active})}{\mathcal{L}_{control}} \ge 0.65$ for either control $M_{control} \in \{M_{random}, M_{no\_motor}\}$ (failing to demonstrate a $35\%$ reduction in prediction error).
-3. The prediction loss on the attended locus under self-generated attention is $> 1.15$ times the loss under externally primed attention.
-4. Active closed-loop motor coupling causes drift collapse or numeric instability, resulting in an overall test L2 prediction loss higher than the baseline B1 model (0.0452).
+The hypothesis will be proven false if:
+1. ThalamusNet fails to recruit a new dimension within 500 steps of the 4th object's introduction, or its prediction loss on the novel object is not at least 30% lower than B1.
+2. The prediction loss ratio (L_noise / L_clean) for ThalamusNet under dynamic noise is less than 1.5x lower than the ratio of B1 or B2.
+3. The attention token's spatial tracking overlap with the physical objects falls below 60% in the presence of dynamic noise, indicating attentional trapping by the unpredictable background.
 
 ## 3. Proposed Method
-1. **Adaptive Cooldown & Attention (`src/thalamus.py`)**: Replace the rigid 200-step cooldown with a dynamic, surprise-modulated cooldown $C_t = \text{clip}(\frac{\alpha}{|\Delta E_t| + \epsilon}, 10, 30)$ where $\Delta E_t = E_t - E_{t-1}$ is the temporal change in local surprise.
-2. **Subsumption Motor Controller (`src/motor.py`)**: Create/modify the motor module to implement three hierarchical layers:
-   - *Lower Layer (Reflexive Tracking)*: A PD controller that maps the attended spatial centroid of the attention token to continuous pointer acceleration to match the object's position.
-   - *Middle Layer (Predictive Kinematics)*: Uses the temporal latent predictions to preemptively adjust the pointer's velocity and anticipate the object's path.
-   - *Upper Layer (Deliberate Perturbation)*: Detects when tracking error is low and surprise is stabilized ("boredom"), and overrides lower layers to trigger a "push" command to collide with the object.
-3. **Environment Alignment (`src/environment.py`)**: Verify that the 1D physics sandbox properly integrates continuous pointer actions (acceleration, push commands) and exposes correct bounding box/centroid targets.
-4. **Progressive Coupling & Sweep (`src/train_eval.py`)**:
-   - Implement the staged training schedule: Steps 0-1000: Decoupled random motor actions; Steps 1000-3000: Lower-layer visual tracking active; Steps 3000-5000: Full subsumption motorics (predictive tracking + deliberate push perturbations) active.
-   - Execute a systematic 5-seed sweep across: $M_{no\_motor}$ (passive), $M_{random}$ (random exploration), and $M_{active}$ (proposed model).
-   - Evaluate causal sensitivity by randomizing object masses in the test environments and measuring post-collision velocity prediction error. Log attention token traces to measure the self-generated vs. primed attention loss.
+1. Modify the 1D physics sandbox (in src/) to support:
+   a. Static background noise (constant random pixel offset pattern).
+   b. Dynamic background noise (i.i.d. Gaussian noise σ = 0.15 added to background pixels at each timestep).
+   c. N=4 object initialization with a novel, unseen physical parameter range (size, mass, color, velocity).
+2. Run a 5-seed comparison sweep evaluating ThalamusNet, B1 (JEPA), and B2 (NGC) under:
+   - Clean test environments.
+   - Static noise environments.
+   - Dynamic noise (Noisy-TV) environments.
+3. Perform the 4-object generalization test: train on N=3, inject the 4th object, and log prediction error curves, dimension recruitment timesteps, and post-recruitment specialization.
+4. Perform the causal-sensitivity sweep on the 4th object by altering its mass/velocity post-collision and measuring prediction adaptation times.
+5. Log the complete Phase 4 metrics battery: compute/memory profiles (FLOPs/timestep), plasticity-token traces, and the transition from externally primed to self-generated attention under noisy conditions.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
