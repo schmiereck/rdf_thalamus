@@ -252,3 +252,386 @@ motor experiments before the representation base is sound.
 - The Manager Agent rejects any phrasing of the form "we have shown / proven /
   discovered" unless backed by reproducible quantitative evidence against the
   baselines from Section 5.
+
+## 10. Phase 5 — Extended Input Model: RGB + Pixel-Position
+
+### 10.1 Motivation
+
+The current input to the network is a raw 1D array of 128 RGB pixel values. Each
+pixel is identified only by its position in the array (implicit in the
+convolutional receptive field). Extending the input to explicitly include
+**pixel-position encodings** alongside RGB values provides the network with a
+richer, spatially grounded input that may improve coordinate extraction and
+spatial specialization — addressing the persistent "Spatial Specialization Gap"
+observed in Phases 6–11.
+
+### 10.2 Input Format
+
+Each pixel `i` (where `i ∈ [0, 127]`) provides an input vector:
+
+```
+input[i] = [R_i, G_i, B_i, pos_i]
+```
+
+where `pos_i` is a normalized position encoding (e.g., `pos_i = i / 127.0` for
+linear encoding, or a sinusoidal positional embedding analogous to Transformer
+position encodings).
+
+**Candidate position encodings** — Planner must select one or motivate an
+alternative:
+- Linear normalized: `pos_i = i / (N-1)`.
+- Sinusoidal: `pos_i = [sin(i/10000^{2k/d}), cos(i/10000^{2k/d})]` for
+  multiple frequencies.
+- Learnable: a trainable embedding per spatial position (though this
+  contradicts the "no-supervision" philosophy).
+
+### 10.3 Architectural Impact
+
+- The convolutional backbone input channels increase from 3 (RGB) to 4 (RGB+pos)
+  or more (for sinusoidal encodings).
+- The Non-Parametric Soft-Argmax projection (Arm F) should become more accurate
+  because the backbone receives explicit position information, potentially
+  reducing the Active-Perception Drift Penalty observed in Phase 12.
+- **Hypothesis:** explicit position encoding will improve the centroid decoding
+  MSE from 85.85 (current CLTS) to below 75.0, eliminating the representation
+  drift under active control.
+
+### 10.4 Evaluation
+
+- Compare the extended-input model against the current RGB-only model on all
+  Phase 4 metrics (Section 6).
+- Specifically measure whether the Spatial Specialization Gap narrows: do
+  recruited dimensions show higher correlation with individual object positions
+  when position information is explicitly provided?
+- Control for the additional parameter count introduced by the position channel.
+
+## 11. Phase 5 — Gaze Direction Control (Foveated Attention)
+
+### 11.1 Motivation
+
+The current architecture perceives the full 1D pixel array simultaneously. In
+biological vision, the **fovea** provides high-resolution input only at the
+fixation point, with peripheral resolution falling off sharply. Introducing a
+gaze-direction mechanism forces the system to actively decide **where to look**,
+making the transition from externally primed to self-generated attention
+(Section 4.D, "Target Regime") an operational necessity rather than an optional
+emergent property.
+
+### 11.2 Mechanism: Eye / Head Rotation
+
+- **Gaze pointer:** analogous to the existing motor pointer, but controlling
+  **sensory input** rather than physical interaction. The gaze pointer
+  determines the center of a **foveated receptive field**.
+- **Foveated input:** pixels near the gaze center are sampled at full resolution;
+  pixels in the periphery are downsampled or blurred. This creates an
+  information gradient that rewards accurate gaze control.
+- **Gaze motor commands:** left/right acceleration of the gaze pointer (similar
+  to the existing pointer mechanics), plus a potential "saccade" action for
+  rapid re-fixation.
+- **Objective:** the system must learn to keep a "target object" (the entity with
+  highest surprise, or the entity currently tracked by the Attention Token)
+  **centered in the fovea**. This is analogous to the biological oculomotor
+  reflex of maintaining fixation on an object of interest.
+
+### 11.3 Relationship to Existing Architecture
+
+- The foveated input feeds into the same convolutional backbone as the current
+  full-field input — but the effective information content depends on gaze
+  position.
+- The **Thalamic Gating mechanism** (Pillar D) must now coordinate two motor
+  systems: the physical pointer (Pillar E) and the gaze pointer.
+- **Subsumption hierarchy extension:**
+  - *Lowest layer:* reflexive gaze tracking of high-contrast edges (saccade to
+    motion onset).
+  - *Middle layer:* smooth pursuit — maintain fixation on a moving object.
+  - *Upper layer:* deliberate gaze shifts — look away from the currently
+    tracked object to explore peripheral surprises.
+
+### 11.4 Evaluation Criteria
+
+- **Fixation stability:** measure the fraction of time the target object is
+  within the foveal region.
+- **Saccade efficiency:** compare the system's saccade latency and accuracy
+  against a random-gaze baseline.
+- **Information gain:** compare the temporal prediction error under foveated
+  input vs. full-field input — the system should achieve comparable prediction
+  quality with lower total input bandwidth if gaze is well-directed.
+
+## 12. Phase 5 — Interactive Demo Application
+
+Building on the validated Phase 4 architecture (Arm F Non-Parametric Projection +
+Arm G CLTS Motorics), an **interactive demo application** must be developed that
+allows a human user to observe the Thalamus network during live operation.
+
+### 12.1 Visualization Requirements
+
+The demo must render the following in real time:
+
+- **Environment view:** the 1D (or 2D, if extended) physics sandbox with all
+  objects, the agent's pointer position, and push actions.
+- **Latent space view:** the current latent representation of each layer /
+  graph node, including dynamically recruited dimensions.
+- **Attention token trace:** which layer currently holds the Attention Token, and
+  the surprise values driving the routing decision.
+- **Motor output:** the active subsumption layer, pointer acceleration vector,
+  push commands, and (if implemented) gaze pointer position.
+- **Prediction vs. reality:** overlay of predicted next-step latent states
+  against actual observed states (temporal prediction error visualization).
+
+### 12.2 Human Interaction Capabilities
+
+The human user must be able to:
+
+- **Add / remove objects** from the environment at runtime (triggering the N→N+1
+  generalization dynamics and dimension recruitment).
+- **Change object properties** (mass, velocity, color, size) to observe the
+  system's adaptation response.
+- **Inject noise** (global Gaussian noise, Noisy-TV distractors) to test the
+  watchdog's noise robustness in real time.
+- **Pause / step / resume** the simulation for detailed frame-by-frame analysis.
+- **Toggle motor modes** (passive observation, random babbling, CLTS active
+  probing) to compare behaviors live.
+
+### 12.3 Implementation Constraints
+
+- The demo should run as a standalone Python application (e.g., using PyGame,
+  Matplotlib animation, or a lightweight web frontend via Flask/FastAPI +
+  HTML/JS).
+- Frame rate must be sufficient for perceptual continuity (≥ 10 fps render,
+  simulation can run faster internally).
+- All internal state must be inspectable without modifying the core
+  `src/thalamus.py` or `src/motor.py` architecture — use observer hooks or
+  logging callbacks.
+
+## 13. Phase 6 — Dimension-Width Trade-off: Aggressive Spatial Compression
+
+### 13.1 Motivation
+
+Phase 4 revealed that the "Spatial Specialization Gap" persists: recruited
+dimensions do not self-organize into semantically meaningful channels because
+each node has too many spatial positions and too few latent dimensions to
+simultaneously encode position, color, velocity, and object identity. The
+current architecture maintains near-constant spatial width across layers.
+
+The biological cortex does the opposite: spatial resolution **decreases sharply**
+from V1 to IT, while the number of feature dimensions (receptive field
+complexity) **increases dramatically**. This section mandates implementing this
+trade-off explicitly.
+
+### 13.2 Mechanism
+
+Each layer in the hierarchy aggressively reduces spatial width while expanding
+latent dimensionality:
+
+```
+Layer 0: [128 nodes ×  3 dim]  — raw pixel input (RGB)
+Layer 1: [ 32 nodes ×  8 dim]  — edge / color features
+Layer 2: [  8 nodes × 16 dim]  — object-level features
+Layer 3: [  2 nodes × 32 dim]  — scene-level abstractions
+```
+
+**Merging rule:** neighboring nodes merge when their latent representations are
+sufficiently similar (cosine similarity > threshold). On merge:
+- Spatial resolution halves (or reduces by the merge factor).
+- The merged node inherits the union of latent dimensions from both parents.
+- New dimensions may be recruited (via GDASR) if the merged representation
+  leaves significant residual prediction error unexplained.
+
+**Candidate merging strategies** — Planner must select one:
+- Fixed pooling strides (deterministic, like CNNs).
+- Surprise-driven adaptive merging: nodes merge only when local prediction
+  error is below a stability threshold, indicating that their individual
+  representations have converged.
+- Competitive merging: only the pair with highest similarity merges per
+  timestep (avoids catastrophic simultaneous merging).
+
+### 13.3 Sub-Layers (Micro-Columns)
+
+A single node at any level of the hierarchy may internally contain **multiple
+micro-columns** — lightweight sub-networks that specialize on different aspects
+of the same spatial input:
+
+- Micro-column A: color / texture features.
+- Micro-column B: motion / velocity features.
+- Micro-column C: spatial position encoding.
+
+Each micro-column contributes its own prediction to the temporal prediction
+error. The **surprise signal is computed per micro-column**, allowing the
+Thalamic Gating mechanism to selectively activate plasticity in the
+micro-column with the highest unexplained error.
+
+This addresses the Phase 6–11 finding that unsupervised prediction error
+distributes coordinate information across the entire latent manifold: by
+providing structurally separated micro-columns, the optimization landscape
+naturally encourages disentanglement without explicit supervision.
+
+### 13.4 Evaluation
+
+- Measure whether the Spatial Specialization Gap narrows: do individual
+  micro-columns show higher single-dimension correlation with specific physical
+  properties (position, velocity, color) than the current monolithic layers?
+- Compare the dimension-compressed architecture against the current flat
+  architecture on all Phase 4 metrics.
+- Track the adaptive merging dynamics: do lower layers stabilize before upper
+  layers (validating the expected curriculum)?
+
+## 14. Phase 6 — Graph Topology: Layer-Nodes as a Network
+
+### 14.1 Motivation
+
+The current architecture is a strict linear stack: Layer 0 → Layer 1 → Layer 2.
+Information flows bottom-up only, with no lateral connections, no skip
+connections, and no top-down feedback (except through the Attention Token
+routing). This is biologically implausible: the cortex is a heavily recurrent
+network with lateral connections within layers and top-down projections from
+higher areas.
+
+Phase 4 findings that motivate this change:
+- **Iter 004 (Tracking Lag):** the rigid stack forces all information through
+  every layer, even when a low-level surprise could directly drive motor action.
+- **Iter 010 (DSDT Failure):** stop-gradient decoupling between streams caused
+  semantic blindness because there was no alternative information pathway.
+
+### 14.2 Mechanism
+
+Replace the linear stack with a **directed graph** of layer-nodes:
+
+- Each node is a computational unit with its own latent dimensions, temporal
+  predictor, and surprise signal (as defined in Pillars A–C).
+- **Edges** between nodes carry latent projections. Edge weights are modulated
+  by surprise: a high-surprise edge strengthens its connection (amplifying
+  information flow from the source of unexplained error).
+- **Lateral connections:** nodes at the same abstraction level can exchange
+  information (e.g., a "color" node and a "motion" node at the same spatial
+  scale can mutually inform).
+- **Top-down connections:** higher-level nodes can send predictions back to
+  lower-level nodes, enabling predictive coding (Rao-Ballard style).
+- **Skip connections:** a low-level node may directly project to the motor
+  output or to a high-level node, bypassing intermediate layers when the
+  surprise signal indicates that the intermediate processing is not needed.
+
+### 14.3 Graph Construction Rules
+
+The graph is **not** fully connected. Connections are governed by:
+
+- **Initial topology:** at initialization, the graph starts as a simple linear
+  chain (identical to the current architecture). This ensures backward
+  compatibility and provides a stable starting point.
+- **Edge recruitment:** new edges are spawned when a node's prediction error
+  remains high despite its current inputs — indicating that it needs information
+  from a source it is not currently connected to.
+- **Edge pruning:** edges whose information contribution (measured by gradient
+  magnitude or mutual information) falls below a threshold for sustained
+  timesteps are pruned.
+- **Node spawning:** a new node may be created when no existing node can reduce
+  the prediction error at a particular spatial scale — this extends the GDASR
+  dimension recruitment to the graph level.
+
+### 14.4 Stability Constraints
+
+- **Cycle detection:** the graph must remain a DAG (directed acyclic graph)
+  for the forward pass, with recurrence handled through temporal delay (t-1
+  states fed back, not instantaneous loops).
+- **Maximum fan-in:** each node may receive inputs from at most K other nodes
+  (e.g., K=4) to prevent information overload and maintain computational
+  tractability.
+- **Incremental introduction:** start with a linear chain + one lateral
+  connection per layer. Gradually relax constraints as stability is validated.
+
+### 14.5 Evaluation
+
+- Compare the graph architecture against the linear stack on all Phase 4
+  metrics.
+- Track graph evolution over training: does the system discover useful skip
+  connections? Do lateral connections emerge where expected (between nodes
+  processing complementary features)?
+- Measure information flow: which edges carry the most gradient magnitude?
+  Does the graph topology converge to a stable structure or remain chaotic?
+
+## 15. Phase 6 — Dual Control: Surprise Detector vs. Categorizer
+
+### 15.1 Motivation
+
+In the current architecture, the temporal prediction error ("surprise") serves
+simultaneously as:
+1. the **learning signal** (Pillar B — weight updates minimize surprise),
+2. the **attention routing signal** (Pillar D — Attention Token goes to highest
+   surprise),
+3. the **motor drive** (Pillar E — motor acts to reduce surprise).
+
+This triple role creates competitive optimization dynamics, as demonstrated by
+the DSMC failure (Iter 009): coupling surprise to regularization parameters
+caused the learning signal and the attention signal to interfere destructively.
+
+Phase 6 mandates a **clean separation** of two distinct control mechanisms.
+
+### 15.2 Mechanism: Two Controllers
+
+**Controller 1 — Surprise Detector (fast, reactive):**
+- Operates on **all nodes in parallel**, every timestep.
+- Computes local temporal prediction error at each node.
+- Output: a **saliency map** across all nodes, indicating where unexplained
+  variance is highest.
+- Drives: Attention Token routing (Pillar D) and gaze direction (Section 11).
+- **Does NOT directly modify weights.** It only decides where to look and
+  where to focus plasticity.
+
+**Controller 2 — Categorizer (slow, deliberative):**
+- Operates only on the **node(s) currently holding the Attention Token**.
+- Goal: reduce the surprise at the attended node by forming **new categories,
+  dimensions, or connections** that generalize across multiple scenarios.
+- A new category/dimension is "accepted" only if it reduces surprise across
+  a **validation buffer** of diverse past states — not just the current
+  timestep. This prevents overfitting to transient noise.
+- Drives: dimension recruitment (GDASR), micro-column specialization
+  (Section 13.3), and edge recruitment (Section 14.3).
+- **Modifies weights and structure**, but only at the attended locus.
+
+### 15.3 Interaction Protocol
+
+```
+Every timestep:
+  1. All nodes compute forward pass and temporal prediction.
+  2. Surprise Detector computes saliency map.
+  3. Attention Token routes to highest-saliency node.
+  4. Categorizer activates at the attended node:
+     a. If current dimensions explain the surprise → weight update only.
+     b. If residual surprise persists across validation buffer →
+        recruit new dimension or micro-column.
+     c. If no local improvement possible → propose new graph edge
+        (Section 14.3) to import information from elsewhere.
+  5. Motor systems (physical pointer + gaze) act based on saliency map
+     and current Categorizer state.
+```
+
+### 15.4 Anti-Chaos Constraint: Consistency Loss
+
+To address the "Chaos Reduction" objective — ensuring that representations are
+not just locally predictive but globally consistent — the Categorizer maintains
+a **consistency buffer**: a rolling window of latent states from diverse
+environmental configurations.
+
+A new dimension or category is accepted only if it **reduces variance** across
+this consistency buffer. This implements a form of **Minimum Description Length**
+(MDL): the system prefers representations that compress many different scenarios
+into fewer, more general categories over representations that overfit to a
+single scenario.
+
+Formally:
+```
+L_consistency = Var_{scenarios}[z_new] / Var_{scenarios}[z_old]
+```
+A new dimension is accepted only if `L_consistency < 1.0` (i.e., it reduces
+cross-scenario variance rather than increasing it).
+
+### 15.5 Evaluation
+
+- Measure whether the dual-control separation resolves the DSMC competitive
+  optimization failure (Iter 009).
+- Track the Categorizer's acceptance rate: what fraction of proposed dimensions
+  pass the consistency buffer validation?
+- Compare the representation quality (cross-dimension correlation, spatial
+  specialization) against the single-controller baseline.
+- Verify that the Surprise Detector's saliency map remains responsive to novel
+  stimuli while the Categorizer operates on a slower timescale.
+
