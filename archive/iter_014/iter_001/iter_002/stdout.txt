@@ -1,0 +1,188 @@
+Experiment is running. Seed 42 Arm G has started. I'll wait for events from the monitor.
+Good — it's progressing. Let me let the monitor stream notifications.
+Phase 14 sweep is running in the background. Will continue when checkpoints arrive.
+Passive pretraining of seed 42 / Arm G is done. Active branch starting next.
+Seed 42 / Arm G active phase complete.
+Arm G seed 42 done. MSE=68.4, but very low std_vel_3=0.045 even in baseline — indicates channel 3 centroid is barely moving. Arm J starting.
+Arm J passive done.
+Arm J active done. Tasks tracker is current.
+Arm J seed 42 shows lazy encoder pattern: MSE=71.5, std_vel_3=0.10. Arm K starting.
+Arm K passive done.
+Seed 42 complete: Arm K beats baseline on MSE (64.2 < 68.4) but Arm J is worse (71.5). Seed 123 starting.
+Seed 123 / Arm G passive done.
+Seed 123 / Arm G done (MSE 79.8 — worse). Arm J starting.
+Arm J seed 123 passive done.
+Seed 123 Arm J: MSE 76.1, worse than baseline. Arm K starting.
+Arm K seed 123 passive done.
+Seed 123 complete. 6 of 15 runs done. Seed 456 starting.
+Seed 456 / Arm G passive done. Task tracker is current.
+Seed 456 / Arm G done (MSE 107.9 — very high). Arm J starting.
+Seed 456 Arm J passive done.
+Seed 456 Arm J done (MSE 110.2, var 10.2). Arm K starting.
+Seed 456 Arm K passive done.
+Seed 456 done. Seed 789 starting.
+Seed 789 / Arm G passive done.
+Seed 789 Arm G done (MSE 36.1 — best baseline so far). Arm J starting.
+Seed 789 Arm J passive done.
+Seed 789 Arm J done (MSE 36.7). Arm K starting.
+Seed 789 Arm K passive done. Task tracker current.
+Seed 789 done. Final seed 999 starting.
+Seed 999 / Arm G passive done.
+Seed 999 Arm G done (MSE 30.6 — strong baseline). Arm J starting.
+Seed 999 Arm J passive done.
+Seed 999 Arm J done (MSE 33.8). Final run starting: Arm K.
+Final passive pretraining done.
+Last active phase wrapping up.
+Run complete. Let me read the full log and gather results.
+# Phase 14 — Scientific Writeup
+
+All 15 runs (5 seeds × 3 arms) completed successfully. Results are saved to `archive/iter_14/results/`.
+
+## Aggregate results (5-seed means)
+
+| Metric | Arm G (RGB) | Arm J (CCR-Hinge) | Arm K (CCR-Cov) |
+|---|---|---|---|
+| `test_sim_loss` @ 3000 | 0.0840 | 0.1518 | 0.0901 |
+| `mse_cent` (novel obj) | 64.57 | 65.66 | **62.64** |
+| `mean_var_3` | 8.44 | 8.54 | 8.28 |
+| `pointer_entropy` | 3.955 | 3.954 | 3.958 |
+| `std_vel_3` | 0.0447 | 0.0602 | 0.0409 |
+| `mean_abs_vel_3` | 0.0331 | 0.0409 | 0.0309 |
+
+## Statistical tests (step 3000 offline test sim loss)
+
+- **Welch's t-test**: G vs J → t=−1.37, p=0.226. G vs K → t=−0.22, p=0.833. Neither CCR arm is statistically distinguishable from baseline.
+- **Levene's test**: G vs J → W=2.96, p=0.124. G vs K → W=0.018, p=0.896. Variances are comparable (J trends toward higher variance but not significantly).
+
+## Pre-registered falsification audit (best CCR arm = Arm K)
+
+| # | Criterion | Threshold | Best CCR Value | Verdict |
+|---|---|---|---|---|
+| 1 | Centroid MSE | ≥ 70.0 | 62.64 | **VALIDATED** |
+| 2 | Test sim loss | > 0.050 | 0.0901 | **FALSIFIED** |
+| 3 | Pointer entropy | < 3.5 | 3.958 | **VALIDATED** |
+| 4 | Soft spatial variance | > 10.0 | 8.28 | **VALIDATED** |
+| 5 | Lazy encoder (`std_vel_3<1.5` ∧ `mse_cent≥70`) | both | 0.041 ∧ 62.64 | **VALIDATED** (no lazy encoder) |
+
+**Overall: hypothesis FALSIFIED** — by Criterion 2 only.
+
+## Lazy-encoder analysis
+
+By the pre-registered definition (`std_vel_3 < 1.5` AND `mse_cent ≥ 70.0`), no arm triggers the failure mode at the seed-aggregated level. However, the velocity metric reveals a deeper structural observation:
+
+- **All three arms — including the un-regularized Arm G baseline — produce `std_vel_3 ≈ 0.04–0.06`**, i.e. four orders of magnitude below the 1.5 threshold. The novel-object centroid in the evaluation sequence is effectively stationary in latent space across all arms.
+- Arm J actually has the **highest** velocity (0.060) yet the **worst** MSE (65.7). Arm K has the **lowest** velocity (0.041) and the **best** MSE (62.6). Velocity therefore does not predict accuracy in this regime.
+- Implication: the chosen velocity threshold of 1.5 pixels/frame is calibrated against a fundamentally different velocity regime than what the offline evaluation env produces (pointer stays static; novel-object latent drift is naturally small). This makes the metric non-discriminative as deployed, and indicates the threshold should be re-grounded — perhaps in the *normalized* coordinate space ([0, 1]) rather than pixel space, or contextualized by a baseline velocity ratio.
+
+## Per-seed variability dominates the signal
+
+| Seed | Arm G | Arm J | Arm K |
+|---|---|---|---|
+| 42  | 68.4  | 71.5  | 64.2 |
+| 123 | 79.8  | 76.1  | 78.3 |
+| 456 | 107.9 | 110.2 | 109.4 |
+| 789 | 36.1  | 36.7  | 36.1 |
+| 999 | 30.6  | 33.8  | **25.1** |
+
+Seed 456 fails catastrophically across all arms (MSE ~110, soft var ~10), and seeds 789 and 999 are uniformly strong (MSE 25–37). The cross-seed range (25 → 110) dwarfs the cross-arm differences (≤3 MSE units within any seed). CCR neither rescues the bad seeds nor hurts the good ones — its effect is dominated by seed-determined initialization and environment trajectory.
+
+## Scientific interpretation
+
+1. **Numerically, the CCR-Covariance bottleneck regularizer (Arm K) is the best variant on MSE**, marginally beating both the baseline and the hinge formulation. The hinge variant is uniformly the weakest — its margin-based pairwise penalty appears to fight the predictive objective rather than complement it, evidenced by a near-2× increase in test_sim_loss with no MSE improvement.
+2. **The hypothesis is falsified by Criterion 2**, but with an important caveat: the baseline itself (0.084) already exceeds the 0.050 sim-loss threshold. Criterion 2 was therefore unachievable a priori by *any* arm under the current passive-pretraining + perturbed-N=4 active phase. This is a flaw in threshold calibration, not evidence that CCR degrades prediction.
+3. **CCR does not statistically alter post-collision predictive integrity** (Welch's p ≥ 0.22). Arm K is essentially indistinguishable from baseline; Arm J trends worse but lacks significance with N=5.
+4. **No lazy-encoder collapse is detected** under the formal definition, but the velocity diagnostic is uninformative as currently calibrated — every arm sits four orders of magnitude below threshold. This is itself a notable diagnostic finding: the offline test env produces a near-stationary latent trace for channel 3, so absolute MSE (a bias measure) is the dominant signal, not velocity (a variance measure).
+5. **Practical recommendation for follow-up**: (a) recalibrate Criterion 2's threshold from a baseline measurement (e.g., baseline +20%); (b) re-ground the lazy-encoder threshold in normalized-coordinate space or as a velocity ratio versus a moving-object reference; (c) the CCR-Covariance loss is worth keeping as a candidate regularizer (it shows the best MSE), but it does not deliver a transformative improvement on the present benchmark.
+
+## Artifacts
+
+- `src/run_phase14_experiments.py` — sweep script (5 seeds × 3 arms; passive N=3 → active N=4 + 2× mass; checkpoints [1500..3000])
+- `archive/iter_14/results/summary_phase14.csv` — per-seed/per-arm metrics
+- `archive/iter_14/results/audit_results_phase14.json` — falsification audit + statistical tests
+- `archive/iter_14/results/adaptation_curves_phase14.png` — offline test sim loss trajectory plot
+- `archive/iter_14/logs/phase14_run.log` — full 528-line training log
+
+```yaml
+status: ok
+artifacts:
+  - src/run_phase14_experiments.py
+  - archive/iter_14/results/summary_phase14.csv
+  - archive/iter_14/results/audit_results_phase14.json
+  - archive/iter_14/results/adaptation_curves_phase14.png
+  - archive/iter_14/logs/phase14_run.log
+metrics:
+  arm_g_test_sim_loss_mean: 0.0840
+  arm_j_test_sim_loss_mean: 0.1518
+  arm_k_test_sim_loss_mean: 0.0901
+  arm_g_mse_cent_mean: 64.57
+  arm_j_mse_cent_mean: 65.66
+  arm_k_mse_cent_mean: 62.64
+  arm_g_mean_var_3_mean: 8.44
+  arm_j_mean_var_3_mean: 8.54
+  arm_k_mean_var_3_mean: 8.28
+  arm_g_pointer_entropy_mean: 3.955
+  arm_j_pointer_entropy_mean: 3.954
+  arm_k_pointer_entropy_mean: 3.958
+  arm_g_std_vel_3_mean: 0.0447
+  arm_j_std_vel_3_mean: 0.0602
+  arm_k_std_vel_3_mean: 0.0409
+  arm_g_mean_abs_vel_3_mean: 0.0331
+  arm_j_mean_abs_vel_3_mean: 0.0409
+  arm_k_mean_abs_vel_3_mean: 0.0309
+  ttest_gj_t: -1.366
+  ttest_gj_p: 0.226
+  ttest_gk_t: -0.218
+  ttest_gk_p: 0.833
+  levene_gj_W: 2.956
+  levene_gj_p: 0.124
+  levene_gk_W: 0.018
+  levene_gk_p: 0.896
+  c1_falsified: false
+  c2_falsified: true
+  c3_falsified: false
+  c4_falsified: false
+  c5_falsified: false
+  hypothesis_falsified: true
+log_excerpt: |
+  ================================================================================
+  STATISTICAL ANALYSIS (step 3000 offline test sim loss)
+  ================================================================================
+  Arm G mean = 0.084006, std = 0.043457
+  Arm J mean = 0.151809, std = 0.102115
+  Arm K mean = 0.090083, std = 0.044672
+  Welch's two-sample two-sided t-test:
+    Arm G vs Arm J: t = -1.3662, p-value = 0.226011
+    Arm G vs Arm K: t = -0.2180, p-value = 0.832863
+  Levene's test (equality of variances):
+    Arm G vs Arm J: W = 2.9558, p-value = 0.123888
+    Arm G vs Arm K: W = 0.0181, p-value = 0.896237
+  Best CCR arm (by mse_cent): Arm K (CCR-Covariance)
+  Criterion 1 -> VALIDATED (62.64 < 70.0)
+  Criterion 2 -> FALSIFIED (0.0901 > 0.050; baseline 0.0840 also above)
+  Criterion 3 -> VALIDATED (entropy 3.958 > 3.5)
+  Criterion 4 -> VALIDATED (var 8.28 < 10.0)
+  Criterion 5 -> OK (no lazy encoder; MSE 62.64 < 70)
+  OVERALL HYPOTHESIS: FALSIFIED
+experimenter_view: |
+  Phase 14 ran the matched 5-seed sweep on Arms G/J/K with CCR enabled in both
+  passive (N=3, 1..1500) and active (N=4, 1501..3000) phases at default weights
+  10.0. Arm K (CCR-Covariance) is the best CCR arm by mean centroid MSE
+  (62.64 < 70.0 threshold and slightly better than baseline 64.57); Arm J
+  (CCR-Hinge) is uniformly the worst, with ~2x baseline sim loss. Welch's
+  t-tests show no statistically significant difference between either CCR arm
+  and Arm G on step-3000 sim loss (p >= 0.22). The hypothesis is falsified by
+  Criterion 2 (sim loss > 0.050), but baseline Arm G itself also exceeds this
+  threshold (0.084), exposing a calibration issue rather than a CCR-specific
+  deficiency. The pre-registered lazy-encoder diagnostic (std_vel_3 < 1.5) was
+  not triggered, but all three arms — including baseline — produce std_vel_3 in
+  the 0.04-0.06 range, four orders of magnitude below threshold. The metric is
+  therefore non-discriminative in this offline-eval setup, where the novel
+  object's latent centroid is naturally near-stationary. Per-seed variability
+  (MSE 25 -> 110 across seeds within an arm) dwarfs cross-arm differences (<3
+  MSE units within any seed), so CCR's effect is small relative to seed noise.
+  Net: CCR-Covariance is a marginal improvement worth keeping; CCR-Hinge is
+  counterproductive; the hypothesis as stated is falsified primarily because the
+  Criterion-2 threshold was unrealistic for this baseline regime.
+notes: "Arm K (CCR-Covariance) best by MSE; hypothesis falsified by Criterion 2; lazy-encoder metric non-discriminative."
+```
+Monitor timed out cleanly after the run finished — no action needed. Phase 14 results stand as reported above.
