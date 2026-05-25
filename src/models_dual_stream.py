@@ -668,7 +668,30 @@ class NonParametricJEPASpatial(nn.Module):
     def calculate_centroid_and_variance(self, a_spatial):
         return calculate_centroid_and_variance(a_spatial)
 
-    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0):
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None):
+        """
+        Args:
+            x_hist (Tensor): shape (B, H, 3, 128)
+            x_target (Tensor): shape (B, 3, 128)
+            sim_weight (float): VICReg invariance loss weight
+            var_weight (float): VICReg variance loss weight
+            cov_weight (float): VICReg covariance loss weight
+            lambda_spatial (float): spatial bottleneck loss weight
+            k_chan (int, optional): channel index to minimize spatial variance on. Defaults to d_t - 1.
+            mask_coord (bool): whether to zero out coordinate history in predictor.
+            ccr_mode (str): CCR mode ('none', 'hinge', 'covariance').
+            ccr_smooth_weight (float): CCR smoothness loss weight.
+            ccr_spatial_weight (float): CCR spatial loss weight.
+            d_t_predict (int or None): Number of dimensions the predictor should predict.
+                If None, defaults to self.d_t (standard behavior). If set to a value
+                less than self.d_t, the predictor only receives/outputs d_t_predict
+                active dimensions, keeping its higher-index dimensions untrained.
+                This is used by the ESUG evaluation protocol to isolate the encoder's
+                new-dimension signal from predictor confounds.
+        """
+        # Determine effective prediction dimension
+        dt_pred = d_t_predict if d_t_predict is not None else self.d_t
+        
         B, H, C, W = x_hist.shape
         x_hist_flat = x_hist.reshape(B * H, C, W)
         
@@ -684,27 +707,34 @@ class NonParametricJEPASpatial(nn.Module):
         z_hist_coord_pred = z_hist_coord
         z_target_coord_pred = z_target_coord
         
-        # Predict target representations
+        # Predict target representations using dt_pred for the predictor's active dim mask
         z_pred_coord, z_pred_dyn = self.predictor(
             z_hist_coord_pred, 
             z_hist_dyn, 
-            self.d_t, 
+            dt_pred,  # <-- use dt_pred instead of self.d_t
             mask_coord=mask_coord
         )
         
-        # Select active dimensions
+        # Compute coordinate/dynamics prediction over dt_pred dimensions
+        z_pred_coord_pred = z_pred_coord[:, :dt_pred]
+        z_target_coord_pred_dt = z_target_coord_pred[:, :dt_pred]
+        
+        z_pred_dyn_pred = z_pred_dyn[:, :dt_pred]
+        z_target_dyn_pred = z_target_dyn[:, :dt_pred]
+        
+        # Select all self.d_t active dimensions for variance and covariance losses
         z_pred_coord_active = z_pred_coord[:, :self.d_t]
         z_target_coord_active = z_target_coord[:, :self.d_t]
         
         z_pred_dyn_active = z_pred_dyn[:, :self.d_t]
         z_target_dyn_active = z_target_dyn[:, :self.d_t]
         
-        # 1. Similarity (Invariance) Loss
-        sim_loss_coord = F.mse_loss(z_pred_coord_active, z_target_coord_pred[:, :self.d_t])
-        sim_loss_dyn = F.mse_loss(z_pred_dyn_active, z_target_dyn_active)
+        # 1. Similarity (Invariance) Loss — computed only over dt_pred dimensions
+        sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
+        sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
         sim_loss = sim_loss_coord + sim_loss_dyn
         
-        # 2. Variance Loss
+        # 2. Variance Loss — computed over all self.d_t dimensions
         def calc_var_loss(x, gamma=1.0, eps=1e-4):
             mean = x.mean(dim=0)
             var = torch.mean((x - mean)**2, dim=0)
@@ -715,7 +745,7 @@ class NonParametricJEPASpatial(nn.Module):
         var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
         var_loss = var_loss_coord + var_loss_dyn
         
-        # 3. Covariance Loss
+        # 3. Covariance Loss — computed over all self.d_t dimensions
         def calc_cov_loss(x):
             B, d = x.shape
             if B <= 1 or d <= 1:
