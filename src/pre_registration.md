@@ -1,36 +1,32 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 015
+*   **Iteration:** 016
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
-Surprise-Adaptive Contrastive Coordinate Regularization (SA-CCR)—where the covariance regularization weight on the non-parametric soft-argmax bottleneck is dynamically scaled proportionally to the local temporal prediction error (surprise)—will stabilize coordinate representations during high-surprise transitions (collisions) more effectively than a fixed regularization weight. 
-
-Formally, we define the adaptive weight as:
-\lambda_{cov}(t) = \lambda_{cov, 0} \cdot (1 + \gamma \cdot \bar{S}(t))
-where \lambda_{cov, 0} is the baseline regularization weight, \bar{S}(t) is the exponentially smoothed temporal prediction error (surprise), and \gamma > 0 is the surprise scaling rate. We hypothesize that proportional surprise scaling (Arm L, \gamma = 2.0) will outperform fixed regularization (Arm K, \gamma = 0.0) and inverse surprise scaling (Arm M, \lambda_{cov}(t) = \lambda_{cov, 0} / (1 + \gamma \cdot \bar{S}(t))) in tracking accuracy and coordinate stability under active closed-loop motor control, without degrading overall physics prediction.
+Introducing a Probationary Warm-Up Period (WUP) of W = 100 steps for newly proposed dimensions, combined with a Predictability-Variance-Uniqueness (PVU) gating metric, will resolve the cold-start rejection bias in the Dual Control Categorizer. Specifically, under CLTS active control during the N=3 to N=4 object transition, this mechanism (Arm O) will successfully recruit the 4th dimension in at least 4 out of 5 seeds (recruitment rate >= 80%), with the recruited dimension being non-collapsed (variance > 1e-3), highly predictable (relative prediction error U_new = MSE / Var < 0.5), and non-redundant (maximum absolute correlation with existing dimensions < 0.8). This will enable the network to successfully track the novel 4th object, reducing the post-transition centroid decoding MSE from 130.39 (Arm N) to below 70.0, without increasing the test simulation loss above 0.15.
 
 ## 2. Falsification Criterion
-Our hypothesis is falsified if any of the following occur:
-1. Arm L (Proportional SA-CCR) does not achieve a statistically significant reduction in post-collision centroid decoding MSE compared to Arm K (fixed CCR-Covariance) across 5 random seeds (Welch's t-test, p >= 0.05).
-2. Arm L's post-collision test simulation loss is statistically inferior to Arm K's (Welch's t-test, p < 0.05).
-3. The soft spatial variance of Arm L's coordinate bottleneck exceeds 8.5 pixels^2 during high-surprise phases.
-4. Arm M (Inverse SA-CCR) achieves lower centroid decoding MSE than Arm L while maintaining equal or better test simulation loss.
+The hypothesis will be falsified if any of the following occur:
+1. The 4th dimension is recruited in fewer than 3 seeds (less than 60% recruitment rate) in Arm O.
+2. The mean post-transition centroid decoding MSE of Arm O is >= 75.0.
+3. The recruited 4th dimension in Arm O is redundant with existing dimensions (mean max absolute correlation >= 0.8) or is collapsed (mean variance <= 1e-3).
+4. The test simulation loss of Arm O is significantly higher than the baseline Arm K (Welch's p < 0.05 and mean loss > 0.15).
 
 ## 3. Proposed Method
-Step-by-step description of the experiment:
-1. Modify the loss computation in `src/thalamus.py` or the training pipeline to compute the exponentially smoothed local surprise \bar{S}(t) = \alpha \cdot S(t) + (1 - \alpha) \cdot \bar{S}(t-1) with smoothing factor \alpha = 0.1.
-2. Implement three experimental arms inside the training loop:
-   - Arm K (Baseline): Fixed covariance weight \lambda_{cov, 0} = 0.1 (as validated in Phase 14).
-   - Arm L (Proportional SA-CCR): Dynamic weight \lambda_{cov}(t) = \lambda_{cov, 0} * (1 + 2.0 * \bar{S}(t)).
-   - Arm M (Inverse SA-CCR): Dynamic weight \lambda_{cov}(t) = \lambda_{cov, 0} / (1 + 2.0 * \bar{S}(t)).
-3. Run a matched 5-seed sweep across all three arms under Closed-Loop Thalamic Subsumption (CLTS) control (N=3 objects during passive pre-training, transitioning to N=4 objects during active training).
-4. Record and evaluate:
-   - Post-collision centroid decoding MSE (overall and post-collision specific frames).
-   - Standardized test simulation loss.
-   - Soft spatial variance of the coordinate bottleneck.
-   - Pointer spatial coverage entropy (to monitor exploration).
-5. Apply Welch's t-test and Levene's test on the results across the 5 seeds to validate statistical significance.
+1. Identify the dimension recruitment and MDL consistency gating logic within `src/thalamus.py` and `src/models_dual_stream.py`.
+2. Implement Arm O: 
+   a. When a new dimension is proposed, set its state to `probationary=True` and initialize a counter for W = 100 steps.
+   b. Allow the probationary dimension's encoder and predictor weights to be updated via standard gradient descent during training.
+   c. Prevent the probationary dimension from affecting attention routing or triggering new proposals during these 100 steps.
+   d. At the end of the W steps, evaluate the PVU criteria on the consistency buffer:
+      - Non-collapse: Variance of the new dimension > 1e-3.
+      - Predictability: Relative prediction error U_new = MSE / Var < 0.5.
+      - Uniqueness: Maximum absolute correlation with existing dimensions < 0.8.
+   e. If all three criteria are met, accept and integrate the dimension; otherwise, prune it.
+3. Implement Arm P (Control): Same probationary warm-up period, but evaluates acceptance using the original total simulation loss ratio `L_consistency = sim_new / sim_old < 1.0`.
+4. Run a 5-seed comparative sweep across Arms K (Baseline), N (Original immediate MDL gate), O (WUP-PVU), and P (WUP-MDL).
+5. Log and evaluate: Centroid decoding MSE, dimension count, test simulation loss, soft spatial variance, and correlation statistics. Conduct statistical significance tests (Welch's t-test and Levene's test) to validate the hypothesis.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
