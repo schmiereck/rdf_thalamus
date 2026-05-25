@@ -1312,7 +1312,7 @@ def main():
     ])
 
     report_md_path = os.path.join(results_dir, "phase17_report.md")
-    with open(report_md_path, "w") as f:
+    with open(report_md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(report_lines))
     print(f"Saved {report_md_path}")
 
