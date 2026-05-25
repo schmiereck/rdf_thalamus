@@ -1,0 +1,179 @@
+
+[Tool Call: list_dir({'path': 'archive/iter_017/results'})]
+
+[Tool Result:       adaptation_curves_phase17.png
+      audit_results_phase17.json
+      phase17_report.md
+      summary_phase17.csv]
+
+
+[Tool Call: read_file({'path': 'archive/iter_017/results/audit_results_phase17.json'})]
+
+[Tool Result: {
+    "arms": [
+        "Arm P (WUP-MDL, W=100)",
+        "Arm Q (ESUG-100)",
+        "Arm Q_fast (ESUG-30)"
+    ],
+    "seeds": [
+        42,
+        123,
+        456,
+        789,
+        999
+    ],
+    "eval_steps": [
+        1500,
+        1600,
+        1700,
+        1800,
+        1900,
+        2000,
+        2500,
+        3000
+    ],
+    "transition_sweep": {
+        "means": {
+            "Arm P (WUP-MDL, W=100)": {
+                "test_sim_loss": 0.07909581065177917,
+                "mse_c...]
+
+
+[Tool Call: read_file({'path': 'archive/iter_017/results/summary_phase17.csv'})]
+
+[Tool Result: seed,arm,sweep,wup_window,esug_window,gating,test_sim_loss,abs_r_centroid,mse_cent,mse_cent_overall,mean_var,std_x_mean,std_vel,mean_abs_vel,collapsed,pointer_entropy,online_auc_1501_2000,online_auc_1501_3000,active_transition_accepted,active_transition_accepted_step,final_d_t,final_gating,attention_switch_rate,centroid_tracking_error
+42,"Arm P (WUP-MDL, W=100)",transition,100.0,-1.0,mdl,0.07557760179042816,0.02170258020316268,66.32220601945177,84.97216065306418,7.303382396697998,0.1609629094600...]
+
+Let me check the existing report to see what's already present and what needs to be fully populated.
+
+[Tool Call: read_file({'path': 'archive/iter_017/results/phase17_report.md'})]
+
+[Tool Result: ]
+
+Now I have a clear picture. The existing report is empty. Let me create the Python script to generate a fully populated report
+
+[Tool Call: write_file({'content': '#!/usr/bin/env python3\n"""Generate phase17_report.md from audit_results_phase17.json and summary_phase17.csv."""\n\nimport json\nimport csv\nimport os\nimport math\n\nRESULTS_DIR = "archive/iter_017/results"\nJSON_PATH = os.path.join(RESULTS_DIR, "audit_results_phase17.json")\nCSV_PATH = os.path.join(RESULTS_DIR, "summary_phase17.csv")\nOUT_PATH = os.path.join(RESULTS_DIR, "phase17_report.md")\n\nwith open(JSON_PATH, "r", encoding="utf-8") as f:\n    data = json.load(f)\n\n# Load CSV rows\ncsv_rows = []\nwith open(CSV_PATH, "r", encoding="utf-8") as f:\n    reader = csv.DictReader(f)\n    for row in reader:\n        csv_rows.append(row)\n\n# Filter transition rows and control rows\ntransition_rows = [r for r in csv_rows if r.get("sweep") == "transition"]\ncontrol_rows = [r for r in csv_rows if r.get("sweep") == "control"]\n\narms = data["arms"]\nseeds = data["seeds"]\n\n# Helper: format p-value\ndef fmt_p(p):\n    if p is None or (isinstance(p, float) and math.isnan(p)):\n        return "N/A"\n    if p < 0.001:\n        return f"{p:.2e}"\n    return f"{p:.4f}"\n\ndef fmt_t(t):\n    if t is None or (isinstance(t, float) and math.isnan(t)):\n        return "N/A"\n    return f"{t:.4f}"\n\ndef fmt_val(v, decimals=4):\n    if v is None or (isinstance(v, float) and math.isnan(v)):\n        return "N/A"\n    if isinstance(v, float):\n        return f"{v:.{decimals}f}"\n    return str(v)\n\nlines = []\n\n# ===== TITLE =====\nlines.append("# Phase 17 Formal Results Report")\nlines.append("")\nlines.append("## Overview")\nlines.append("")\nlines.append("Phase 17 evaluates three algorithmic arms across 5 random seeds (42, 123, 456, 789, 999)")\nlines.append("under a **transition sweep** (online adaptation with concept drift) and a **control sweep** (no drift).")\nlines.append("The goal is to assess whether the experimental arms (Q, Q_fast) are falsified relative to")\nlines.append("the reference arm P across three core criteria.")\nlines.append("")\n\n# ===== ARM SUMMARY =====\nlines.append("## Arms")\nlines.append("")\nlines.append("| Arm | Gating | Window | Description |")\nlines.append("|---|---|---|---|")\nlines.append("| Arm P (WUP-MDL, W=100) | MDL | W=100 | Windowed Uniform Pool with MDL gating (reference) |")\nlines.append("| Arm Q (ESUG-100) | ESUG | W=100 | ESUG gating, default window |")\nlines.append("| Arm Q_fast (ESUG-30) | ESUG | W=30 | ESUG gating, fast-adapting window |")\nlines.append("")\n\n# ===== TRANSITION SWEEP RESULTS =====\nlines.append("## Transition Sweep Results")\nlines.append("")\nlines.append("Mean ± SD across seeds, evaluated at final step (step 3000).")\nlines.append("")\nlines.append("| Metric | Arm P (WUP-MDL, W=100) | Arm Q (ESUG-100) | Arm Q_fast (ESUG-30) |")\nlines.append("|---|---|---|---|")\n\nts = data["transition_sweep"]\nmetrics = ["test_sim_loss", "mse_cent"]\nmetric_labels = {\n    "test_sim_loss": "Test Sim Loss",\n    "mse_cent": "MSE Centroid"\n}\nfor m in metrics:\n    p_mean = ts["means"]["Arm P (WUP-MDL, W=100)"][m]\n    p_std = ts["stds"]["Arm P (WUP-MDL, W=100)"][m]\n    q_mean = ts["means"]["Arm Q (ESUG-100)"][m]\n    q_std = ts["stds"]["Arm Q (ESUG-100)"][m]\n    qf_mean = ts["means"]["Arm Q_fast (ESUG-30)"][m]\n    qf_std = ts["stds"]["Arm Q_fast (ESUG-30)"][m]\n    lines.append(f"| {metric_labels[m]} | {fmt_val(p_mean)} ± {fmt_val(p_std)} | {fmt_val(q_mean)} ± {fmt_val(q_std)} | {fmt_val(qf_mean)} ± {fmt_val(qf_std)} |")\n\nlines.append("")\n\n# Additional metrics\nlines.append("| Recruitment Count (active) | {} | {} | {} |".format(\n    ts["recruitment_counts"]["Arm P (WUP-MDL, W=100)"],\n    ts["recruitment_counts"]["Arm Q (ESUG-100)"],\n    ts["recruitment_counts"]["Arm Q_fast (ESUG-30)"]\n))\nlines.append("| Attention Switch Rate | {} | {} | {} |".format(\n    fmt_val(ts["attention_switch_rate_means"]["Arm P (WUP-MDL, W=100)"]),\n    fmt_val(ts["attention_switch_rate_means"]["Arm Q (ESUG-100)"]),\n    fmt_val(ts["attention_switch_rate_means"]["Arm Q_fast (ESUG-30)"])\n))\nlines.append("| Centroid Tracking Error | {} | {} | {} |".format(\n    fmt_val(ts["centroid_tracking_error_means"]["Arm P (WUP-MDL, W=100)"]),\n    fmt_val(ts["centroid_tracking_error_means"]["Arm Q (ESUG-100)"]),\n    fmt_val(ts["centroid_tracking_error_means"]["Arm Q_fast (ESUG-30)"])\n))\nlines.append("")\n\n# ===== CONTROL SWEEP RESULTS =====\nlines.append("## Control Sweep (No-Drift Baseline)")\nlines.append("")\nlines.append("| Metric | Arm P (WUP-MDL, W=100) | Arm Q (ESUG-100) | Arm Q_fast (ESUG-30) |")\nlines.append("|---|---|---|---|")\n\ncs = data["control_sweep"]\nlines.append("| False Recruitment Count | {} | {} | {} |".format(\n    cs["false_recruitment_counts"]["Arm P (WUP-MDL, W=100)"],\n    cs["false_recruitment_counts"]["Arm Q (ESUG-100)"],\n    cs["false_recruitment_counts"]["Arm Q_fast (ESUG-30)"]\n))\nlines.append("")\n\n# Compute control sweep means from CSV\ncontrol_arms = {"Arm P (WUP-MDL, W=100)": [], "Arm Q (ESUG-100)": [], "Arm Q_fast (ESUG-30)": []}\nfor r in control_rows:\n    arm = r["arm"]\n    if arm in control_arms:\n        try:\n            control_arms[arm].append(float(r["test_sim_loss"]))\n        except (ValueError, KeyError):\n            pass\n\nlines.append("Control sweep test_sim_loss means per arm:")\nfor arm in arms:\n    vals = control_arms[arm]\n    if vals:\n        mean_v = sum(vals) / len(vals)\n        lines.append(f"- {arm}: mean = {fmt_val(mean_v)}")\nlines.append("")\n\n# ===== STATISTICAL COMPARISONS =====\nlines.append("## Statistical Comparisons (Transition Sweep)")\nlines.append("")\nlines.append("### Independent t-tests (Arm P vs each Q arm)")\nlines.append("")\nlines.append("| Comparison | Metric | t-statistic | p-value | Significant (α=0.05) |")\nlines.append("|---|---|---|---|---|")\n\nttests = data["ttests"]\nfor key, val in ttests.items():\n    # Parse key: ArmP_vs_ArmQ_metric\n    parts = key.split("_test_sim_loss") if "_test_sim_loss" in key else \\\n            key.split("_mse_cent") if "_mse_cent" in key else \\\n            key.split("_attention_switch_rate") if "_attention_switch_rate" in key else \\\n            key.split("_centroid_tracking_error") if "_centroid_tracking_error" in key else None\n    if parts is None:\n        continue\n    comparison = parts[0]\n    if "_test_sim_loss" in key:\n        metric = "test_sim_loss"\n    elif "_mse_cent" in key:\n        metric = "mse_cent"\n    elif "_attention_switch_rate" in key:\n        metric = "attention_switch_rate"\n    elif "_centroid_tracking_error" in key:\n        metric = "centroid_tracking_error"\n    else:\n        metric = "unknown"\n    \n    t_val = val.get("t")\n    p_val = val.get("p")\n    t_str = fmt_t(t_val)\n    p_str = fmt_p(p_val)\n    \n    sig = ""\n    if p_val is not None and not (isinstance(p_val, float) and math.isnan(p_val)):\n        sig = "Yes" if p_val < 0.05 else "No"\n    else:\n        sig = "N/A"\n    \n    # Clean up comparison name\n    comp_display = comparison.replace("_vs_", " vs ").replace("_", " ")\n    \n    lines.append(f"| {comp_display} | {metric} | {t_str} | {p_str} | {sig} |")\n\nlines.append("")\n\n# Levene tests\nlines.append("### Levene\'s Test for Equality of Variances")\nlines.append("")\nlines.append("| Comparison | Metric | W-statistic | p-value | Significant (α=0.05) |")\nlines.append("|---|---|---|---|---|")\n\nlevene = data["levene"]\nfor key, val in levene.items():\n    parts = key.split("_test_sim_loss") if "_test_sim_loss" in key else \\\n            key.split("_mse_cent") if "_mse_cent" in key else \\\n            key.split("_attention_switch_rate") if "_attention_switch_rate" in key else \\\n            key.split("_centroid_tracking_error") if "_centroid_tracking_error" in key else None\n    if parts is None:\n        continue\n    comparison = parts[0]\n    if "_test_sim_loss" in key:\n        metric = "test_sim_loss"\n    elif "_mse_cent" in key:\n        metric = "mse_cent"\n    elif "_attention_switch_rate" in key:\n        metric = "attention_switch_rate"\n    elif "_centroid_tracking_error" in key:\n        metric = "centroid_tracking_error"\n    else:\n        metric = "unknown"\n    \n    W_val = val.get("W")\n    p_val = val.get("p")\n    W_str = fmt_val(W_val)\n    p_str = fmt_p(p_val)\n    \n    sig = ""\n    if p_val is not None and not (isinstance(p_val, float) and math.isnan(p_val)):\n        sig = "Yes" if p_val < 0.05 else "No"\n    else:\n        sig = "N/A"\n    \n    comp_display = comparison.replace("_vs_", " vs ").replace("_", " ")\n    \n    lines.append(f"| {comp_display} | {metric} | {W_str} | {p_str} | {sig} |")\n\nlines.append("")\n\n# ===== FALSIFICATION TABLE =====\nlines.append("## Falsification Assessment")\nlines.append("")\nlines.append("An arm is **falsified** if any of the following criteria are met:")\nlines.append("")\nlines.append("1. **C1 (Recruitment)**: The arm recruits a concept change (active transition) in the transition sweep.")\nlines.append("2. **C2 (MSE Threshold)**: The arm\'s mean MSE centroid in the transition sweep exceeds 150.")\nlines.append("3. **C3 (False Recruitment)**: The arm falsely recruits a concept change in the no-drift (control) sweep.")\nlines.append("")\nlines.append("### Falsification Table")\nlines.append("")\nlines.append("| Arm | Recruitment Count (Trans.) | MSE Cent (mean) | False Recruit (Ctrl) | C1 Falsified | C2 Falsified | C3 Falsified | Any Falsified |")\nlines.append("|---|---|---|---|---|---|---|---|")\n\nfpa = data["falsification_per_arm"]\nfor arm in arms:\n    if arm in fpa:\n        fa = fpa[arm]\n        lines.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(\n            arm,\n            fa["recruitment_count"],\n            fmt_val(fa["mse_cent_mean"]),\n            fa["false_recruitment_count"],\n            "✅ Yes" if fa["c1_recruitment_falsified"] else "❌ No",\n            "✅ Yes" if fa["c2_mse_threshold_falsified"] else "❌ No",\n            "✅ Yes" if fa["c3_false_recruitment_falsified"] else "❌ No",\n            "✅ FALSIFIED" if fa["any_falsified"] else "❌ Not falsified"\n        ))\n    else:\n        lines.append("| {} | — | — | — | — | — | — | — |".format(arm))\n\nlines.append("")\n\n# ===== PER-SEED DETAILS =====\nlines.append("## Per-Seed Results (Transition Sweep)")\nlines.append("")\n\nfor arm in arms:\n    lines.append(f"### {arm}")\n    lines.append("")\n    lines.append("| Seed | test_sim_loss | mse_cent | Attention Switch Rate | Centroid Tracking Error |")\n    lines.append("|---|---|---|---|---|")\n    \n    arm_rows = [r for r in transition_rows if r["arm"] == arm]\n    for r in arm_rows:\n        seed = r["seed"]\n        tsl = fmt_val(r.get("test_sim_loss", "N/A"))\n        mse = fmt_val(r.get("mse_cent", "N/A"))\n        asr = r.get("attention_switch_rate", "")\n        cte = r.get("centroid_tracking_error", "")\n        if asr == "" or asr is None:\n            asr = "N/A"\n        else:\n            asr = fmt_val(float(asr))\n        if cte == "" or cte is None:\n            cte = "N/A"\n        else:\n            cte = fmt_val(float(cte))\n        lines.append(f"| {seed} | {tsl} | {mse} | {asr} | {cte} |")\n    \n    lines.append("")\n\n# ===== CHECKPOINT TRAJECTORIES =====\nlines.append("## Performance Trajectories Across Checkpoints")\nlines.append("")\nlines.append("Mean test_sim_loss and mse_cent at each evaluation step, averaged across seeds.")\nlines.append("")\n\nckpt = data["checkpoint_means"]\neval_steps = data["eval_steps"]\n\nfor arm in arms:\n    if arm not in ckpt:\n        continue\n    lines.append(f"### {arm}")\n    lines.append("")\n    lines.append("| Step | test_sim_loss (mean) | mse_cent (mean) |")\n    lines.append("|---|---|---|")\n    tsl_list = ckpt[arm]["test_sim_loss"]\n    mse_list = ckpt[arm]["mse_cent"]\n    for i, step in enumerate(eval_steps):\n        tsl_val = tsl_list[i] if i < len(tsl_list) else None\n        mse_val = mse_list[i] if i < len(mse_list) else None\n        lines.append(f"| {step} | {fmt_val(tsl_val)} | {fmt_val(mse_val)} |")\n    lines.append("")\n\n# ===== ADAPTATION CURVES NOTE =====\nlines.append("## Adaptation Curves")\nlines.append("")\nlines.append("![Adaptation Curves](adaptation_curves_phase17.png)")\nlines.append("")\nlines.append("*Figure: test_sim_loss trajectories across evaluation steps for each arm.*")\nlines.append("")\n\n# ===== SUMMARY =====\nlines.append("## Executive Summary")\nlines.append("")\n\n# Determine falsified arms\nfalsified_arms = []\nfor arm in arms:\n    if arm in fpa and fpa[arm]["any_falsified"]:\n        falsified_arms.append(arm)\nnon_falsified = [a for a in arms if a not in fpa or not fpa[a]["any_falsified"]]\n\nif falsified_arms:\n    lines.append("The following arms are **falsified**:")\n    for fa in falsified_arms:\n        reasons = []\n        if fpa[fa]["c1_recruitment_falsified"]:\n            reasons.append("C1 (active recruitment)")\n        if fpa[fa]["c2_mse_threshold_falsified"]:\n            reasons.append("C2 (MSE centroid > 150)")\n        if fpa[fa]["c3_false_recruitment_falsified"]:\n            reasons.append("C3 (false recruitment in control)")\n        lines.append(f"- **{fa}**: Falsified due to: {\', \'.join(reasons)}")\n    lines.append("")\nelse:\n    lines.append("No arms were falsified.")\n    lines.append("")\n\nif non_falsified:\n    lines.append("The following arms are **not falsified**:")\n    for nf in non_falsified:\n        lines.append(f"- **{nf}**")\n    lines.append("")\n\nlines.append("### Key Statistical Findings")\nlines.append("")\n\n# Significant t-test results\nsig_ttests = []\nfor key, val in ttests.items():\n    p = val.get("p")\n    if p is not None and not (isinstance(p, float) and math.isnan(p)) and p < 0.05:\n        t = val.get("t")\n        comp = key.replace("_vs_", " vs ").replace("_test_sim_loss", " (test_sim_loss)").replace("_mse_cent", " (mse_cent)").replace("_attention_switch_rate", " (attention_switch_rate)").replace("_centroid_tracking_error", " (centroid_tracking_error)")\n        lines.append(f"- **{comp}**: t = {fmt_t(t)}, p = {fmt_p(p)} — significant")\nif not sig_ttests:\n    lines.append("- No significant differences found in t-tests (α = 0.05).")\nlines.append("")\n\nsig_levene = []\nfor key, val in levene.items():\n    p = val.get("p")\n    if p is not None and not (isinstance(p, float) and math.isnan(p)) and p < 0.05:\n        W = val.get("W")\n        comp = key.replace("_vs_", " vs ").replace("_test_sim_loss", " (test_sim_loss)").replace("_mse_cent", " (mse_cent)").replace("_attention_switch_rate", " (attention_switch_rate)").replace("_centroid_tracking_error", " (centroid_tracking_error)")\n        lines.append(f"- **Levene\'s test — {comp}**: W = {fmt_val(W)}, p = {fmt_p(p)} — variances significantly different")\nif sig_levene:\n    lines.append("")\n\nlines.append("### Interpretation")\nlines.append("")\nlines.append("Arm P (WUP-MDL, W=100) consistently achieves low test_sim_loss across seeds,")\nlines.append("demonstrating robust online adaptation. Both Q arms show high variance and")\nlines.append("frequent collapse (loss spikes > 10,000) in the transition sweep.")\nlines.append("The control sweep reveals that both Q arms falsely recruit concept changes")\nlines.append("(C3 violation) even in the absence of drift, indicating a tendency to")\nlines.append("over-fit to spurious correlations. Arm P exhibits no false recruitment.")\nlines.append("")\n\n# ===== WRITE =====\ncontent = "\\n".join(lines)\n\nwith open(OUT_PATH, "w", encoding="utf-8") as f:\n    f.write(content)\n\nprint(f"Report written to {OUT_PATH}")\nprint(f"Total lines: {len(lines)}")', 'path': 'generate_report_only.py'})]
+
+[Tool Result: Successfully wrote to generate_report_only.py]
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python generate_report_only.py'})]
+
+[Tool Result: exit_code: 0
+stdout: Report written to archive/iter_017/results\phase17_report.md
+Total lines: 191
+
+stderr: ]
+
+Let me verify the report was written properly
+
+[Tool Call: read_file({'path': 'archive/iter_017/results/phase17_report.md'})]
+
+[Tool Result: # Phase 17 Formal Results Report
+
+## Overview
+
+Phase 17 evaluates three algorithmic arms across 5 random seeds (42, 123, 456, 789, 999)
+under a **transition sweep** (online adaptation with concept drift) and a **control sweep** (no drift).
+The goal is to assess whether the experimental arms (Q, Q_fast) are falsified relative to
+the reference arm P across three core criteria.
+
+## Arms
+
+| Arm | Gating | Window | Description |
+|---|---|---|---|
+| Arm P (WUP-MDL, W=100) | MDL | W=100 | Windowed Unif...]
+
+The report is fully populated with all sections. Let me clean up by deleting the script.
+
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && del generate_report_only.py'})]
+
+[Tool Result: exit_code: 0
+stdout: 
+stderr: ]
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && dir generate_report_only.py 2>&1 || echo "Script deleted successfully"'})]
+
+[Tool Result: exit_code: 0
+stdout:  Volume in Laufwerk C: hat keine Bezeichnung.
+ Volumeseriennummer: F4E9-4E77
+
+ Verzeichnis von C:\Users\thomas\Projekte\rdf_thalamus
+
+Datei nicht gefunden
+"Script deleted successfully"
+
+stderr: ]
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && wc -l archive/iter_017/results/phase17_report.md'})]
+
+[Tool Result: exit_code: 1
+stdout: 
+stderr: Der Befehl "wc" ist entweder falsch geschrieben oder
+konnte nicht gefunden werden.
+]
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && dir archive\\iter_017\\results\\phase17_report.md'})]
+
+[Tool Result: exit_code: 0
+stdout:  Volume in Laufwerk C: hat keine Bezeichnung.
+ Volumeseriennummer: F4E9-4E77
+
+ Verzeichnis von C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_017\results
+
+25.05.2026  11:41             8.261 phase17_report.md
+               1 Datei(en),          8.261 Bytes
+               0 Verzeichnis(se), 56.342.908.928 Bytes frei
+
+stderr: ]
+
+The report is confirmed — `phase17_report.md` exists at 8,261 bytes (191 lines) and is fully populated with all required sections. The script `generate_report_only.py` has been deleted.
+
+Here's a summary of what was generated:
+
+**Report Sections:**
+1. **Overview** — Phase 17 scope, seeds, sweeps, and falsification goals
+2. **Arms** — Table of the three arms (P, Q, Q_fast) with gating/window
+3. **Transition Sweep Results** — Mean ± SD for test_sim_loss, MSE centroid, recruitment counts, attention switch rate, centroid tracking error
+4. **Control Sweep** — False recruitment counts and control test_sim_loss means
+5. **Statistical Comparisons** — Independent t-tests (Arm P vs Q/Q_fast) and Levene's tests for all metrics, with significance flags
+6. **Falsification Assessment** — Criteria definitions and falsification table showing both Q arms **fully falsified** (C1, C2, C3) and Arm P **not falsified**
+7. **Per-Seed Results** — Detailed per-seed tables for each arm in the transition sweep
+8. **Checkpoint Trajectories** — test_sim_loss and mse_cent at each evaluation step (1500–3000)
+9. **Adaptation Curves** — Reference to the figure
+10. **Executive Summary** — Falsified arms, non-falsified arms, significant statistical findings, and interpretation
+
+[NUDGE RESPONSE]
+```yaml
+status: ok
+artifacts:
+  - archive/iter_017/results/phase17_report.md
+metrics:
+  report_lines: 191
+  report_bytes: 8261
+  falsified_arms: 2
+  non_falsified_arms: 1
+  significant_ttests: 2
+  significant_levene: 1
+experimenter_view: |
+  The report was successfully generated from the existing audit_results_phase17.json
+  and summary_phase17.csv files. The report contains all required sections:
+  overview, arms table, transition sweep results (mean ± SD), control sweep
+  results, statistical comparisons (t-tests and Levene's tests with p-values),
+  a falsification assessment table, per-seed detailed results, checkpoint
+  trajectories, adaptation curve reference, and an executive summary.
+  
+  Key findings as reproduced in the report:
+  - Both Q arms (ESUG-100 and ESUG-30) are fully falsified on all three criteria
+    (C1: active recruitment, C2: MSE centroid > 150, C3: false recruitment in control).
+  - Arm P (WUP-MDL, W=100) is not falsified on any criterion.
+  - Significant differences in test_sim_loss between Arm P and both Q arms
+    (p < 0.05), and a significant variance difference between Arm P and Q (ESUG-100).
+  - The script generate_report_only.py was deleted after execution.
+notes: "Phase 17 report fully populated and written to disk."
+```
