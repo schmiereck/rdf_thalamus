@@ -1,0 +1,317 @@
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: Tool not available: list_iterations]
+
+
+[Tool Call: read_campaign({'campaign_name': 'Thalamus'})]
+
+[Tool Result: Tool not available: read_campaign]
+
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: Tool not available: list_iterations]
+
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: Tool not available: list_iterations]
+
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: Tool not available: list_iterations]
+
+
+[Tool Call: list_dir({'path': '.'})]
+
+[Tool Result: Tool not available: list_dir]
+
+
+[Tool Call: list_dir({'path': '.'})]
+
+[Tool Result: Tool not available: list_dir]
+
+
+[Tool Call: list_dir({'path': '.'})]
+
+[Tool Result: Tool not available: list_dir]
+
+
+[Tool Call: read_file({'path': 'current_state.md'})]
+
+[Tool Result: Tool not available: read_file]
+
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: Tool not available: list_iterations]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: Tool not available: list_dir]
+
+
+[Tool Call: read_file({'path': 'current_state.md'})]
+
+[Tool Result: Tool not available: read_file]
+
+
+[Tool Call: read_file({'path': 'goal.md'})]
+
+[Tool Result: Tool not available: read_file]
+
+Let me try accessing the codebase through the available tools:
+
+[Tool Call: read_file({'path': 'src/thalamus.py'})]
+
+[Tool Result: Tool not available: read_file]
+
+
+[Tool Call: read_iteration({'iter_num': 18})]
+
+[Tool Result: Tool not available: read_iteration]
+
+
+[Tool Call: read_iteration({'iter_num': 17})]
+
+[Tool Result: Tool not available: read_iteration]
+
+Let me explore the codebase and past iterations to formulate the Phase 19 hypothesis.
+
+[Tool Call: read_iteration({'iter_num': 18})]
+
+[Tool Result: Tool not available: read_iteration]
+
+
+[Tool Call: read_iteration({'iter_num': 17})]
+
+[Tool Result: Tool not available: read_iteration]
+
+
+[Tool Call: read_iteration({'iter_num': 16})]
+
+[Tool Result: Tool not available: read_iteration]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: Tool not available: list_dir]
+
+
+[Tool Call: list_dir({'path': 'archive'})]
+
+[Tool Result: Tool not available: list_dir]
+
+The read-only tools appear unavailable in this session, but the user's prompt provides extensive detail on the current state, all 19 iterations, and the full goal specification. I'll proceed with a thorough analysis based on that information.
+
+---
+
+## Analysis of Current State
+
+### The Core Problem: Distractor-Rejection for Dimension Recruitment
+
+After 18 iterations, the Thalamus project has successfully validated:
+- **Representation base** (Pillars A, B, C): non-collapsing latent prediction, dynamic dimension recruitment
+- **Thalamic gating** (Pillar D): attention-token routing
+- **Motor control** (Pillar E): CLTS active probing
+- **Non-parametric spatial bottlenecks** (Arm F): soft-argmax projection
+- **WUP-MDL** (Phase 16): solves predictor cold-start, achieves 100% genuine recruitment
+
+**The unsolved problem**: No gating mechanism can reject Noisy-TV distractors while accepting genuine objects. Three distinct cold-start pathologies have been identified and each approach has failed:
+
+| Approach | Pathology | Mechanism | Result |
+|----------|-----------|-----------|--------|
+| ESUG (Phase 17) | Encoder cold-start | Random encoder projections → rough temporal dynamics (λ~1.0-1.5) → gate rejects genuine objects | Falsified |
+| PVU (Phase 16) | Physical correlation | 1D physics creates high cross-dimension correlation → gate rejects everything | Falsified |
+| EG-MDL (Phase 18) | Optimization transient | Cold predictor adapts rapidly → ρ = E_late/E_early → ~0 for ALL signals | Falsified |
+
+The common thread: **every approach relies on a LEARNED signal** (encoder output, predictor error trend, or MDL consistency) that is corrupted by cold-start dynamics. The optimization transient is particularly pernicious — a randomly initialized predictor can overfit to ANY signal (even pure noise) during WUP, driving ρ → 0 universally.
+
+### Key Insight: Structural vs. Learned Discrimination
+
+The fundamental distinction between genuine objects and Noisy-TV is **structural**, not learnable:
+- **Genuine object**: produces spatially contiguous, temporally persistent pixel patterns (obeys physical laws)
+- **Noisy-TV**: produces spatially scattered, temporally independent pixel patterns (random each frame)
+
+No amount of learning can make Noisy-TV genuinely predictable — but a cold-started predictor can *overfit* to it transiently, creating a false learnability signal. The solution is to use a **structural metric that requires no learning at all**.
+
+### Candidate: Input-Level Temporal Autocorrelation (ITAG)
+
+For any deterministic, continuous function f and temporally structured input x(t):
+- If Corr(x(t), x(t+1)) > 0 (genuine object, pixels persist), then Corr(f(x(t)), f(x(t+1))) > 0
+- If Corr(x(t), x(t+1)) = 0 (Noisy-TV, independent frames), then Corr(f(x(t)), f(x(t+1))) = 0 **exactly**
+
+This is a mathematical theorem for independent random variables. The temporal autocorrelation of the raw pixel values at positions where the new signal is located:
+- **Genuine object**: pixel values at the object's position change smoothly (object persists and moves) → r ≫ 0
+- **Noisy-TV**: pixel values at the noise position change randomly each frame → r ≈ 0
+
+**This metric requires zero learning, zero warm-up, and zero prediction.** It operates entirely on the raw input stream before any encoder or predictor touches it.
+
+### Critical Architecture Question: Where is the "surprising" signal?
+
+To compute ITAG only at positions associated with the NEW signal (not existing objects), we need to identify which spatial positions are "surprising." Two approaches:
+
+1. **Latent prediction error mapping**: Use the existing (already-trained) encoder's spatial prediction error map to identify surprising positions, then compute ITAG on raw pixels at those positions. The existing encoder is NOT cold-started (trained on 3 objects), so its error map is reliable.
+
+2. **Pixel activity detection**: Simply identify positions where |pixel(x,t) - pixel(x,t-1)| is elevated compared to a running baseline. No encoder needed.
+
+Both approaches isolate the new signal's positions and compute ITAG only there, avoiding contamination from well-predicted existing objects.
+
+### Risk Assessment
+
+**Primary risk**: If Noisy-TV is implemented as temporally smooth noise (e.g., Perlin noise), ITAG ≈ 0 would not hold and the metric would fail. However, the standard "Noisy-TV" definition in the curiosity literature (and consistent with Phase 6's implementation) is frame-to-frame independent pixel noise, for which ITAG ≈ 0 is exact.
+
+**Secondary risk**: If the new object moves extremely fast (≈1 object width per frame), pixel-level temporal autocorrelation at a fixed position might be low. However, even fast-moving objects in the 1D environment span 10-20 pixels and move at moderate velocities, giving each pixel position several frames of object exposure → ITAG remains positive.
+
+**Tertiary risk**: If existing objects' prediction errors dominate the "surprising" positions (i.e., the system hasn't converged on existing objects), the ITAG computation would be contaminated. But by Phase 4+ evaluation (after convergence), existing object error should be small.
+
+### Complementary Metric: Spatial Autocorrelation (ISAG)
+
+Within a single frame, adjacent pixels of a genuine object are correlated (smooth gradient edges per Section 3), while adjacent Noisy-TV pixels are independent. The lag-1 spatial autocorrelation of pixel values in the surprising region provides a complementary, frame-by-frame discriminative signal that doesn't require a temporal window.
+
+**Combined metric STC = ITAG × ISAG**: both temporal AND spatial coherence must be present for recruitment. This provides maximum robustness.
+
+---
+
+## Phase 19 Hypothesis
+
+**Input-Level Spatiotemporal Coherence Gating (STC-Gate)**: The temporal and spatial autocorrelation of raw pixel values at the surprising region of the 1D input provides a cold-start-immune discriminative signal for dimension recruitment gating. This metric avoids all three known cold-start pathologies because it is a structural property of the input signal, requiring no encoder output, no predictor output, and no learning during evaluation.
+
+**Formal definition**: When overall latent prediction error exceeds the recruitment threshold:
+
+1. **Identify surprising positions** via the existing (pre-trained) encoder's per-position prediction error: S = top-K positions by ||z(x,t) - ẑ(x,t)||
+2. **ITAG** (temporal coherence): For each x ∈ S, compute r_temp(x) = Corr[pixel(x,t), pixel(x,t+1)] over W_t consecutive timesteps. ITAG = mean_{x∈S} r_temp(x)
+3. **ISAG** (spatial coherence): For each frame, compute r_spat = Corr[pixel(x,t), pixel(x+1,t)] for x, x+1 ∈ S. ISAG = mean over frames of r_spat
+4. **STC** = ITAG (primary gate). ISAG used as secondary confirmation.
+
+**Gating rule**: If ITAG > τ (τ = 0.3), initiate WUP-MDL recruitment. If ITAG ≤ τ, reject the dimension proposal immediately.
+
+**Predicted values**:
+- Genuine N=3→4 transition: ITAG > 0.5, ISAG > 0.5
+- Noisy-TV control: ITAG < 0.1, ISAG < 0.1
+
+**Why this avoids all three cold-start pathologies**:
+1. **Encoder cold-start**: ITAG/ISAG operate on raw pixels, not encoder output. The existing encoder's error map is used only for spatial localization (it is pre-trained, not cold).
+2. **Predictor cold-start**: No predictor is needed. The metric is observational.
+3. **Optimization transient**: No learning occurs during the ITAG/ISAG evaluation window. The metric is computed from raw data before any weight updates.
+
+```yaml
+hypothesis: |
+  The temporal autocorrelation of raw pixel values at spatial positions identified
+  as "surprising" by the pre-trained encoder's prediction error map provides a
+  discriminative signal between genuine object transitions and Noisy-TV distractors
+  that is immune to all three known cold-start pathologies.
+  
+  Formally, when overall prediction error exceeds the recruitment threshold:
+  1. Identify the top-K spatial positions S with highest per-position prediction
+     error from the pre-trained encoder (NOT from any new/cold dimension).
+  2. Compute ITAG = (1/|S|) Σ_{x∈S} Corr[pixel(x,t), pixel(x,t+1)]
+     over W_t=20 consecutive timesteps (lag-1 temporal autocorrelation of raw
+     pixel values at each surprising position, averaged across positions).
+  3. Gating decision: if ITAG > τ=0.3, initiate WUP-MDL recruitment; if ITAG ≤ τ,
+     reject the dimension proposal as noise.
+  
+  For genuine N=3→4 transitions: ITAG > 0.5 (object pixels persist and move
+  smoothly, producing temporally autocorrelated pixel trajectories).
+  For Noisy-TV distractors: ITAG < 0.1 (noise pixels are independent each frame,
+  producing zero temporal autocorrelation by definition of white noise).
+  
+  This metric avoids cold-start pathologies because:
+  (a) It operates on raw pixel values, not encoder output → no encoder cold-start.
+  (b) It requires no predictor → no predictor cold-start.
+  (c) It requires no learning during evaluation → no optimization transient.
+  
+  Additionally, the spatial autocorrelation ISAG = Corr[pixel(x,t), pixel(x+1,t)]
+  for adjacent surprising positions provides a complementary per-frame discriminative
+  signal (genuine objects produce spatially smooth pixel patches; noise produces
+  spatially independent pixels).
+
+falsification_criterion: |
+  The hypothesis is falsified if EITHER of the following holds across a 5-seed
+  experimental sweep:
+  
+  C1 (Discriminative Power): Cohen's d between the ITAG score distributions for
+  genuine N=3→4 transitions and Noisy-TV controls is less than 1.5. This would
+  indicate that temporal autocorrelation of raw pixels at surprising positions
+  does not carry sufficient discriminative information to separate structured
+  from unstructured signals.
+  
+  C2 (Gating Performance): The ITAG pre-filter (threshold τ=0.3) applied before
+  WUP-MDL recruitment fails to achieve BOTH:
+    - False recruitment rate on Noisy-TV ≤ 20% (currently 100% without ITAG)
+    - Genuine recruitment rate ≥ 80% (currently 100% without ITAG)
+  If ITAG pre-filtering rejects too many genuine objects OR accepts too many
+  Noisy-TV distractors, the metric is insufficient for practical gating.
+
+proposed_method: |
+  Step-by-step experimental protocol:
+  
+  1. CODE: Add ITAG computation module (src/itag.py):
+     - Function compute_itag(pixel_array, surprising_positions, window=20):
+       For each position x in surprising_positions, compute lag-1 temporal
+       autocorrelation of pixel values over the window. Return mean across
+       positions.
+     - Function compute_isag(pixel_array, surprising_positions):
+       For each frame, compute lag-1 spatial autocorrelation of pixel values
+       at adjacent surprising positions. Return mean across frames.
+     - Function identify_surprising_positions(prediction_error_map, top_k=16):
+       Return indices of top-K positions by prediction error norm.
+  
+  2. CODE: Modify the dimension recruitment gating logic:
+     - When prediction error exceeds recruitment threshold, BEFORE initiating WUP:
+       a. Compute surprising positions from pre-trained encoder's error map
+       b. Collect W_t=20 timesteps of raw pixel data at those positions
+       c. Compute ITAG score
+       d. If ITAG > τ=0.3: proceed with WUP-MDL (Arm B) or immediate
+          recruitment (Arm C)
+       e. If ITAG ≤ τ: reject the dimension proposal, log the rejection
+  
+  3. EXPERIMENTAL ARMS (5 seeds each, matched random seeds):
+  
+     Arm A (Baseline): WUP-MDL (W=100) with no ITAG pre-filter.
+       - Current best performer: 100% genuine recruitment, 100% false recruitment
+       - Serves as the comparison baseline
+    
+     Arm B (ITAG+MDL): ITAG pre-filter (τ=0.3, W_t=20) + WUP-MDL (W=100).
+       - ITAG pre-filter blocks Noisy-TV from entering WUP
+       - WUP-MDL handles cold-start predictor for genuine objects that pass ITAG
+       - Expected: high genuine recruitment, low false recruitment
+    
+     Arm C (ITAG-only): ITAG-only gating (τ=0.3, W_t=20), no WUP.
+       - If ITAG > τ, immediately recruit the dimension (skip WUP entirely)
+       - Tests whether ITAG alone is sufficient, or whether WUP is still needed
+       - Expected: faster recruitment, but potentially lower quality dimensions
+         if cold-start predictor is problematic without WUP
+  
+  4. SWEEPS per arm:
+     - Transition sweep: N=3→4 (genuine 4th object introduced)
+     - Control sweep: N=3 + Noisy-TV distractor (noise region added)
+  
+  5. METRICS:
+     - ITAG score distribution for genuine vs Noisy-TV (per-timestep, across
+       the evaluation window) — for Cohen's d computation
+     - ISAG score distribution (secondary analysis)
+     - Genuine recruitment rate (target ≥ 80%)
+     - False recruitment rate on Noisy-TV (target ≤ 20%)
+     - Centroid decoding MSE
+     - Test simulation loss
+     - Time-to-recruitment (steps from introduction to recruitment decision)
+  
+  6. ANALYSIS:
+     - Compute Cohen's d between ITAG distributions → test C1
+     - Compute optimal τ via ROC analysis on ITAG distributions
+     - Compare Arm B vs Arm A on false recruitment rate → test C2
+     - Compare Arm C vs Arm B on genuine recruitment quality → determine
+       whether WUP is still needed after ITAG pre-filtering
+  
+  7. FILES TO CREATE/MODIFY:
+     - CREATE: src/itag.py — ITAG and ISAG metric computation
+     - MODIFY: Dimension recruitment gating module — add ITAG pre-filter
+     - MODIFY: Experiment runner — add Arms B and C with ITAG logic
+     - MODIFY: Logging — record ITAG/ISAG scores per timestep for analysis
+
+pre_registration_file: "src/pre_registration.md"
+```

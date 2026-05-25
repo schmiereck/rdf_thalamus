@@ -1,0 +1,73 @@
+falsification_criterion: "The hypothesis is falsified if EITHER of the following holds\
+  \ across a 5-seed\nexperimental sweep:\n\nC1 (Discriminative Power): Cohen's d between\
+  \ the ITAG score distributions for\ngenuine N=3→4 transitions and Noisy-TV controls\
+  \ is less than 1.5. This would\nindicate that temporal autocorrelation of raw pixels\
+  \ at surprising positions\ndoes not carry sufficient discriminative information\
+  \ to separate structured\nfrom unstructured signals.\n\nC2 (Gating Performance):\
+  \ The ITAG pre-filter (threshold τ=0.3) applied before\nWUP-MDL recruitment fails\
+  \ to achieve BOTH:\n  - False recruitment rate on Noisy-TV ≤ 20% (currently 100%\
+  \ without ITAG)\n  - Genuine recruitment rate ≥ 80% (currently 100% without ITAG)\n\
+  If ITAG pre-filtering rejects too many genuine objects OR accepts too many\nNoisy-TV\
+  \ distractors, the metric is insufficient for practical gating.\n"
+hypothesis: "The temporal autocorrelation of raw pixel values at spatial positions\
+  \ identified\nas \"surprising\" by the pre-trained encoder's prediction error map\
+  \ provides a\ndiscriminative signal between genuine object transitions and Noisy-TV\
+  \ distractors\nthat is immune to all three known cold-start pathologies.\n\nFormally,\
+  \ when overall prediction error exceeds the recruitment threshold:\n1. Identify\
+  \ the top-K spatial positions S with highest per-position prediction\n   error from\
+  \ the pre-trained encoder (NOT from any new/cold dimension).\n2. Compute ITAG =\
+  \ (1/|S|) Σ_{x∈S} Corr[pixel(x,t), pixel(x,t+1)]\n   over W_t=20 consecutive timesteps\
+  \ (lag-1 temporal autocorrelation of raw\n   pixel values at each surprising position,\
+  \ averaged across positions).\n3. Gating decision: if ITAG > τ=0.3, initiate WUP-MDL\
+  \ recruitment; if ITAG ≤ τ,\n   reject the dimension proposal as noise.\n\nFor genuine\
+  \ N=3→4 transitions: ITAG > 0.5 (object pixels persist and move\nsmoothly, producing\
+  \ temporally autocorrelated pixel trajectories).\nFor Noisy-TV distractors: ITAG\
+  \ < 0.1 (noise pixels are independent each frame,\nproducing zero temporal autocorrelation\
+  \ by definition of white noise).\n\nThis metric avoids cold-start pathologies because:\n\
+  (a) It operates on raw pixel values, not encoder output → no encoder cold-start.\n\
+  (b) It requires no predictor → no predictor cold-start.\n(c) It requires no learning\
+  \ during evaluation → no optimization transient.\n\nAdditionally, the spatial autocorrelation\
+  \ ISAG = Corr[pixel(x,t), pixel(x+1,t)]\nfor adjacent surprising positions provides\
+  \ a complementary per-frame discriminative\nsignal (genuine objects produce spatially\
+  \ smooth pixel patches; noise produces\nspatially independent pixels).\n"
+pre_registration_file: src/pre_registration.md
+proposed_method: "Step-by-step experimental protocol:\n\n1. CODE: Add ITAG computation\
+  \ module (src/itag.py):\n   - Function compute_itag(pixel_array, surprising_positions,\
+  \ window=20):\n     For each position x in surprising_positions, compute lag-1 temporal\n\
+  \     autocorrelation of pixel values over the window. Return mean across\n    \
+  \ positions.\n   - Function compute_isag(pixel_array, surprising_positions):\n \
+  \    For each frame, compute lag-1 spatial autocorrelation of pixel values\n   \
+  \  at adjacent surprising positions. Return mean across frames.\n   - Function identify_surprising_positions(prediction_error_map,\
+  \ top_k=16):\n     Return indices of top-K positions by prediction error norm.\n\
+  \n2. CODE: Modify the dimension recruitment gating logic:\n   - When prediction\
+  \ error exceeds recruitment threshold, BEFORE initiating WUP:\n     a. Compute surprising\
+  \ positions from pre-trained encoder's error map\n     b. Collect W_t=20 timesteps\
+  \ of raw pixel data at those positions\n     c. Compute ITAG score\n     d. If ITAG\
+  \ > τ=0.3: proceed with WUP-MDL (Arm B) or immediate\n        recruitment (Arm C)\n\
+  \     e. If ITAG ≤ τ: reject the dimension proposal, log the rejection\n\n3. EXPERIMENTAL\
+  \ ARMS (5 seeds each, matched random seeds):\n\n   Arm A (Baseline): WUP-MDL (W=100)\
+  \ with no ITAG pre-filter.\n     - Current best performer: 100% genuine recruitment,\
+  \ 100% false recruitment\n     - Serves as the comparison baseline\n  \n   Arm B\
+  \ (ITAG+MDL): ITAG pre-filter (τ=0.3, W_t=20) + WUP-MDL (W=100).\n     - ITAG pre-filter\
+  \ blocks Noisy-TV from entering WUP\n     - WUP-MDL handles cold-start predictor\
+  \ for genuine objects that pass ITAG\n     - Expected: high genuine recruitment,\
+  \ low false recruitment\n  \n   Arm C (ITAG-only): ITAG-only gating (τ=0.3, W_t=20),\
+  \ no WUP.\n     - If ITAG > τ, immediately recruit the dimension (skip WUP entirely)\n\
+  \     - Tests whether ITAG alone is sufficient, or whether WUP is still needed\n\
+  \     - Expected: faster recruitment, but potentially lower quality dimensions\n\
+  \       if cold-start predictor is problematic without WUP\n\n4. SWEEPS per arm:\n\
+  \   - Transition sweep: N=3→4 (genuine 4th object introduced)\n   - Control sweep:\
+  \ N=3 + Noisy-TV distractor (noise region added)\n\n5. METRICS:\n   - ITAG score\
+  \ distribution for genuine vs Noisy-TV (per-timestep, across\n     the evaluation\
+  \ window) — for Cohen's d computation\n   - ISAG score distribution (secondary analysis)\n\
+  \   - Genuine recruitment rate (target ≥ 80%)\n   - False recruitment rate on Noisy-TV\
+  \ (target ≤ 20%)\n   - Centroid decoding MSE\n   - Test simulation loss\n   - Time-to-recruitment\
+  \ (steps from introduction to recruitment decision)\n\n6. ANALYSIS:\n   - Compute\
+  \ Cohen's d between ITAG distributions → test C1\n   - Compute optimal τ via ROC\
+  \ analysis on ITAG distributions\n   - Compare Arm B vs Arm A on false recruitment\
+  \ rate → test C2\n   - Compare Arm C vs Arm B on genuine recruitment quality → determine\n\
+  \     whether WUP is still needed after ITAG pre-filtering\n\n7. FILES TO CREATE/MODIFY:\n\
+  \   - CREATE: src/itag.py — ITAG and ISAG metric computation\n   - MODIFY: Dimension\
+  \ recruitment gating module — add ITAG pre-filter\n   - MODIFY: Experiment runner\
+  \ — add Arms B and C with ITAG logic\n   - MODIFY: Logging — record ITAG/ISAG scores\
+  \ per timestep for analysis\n"

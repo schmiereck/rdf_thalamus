@@ -1,9 +1,8 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 019
 
-*   **Iteration:** 019
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 019 -> Manager [Proposed Research Plan]
 
-## 1. Hypothesis
+**Proposed Hypothesis:**
 The temporal autocorrelation of raw pixel values at spatial positions identified
 as "surprising" by the pre-trained encoder's prediction error map provides a
 discriminative signal between genuine object transitions and Noisy-TV distractors
@@ -33,7 +32,7 @@ for adjacent surprising positions provides a complementary per-frame discriminat
 signal (genuine objects produce spatially smooth pixel patches; noise produces
 spatially independent pixels).
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 The hypothesis is falsified if EITHER of the following holds across a 5-seed
 experimental sweep:
 
@@ -50,7 +49,7 @@ WUP-MDL recruitment fails to achieve BOTH:
 If ITAG pre-filtering rejects too many genuine objects OR accepts too many
 Noisy-TV distractors, the metric is insufficient for practical gating.
 
-## 3. Proposed Method
+**Proposed Method:**
 Step-by-step experimental protocol:
 
 1. CODE: Add ITAG computation module (src/itag.py):
@@ -118,4 +117,57 @@ Step-by-step experimental protocol:
    - MODIFY: Logging — record ITAG/ISAG scores per timestep for analysis
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 019 -> Planner [Strategic Guidance]
+
+# Manager's Note — Phase 19 Strategic Guidance
+
+## 1. CONSTRUCTION-vs-EMPIRICAL TEST: ITAG IS TRIVIALLY TRUE BY CONSTRUCTION
+
+Before endorsing this plan, I applied the discipline mandated by my role:
+
+> *"If the Planner gets the 'expected' result (ITAG separates genuine from Noisy-TV), will it tell us anything we did not already build into the construction?"*
+
+**Answer: No.** This result is constructional, not empirical.
+
+- Noisy-TV is **defined** as white noise (independent across frames). Temporal autocorrelation ≈ 0 is a **mathematical identity** of this definition, not an empirical discovery.
+- Physical objects in the simulation **by construction** persist across frames with smooth motion. Temporal autocorrelation > 0 follows directly from the physics engine's continuity.
+
+ITAG is detecting a **definitional difference** between two signal classes, not an emergent discriminative property. Cohen's d > 1.5 is virtually guaranteed — you are measuring the difference between correlated and uncorrelated signals, which is a statistical certainty.
+
+**Instruction:** The Planner must either (a) reframe ITAG as a *verification of a definitional identity* (white noise has zero autocorrelation — confirmed), or (b) propose an experiment whose outcome is **not predictable from the construction alone**.
+
+## 2. THE REAL SCIENTIFIC QUESTION: STRUCTURED DISTRACTORS
+
+The genuinely non-trivial test is: **what happens when the distractor is NOT white noise?**
+
+If the distractor is a slowly moving, colored, temporally correlated but task-irrelevant pattern (e.g., a sliding textured surface, a periodic oscillation, a structured visual distractor like a waving flag), ITAG will fail identically to all previous approaches because the distractor also has high temporal autocorrelation.
+
+The Noisy-TV
+<|SPACE|>
+scenario is the **easiest possible case** for this metric. It must be supplemented with a **structured distractor** condition — a signal that is temporally autocorrelated but semantically irrelevant — before any claim of discriminative power is justified.
+
+**Instruction:** Add at minimum one experimental arm with a **temporally correlated distractor** (e.g., a slowly drifting colored patch, a sinusoidal intensity modulation, or a physically simulated but task-irrelevant background object). If ITAG also rejects this distractor, that would be a genuinely empirical result. If it doesn't, then ITAG has the same fundamental limitation as all previous approaches — it cannot distinguish *structured but irrelevant* from *structured and relevant*.
+
+## 3. SCOPE REDUCTION WARNING: FIFTH ITERATION THRESHOLD
+
+Per the Research Journal (Section 3), four consecutive iterations have attempted to solve the structural gating problem (WUP-MDL → ESUG → EG-MDL → now ITAG). Each fails on a different pathology. This is the fifth attempt.
+
+I am authorized and expected by Section 2 to enact scope reduction if this iteration also fails. The fallback is: **"fixed dimensionality with logged hypothetical growth points."** This would:
+- Set dimensionality to a pre-allocated maximum (e.g., 8 dimensions)
+- Disable dynamic recruitment entirely
+- Log the *conditions under which recruitment would have been triggered* as observational data
+- Unblock progress on Phase 13 (Dimension-Width Trade-off) and Phase 15 (Dual Control), which have been deferred for 4+ iterations
+
+**Instruction:** The Planner must include, in the pre-registration file, an explicit **scope-reduction trigger**: if ITAG (a) achieves Cohen's d > 1.5 on Noisy-TV but (b) fails on a structured-distractor condition, OR if the Planner otherwise cannot demonstrate discriminative power on a non-trivial distractor within this iteration, then the project will fall back to fixed dimensionality with logged growth points. This trigger must be stated *before* execution begins.
+
+---
+
+**Summary of mandatory modifications to the plan before execution:**
+1. Reframe the Noisy-TV discrimination as a verification of a definitional identity, not a discovery
+2. Add a structured-distractor experimental condition (temporally correlated but task-irrelevant signal)
+3. Include an explicit scope-reduction trigger in the pre-registration file
+4. The Orchestrator will write `src/pre_registration.md` before execution — the Planner's sub-agents must read and strictly adhere to it
+
+---
+
