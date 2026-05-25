@@ -1,0 +1,147 @@
+complexity: planner
+estimated_runtime_sec: 3600
+iter_id: '19.2'
+started_at: '2026-05-25T14:06:10.645745'
+status: running
+task: "## Phase 19 Experiment: ITAG (Input-Level Temporal AutoCorrelation Gating)\
+  \ with Structured Distractor\n\n### CRITICAL: Read Pre-Registration First\nBefore\
+  \ writing ANY code, read `src/pre_registration.md` and strictly adhere to the pre-registered\
+  \ hypothesis, falsification criteria, and experimental protocol. Do NOT deviate\
+  \ from the pre-registered plan.\n\n### Context\nThis is Phase 19 of the Thalamus\
+  \ project. Phases 16-18 all failed to solve the dimension recruitment gating problem:\n\
+  - WUP-MDL (Phase 16): 100% genuine recruitment, 100% false recruitment on Noisy-TV\n\
+  - ESUG (Phase 17): Encoder cold-start caused rejection of genuine objects\n- EG-MDL\
+  \ (Phase 18): Predictor cold-start optimization transient rendered ρ useless\n\n\
+  ITAG is the fourth attempt. The Manager has explicitly noted that ITAG trivially\
+  \ succeeds on Noisy-TV (by definition of white noise), so the real test is a STRUCTURED\
+  \ DISTRACTOR that has high temporal autocorrelation but is not a physics object.\n\
+  \n### Task: Implement and Run Full Phase 19 Experiments\n\nYou need to create 3\
+  \ files and modify 1 file, then run the experiments.\n\n#### 1. CREATE src/itag.py\n\
+  Implement ITAG (Input-level Temporal AutoCorrelation Gating) and ISAG (Input-level\
+  \ Spatial AutoCorrelation Gating):\n\n```python\nimport numpy as np\nimport torch\n\
+  \ndef identify_surprising_positions(prediction_error_map, top_k=16):\n    \"\"\"\
+  \n    Identify top-K spatial positions with highest prediction error.\n    Args:\n\
+  \        prediction_error_map: (B, 128) or (128,) - per-position prediction error\
+  \ from the encoder\n        top_k: number of positions to select\n    Returns:\n\
+  \        positions: list of indices into the 128-pixel array\n    \"\"\"\n    #\
+  \ If batched, take mean across batch\n    if prediction_error_map.dim() == 2:\n\
+  \        prediction_error_map = prediction_error_map.mean(dim=0)  # (128,)\n   \
+  \ elif prediction_error_map.dim() == 3:\n        # (B, C, 128) -> take norm across\
+  \ C, mean across B\n        prediction_error_map = prediction_error_map.norm(dim=1).mean(dim=0)\
+  \  # (128,)\n    \n    _, top_indices = torch.topk(prediction_error_map, min(top_k,\
+  \ prediction_error_map.shape[0]))\n    return top_indices.sort()[0].tolist()\n\n\
+  def compute_itag(pixel_buffer, surprising_positions, window=20):\n    \"\"\"\n \
+  \   Compute ITAG score: mean lag-1 temporal autocorrelation of raw pixel values\
+  \ \n    at surprising positions over a sliding window.\n    \n    Args:\n      \
+  \  pixel_buffer: list of length W_t, each element is (3, 128) numpy array\n    \
+  \    surprising_positions: list of spatial indices\n        window: number of timesteps\
+  \ to use (uses last `window` from buffer)\n    Returns:\n        itag_score: float\
+  \ in [-1, 1]\n    \"\"\"\n    if len(pixel_buffer) < 2 or len(surprising_positions)\
+  \ == 0:\n        return 0.0\n    \n    # Use last `window` timesteps\n    buffer_slice\
+  \ = pixel_buffer[-window:]\n    if len(buffer_slice) < 2:\n        return 0.0\n\
+  \    \n    # Stack into array: (T, 3, 128)\n    pixel_array = np.stack(buffer_slice,\
+  \ axis=0)\n    T = pixel_array.shape[0]\n    \n    # Compute per-position temporal\
+  \ autocorrelation\n    autocorrs = []\n    for pos in surprising_positions:\n  \
+  \      if pos < 0 or pos >= 128:\n            continue\n        # Get pixel intensity\
+  \ at this position across time (sum across RGB channels for robustness)\n      \
+  \  # Shape: (T,)\n        pixel_vals = pixel_array[:, :, pos].sum(axis=1)  # (T,)\n\
+  \        \n        # Compute lag-1 autocorrelation\n        if T < 2:\n        \
+  \    autocorrs.append(0.0)\n            continue\n        \n        x_t = pixel_vals[:-1]\
+  \  # (T-1,)\n        x_t1 = pixel_vals[1:]  # (T-1,)\n        \n        # Pearson\
+  \ correlation between x_t and x_{t+1}\n        std_t = np.std(x_t)\n        std_t1\
+  \ = np.std(x_t1)\n        \n        if std_t < 1e-8 or std_t1 < 1e-8:\n        \
+  \    # Constant signal: high autocorrelation\n            autocorrs.append(1.0 if\
+  \ np.mean(np.abs(x_t - x_t[0])) < 1e-6 else 0.0)\n            continue\n       \
+  \ \n        corr = np.corrcoef(x_t, x_t1)[0, 1]\n        if np.isnan(corr):\n  \
+  \          corr = 0.0\n        autocorrs.append(corr)\n    \n    if len(autocorrs)\
+  \ == 0:\n        return 0.0\n    \n    return float(np.mean(autocorrs))\n\ndef compute_isag(pixel_buffer,\
+  \ surprising_positions):\n    \"\"\"\n    Compute ISAG score: mean lag-1 spatial\
+  \ autocorrelation of raw pixel values \n    at adjacent surprising positions, computed\
+  \ per frame.\n    \n    Args:\n        pixel_buffer: list of (3, 128) numpy arrays\
+  \ (single frame used from last)\n        surprising_positions: list of spatial indices\
+  \ (sorted)\n    Returns:\n        isag_score: float in [-1, 1]\n    \"\"\"\n   \
+  \ if len(pixel_buffer) == 0 or len(surprising_positions) < 2:\n        return 0.0\n\
+  \    \n    # Use last frame\n    frame = pixel_buffer[-1]  # (3, 128)\n    \n  \
+  \  # Sort positions\n    sorted_pos = sorted(surprising_positions)\n    \n    #\
+  \ Compute spatial autocorrelation between adjacent surprising positions\n    spatial_corrs\
+  \ = []\n    for i in range(len(sorted_pos) - 1):\n        pos_a = sorted_pos[i]\n\
+  \        pos_b = sorted_pos[i + 1]\n        \n        if pos_a >= 128 or pos_b >=\
+  \ 128:\n            continue\n        \n        # Pixel intensity (sum across RGB)\n\
+  \        val_a = frame[:, pos_a].sum()\n        val_b = frame[:, pos_b].sum()\n\
+  \        \n        # For spatial autocorrelation we need multiple adjacent pairs\n\
+  \        # Since we only have one frame, compute correlation across the spatial\
+  \ positions\n        # using a simpler approach: check if adjacent surprising positions\
+  \ have similar intensity\n        # This is a proxy for spatial smoothness\n   \
+  \     spatial_corrs.append(val_a * val_b)  # unnormalized similarity\n    \n   \
+  \ if len(spatial_corrs) == 0:\n        return 0.0\n    \n    # Normalize: compare\
+  \ actual similarity to expected if positions were independent\n    all_vals = [frame[:,\
+  \ p].sum() for p in sorted_pos if p < 128]\n    if len(all_vals) == 0:\n       \
+  \ return 0.0\n    \n    mean_val = np.mean(all_vals)\n    var_val = np.var(all_vals)\n\
+  \    \n    if var_val < 1e-8:\n        return 1.0  # All positions same intensity\
+  \ → perfectly smooth\n    \n    # Spatial autocorrelation (Moran's I style)\n  \
+  \  n = len(sorted_pos)\n    w_sum = n - 1  # number of adjacent pairs\n    numerator\
+  \ = sum((all_vals[i] - mean_val) * (all_vals[i+1] - mean_val) \n               \
+  \     for i in range(len(all_vals)-1))\n    denominator = var_val * w_sum\n    \n\
+  \    if abs(denominator) < 1e-8:\n        return 0.0\n    \n    isag = numerator\
+  \ / denominator\n    return float(np.clip(isag, -1.0, 1.0))\n```\n\n#### 2. MODIFY\
+  \ src/environment.py\nAdd a `structured_distractor` parameter to PhysicsSandbox\
+  \ and implement a Sinusoidal Oscillator entity.\n\nAdd `structured_distractor=False`\
+  \ parameter to `__init__`. When `structured_distractor=True`:\n- Add state variables:\
+  \ `self.sd_center`, `self.sd_amplitude`, `self.sd_omega`, `self.sd_phase`, `self.sd_color`,\
+  \ `self.sd_radius`, `self.sd_t` (timestep counter)\n- Initialize in `reset()`: randomly\
+  \ initialize all parameters as specified in pre-registration\n- Update in `step()`:\
+  \ increment `self.sd_t`, compute position as `center + amplitude * sin(omega * t\
+  \ + phase)`\n- Render the structured distractor as a soft-edged circle (same rendering\
+  \ as other objects) — add it to the render list alongside objects and pointer, but\
+  \ AFTER them (so it appears on top)\n- In `info` dict, add: `sd_pos`, `sd_color`,\
+  \ `sd_radius`\n- The structured distractor does NOT participate in collision physics\
+  \ — it passes through other objects\n\n#### 3. CREATE src/run_phase19_experiments.py\n\
+  This is the main experiment runner. It should closely follow the structure of `src/run_phase18_experiments.py`\
+  \ but with these modifications:\n\n**Experimental Arms (5 seeds each):**\n- Arm\
+  \ A: WUP-MDL (W=100), no ITAG pre-filter — identical to Phase 18 Arm P\n- Arm B:\
+  \ ITAG pre-filter (τ=0.3, W_t=20) + WUP-MDL (W=100)\n- Arm C: ITAG-only gating (τ=0.3,\
+  \ W_t=20), no WUP — immediate recruitment if ITAG > τ\n\n**Three Sweeps per Arm\
+  \ (3 × 5 × 3 = 45 branches):**\n1. Transition sweep: N=3→4 (genuine 4th physics\
+  \ object)\n2. Noisy-TV control sweep: N=3 + Noisy-TV\n3. Structured Distractor control\
+  \ sweep: N=3 + Sinusoidal Oscillator\n\n**ITAG Logic in run_active_branch():**\n\
+  When the model detects that prediction error has exceeded the recruitment threshold\
+  \ (at the proposal check step, currently step 1800), BEFORE initiating WUP:\n\n\
+  For Arms B and C:\n1. Compute the per-position prediction error map from the pre-trained\
+  \ encoder\n   - Use `model.encoder.forward_spatial(target_t)` to get a_spatial of\
+  \ shape (B, d_max, 128)\n   - Compute per-position error as the L2 norm across d_max\
+  \ dimensions: (B, 128)\n2. Identify top-K=16 surprising positions using `identify_surprising_positions()`\n\
+  3. Collect the last W_t=20 raw pixel frames from `branch_history` at those positions\n\
+  4. Compute ITAG score using `compute_itag()`\n5. For Arm B: if ITAG > τ=0.3, proceed\
+  \ with WUP-MDL; otherwise, reject\n6. For Arm C: if ITAG > τ=0.3, immediately recruit\
+  \ (set d_t=4); otherwise, reject\n\n**ITAG Score Logging:**\nLog ITAG and ISAG scores\
+  \ per timestep during the evaluation window (the 20 steps before the proposal check).\
+  \ This allows computing Cohen's d between distributions.\n\n**Metrics to collect:**\n\
+  - All metrics from Phase 18 (recruitment rate, MSE, sim loss, etc.)\n- ITAG score\
+  \ distributions (per timestep, per seed, per condition)\n- ISAG score distributions\n\
+  - Cohen's d between: (genuine vs Noisy-TV), (genuine vs structured distractor)\n\
+  - ROC analysis\n- For each arm: false recruitment rate on each distractor type\n\
+  \n**Falsification Audit:**\nAt the end of the script, compute:\n- C1: Cohen's d\
+  \ between ITAG distributions for genuine vs Noisy-TV\n- C2: Cohen's d between ITAG\
+  \ distributions for genuine vs structured distractor\n- C3: Gating performance on\
+  \ Noisy-TV (false recruitment ≤ 20%, genuine ≥ 80%)\n- C4: Gating performance on\
+  \ structured distractor (false recruitment ≤ 20%, genuine ≥ 80%)\n- C5: Scope-reduction\
+  \ trigger evaluation\n\n**Important Implementation Details:**\n- Use `from src.itag\
+  \ import identify_surprising_positions, compute_itag, compute_isag`\n- Use `from\
+  \ src.models_dual_stream import NonParametricJEPASpatial`\n- Use `from src.motor\
+  \ import CLTSMotorController`\n- Use `from src.environment import PhysicsSandbox`\n\
+  - Follow the same training protocol as Phase 18: passive training on N=3 for 1500\
+  \ steps (with caching), then active CLTS training for 1500 steps\n- The structured\
+  \ distractor environment should use `PhysicsSandbox(N=3, seed=..., structured_distractor=True)`\n\
+  - Seeds: [42, 123, 456, 789, 999]\n- Save all results to `archive/iter_019/results/`\n\
+  \n**Key: The ITAG computation must happen BEFORE the WUP period, using raw pixel\
+  \ data from the environment's history, NOT from the model's latent representations.\
+  \ This is what makes it immune to cold-start pathologies.**\n\n#### 4. Run the experiments\n\
+  Execute: `python src/run_phase19_experiments.py`\n\nSave results to `archive/iter_019/results/`.\
+  \ Expected runtime: ~15-30 minutes depending on hardware.\n\n### Expected Outcomes\
+  \ (from pre-registration)\n- ITAG trivially separates genuine objects from Noisy-TV\
+  \ (Cohen's d >> 1.5)\n- ITAG fails to separate genuine objects from structured distractors\
+  \ (Cohen's d < 1.5)\n- Arm B will successfully filter Noisy-TV but will falsely\
+  \ recruit structured distractors\n- Arm C will show similar behavior\n- The scope-reduction\
+  \ trigger C5 will be activated\n\n### Success Criterion\nAll 45 experiment branches\
+  \ complete, ITAG distributions are collected, falsification audit is performed,\
+  \ and results are saved to archive/iter_019/results/.\n"
