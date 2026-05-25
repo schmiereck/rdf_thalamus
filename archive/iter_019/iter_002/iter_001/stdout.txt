@@ -1,0 +1,193 @@
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration — Phase 19
+
+## 1. Hypothesis (Modified per Manager Review)
+
+### 1.1 Original ITAG Hypothesis (Reframed)
+The temporal autocorrelation of raw pixel values at spatial positions identified as "surprising" by the pre-trained encoder provides a signal that can distinguish genuine N=3→4 object transitions from Noisy-TV distractors.
+
+**Manager's Reframing:** This is a **verification of a definitional identity**, not an empirical discovery. Noisy-TV is defined as white n...]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run...]
+
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blu...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase18_experiments.py'})]
+
+[Tool Result: import os
+import sys
+import json
+import copy
+import random
+import collections
+import numpy as np
+import pandas as pd
+import torch
+import torch.optim as optim
+import torch.nn.functional as F
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from scipy import stats
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import NonParametricJEPASpatial
+from src.motor import CLTSMot...]
+
+ 
+
+[Tool Call: grep_search({'pattern': 'identify_surprising_positions|compute_itag|compute_isag|forward_spatial|calculate_centroid_and_variance'})]
+
+[Tool Result: manager_log.md:2268: - Function compute_itag(pixel_array, surprising_positions, window=20):
+manager_log.md:2272: - Function compute_isag(pixel_array, surprising_positions):
+manager_log.md:2275: - Function identify_surprising_positions(prediction_error_map, top_k=16):
+test_models_spatial.py:3: from src.models_spatial import DynamicJEPASpatial, calculate_centroid_and_variance
+test_models_spatial.py:6: print("--- Testing calculate_centroid_and_variance ---")
+test_models_spatial.py:11: x_mean, var =...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a...]
+
+
+[Tool Call: read_file({'path': 'manager_log.md', 'start_line': 2260, 'end_line': 2290})]
+
+[Tool Result: --- lines 2260 to 2290 of 2385 ---
+  - Genuine recruitment rate ≥ 80% (currently 100% without ITAG)
+If ITAG pre-filtering rejects too many genuine objects OR accepts too many
+Noisy-TV distractors, the metric is insufficient for practical gating.
+
+**Proposed Method:**
+Step-by-step experimental protocol:
+
+1. CODE: Add ITAG computation module (src/itag.py):
+   - Function compute_itag(pixel_array, surprising_positions, window=20):
+     For each position x in surprising_positions, compute lag-1 tempo...]
+
+ 
+
+[Tool Call: read_file({'path': 'manager_log.md', 'start_line': 2220})]
+
+[Tool Result: --- lines 2220 to 2385 of 2385 ---
+discriminative signal between genuine object transitions and Noisy-TV distractors
+that is immune to all three known cold-start pathologies.
+
+Formally, when overall prediction error exceeds the recruitment threshold:
+1. Identify the top-K spatial positions S with highest per-position prediction
+   error from the pre-trained encoder (NOT from any new/cold dimension).
+2. Compute ITAG = (1/|S|) Σ_{x∈S} Corr[pixel(x,t), pixel(x,t+1)]
+   over W_t=20 consecutive times...]
+
+
+[Tool Call: list_dir({'path': 'cache'})]
+
+[Tool Result:       passive_model_seed_123.pt
+      passive_model_seed_42.pt
+      passive_model_seed_456.pt
+      passive_model_seed_789.pt
+      passive_model_seed_999.pt]
+
+ Let me now implement all the required changes. I'll start by creating `src/itag.py`, then modify `src/environment.py`, and finally create the experiment runner. 
+
+[Tool Call: write_file({'content': '"""\nITAG (Input-Level Temporal AutoCorrelation Gating) and ISAG (Input-Level Spatial AutoCorrelation Gating)\n\nThese metrics operate on raw pixel values at spatial positions identified as surprising by the pre-trained encoder.\nThey avoid all three cold-start pathologies (no encoder cold-start, no predictor cold-start, no optimization transient).\n"""\n\nimport numpy as np\n\n\ndef identify_surprising_positions(prediction_error_map, top_k=16):\n    """\n    Identify the top-K spatial positions with highest per-position prediction error.\n    \n    Args:\n        prediction_error_map: numpy array of shape (128,) or (B, 128) or (B, d_max, 128)\n                              If multi-dimensional, the norm along the channel/feature dimension is used.\n        top_k (int): Number of top positions to return.\n    \n    Returns:\n        surprising_positions: numpy array of shape (top_k,) containing sorted spatial indices.\n    """\n    if prediction_error_map.ndim == 3:\n        # (B, d_max, 128) -> compute L2 norm across d_max dimension\n        error_map = np.linalg.norm(prediction_error_map, axis=1)  # (B, 128)\n    elif prediction_error_map.ndim == 2:\n        # (B, 128) -> use first batch element or mean across batch\n        error_map = prediction_error_map[0] if prediction_error_map.shape[0] > 0 else prediction_error_map\n    else:\n        error_map = prediction_error_map\n    \n    # Ensure 1D\n    error_map = error_map.reshape(-1)\n    \n    # Get top-k indices\n    flat_indices = np.argsort(error_map)[-top_k:]\n    return np.sort(flat_indices)\n\n\ndef compute_itag(pixel_array, surprising_positions, window=20):\n    """\n    Compute Input-Level Temporal Autocorrelation Gating (ITAG).\n    \n    For each position x in surprising_positions, compute the lag-1 temporal\n    autocorrelation of pixel values (averaged across RGB channels) over the last\n    `window` frames. Return the mean across all surprising positions.\n    \n    Args:\n        pixel_array: list or array of raw pixel frames, each of shape (3, 128).\n                     Typically the last `window` frames from the pixel history.\n        surprising_positions: numpy array of spatial indices (int), shape (top_k,).\n        window (int): Number of consecutive timesteps to use for temporal autocorrelation.\n    \n    Returns:\n        itag_score (float): Mean lag-1 temporal autocorrelation, clipped to [0, 1].\n    """\n    if len(pixel_array) < 2:\n        return 0.0\n    \n    # Use at most `window` most recent frames\n    frames_used = pixel_array[-window:] if len(pixel_array) >= window else pixel_array\n    \n    # Average across RGB channels -> (T, 128)\n    frames_avg = []\n    for frame in frames_used:\n        if frame.ndim == 2 and frame.shape[0] == 3:\n            frames_avg.append(np.mean(frame, axis=0))\n        else:\n            frames_avg.append(frame.reshape(-1))\n    frames_avg = np.stack(frames_avg, axis=0)\n    \n    itag_scores = []\n    for pos in surprising_positions:\n        seq = frames_avg[:, pos]  # (T,)\n        mean = seq.mean()\n        std = seq.std(ddof=0)\n        if std < 1e-8:\n            itag_scores.append(0.0)\n        else:\n            seq_norm = (seq - mean) / std\n            # Lag-1 temporal autocorrelation\n            corr = np.mean(seq_norm[:-1] * seq_norm[1:])\n            # Clip negative autocorrelation to 0 (noise should not contribute)\n            itag_scores.append(max(0.0, corr))\n    \n    return float(np.mean(itag_scores)) if itag_scores else 0.0\n\n\ndef compute_isag(pixel_array, surprising_positions, window=20):\n    """\n    Compute Input-Level Spatial Autocorrelation Gating (ISAG).\n    \n    For each frame, consider the pixel values (averaged across RGB channels) at the\n    surprising positions. Compute the lag-1 spatial autocorrelation between adjacent\n    surprising positions, averaged across all adjacent pairs. Then average across frames.\n    \n    Uses at most `window` most recent frames.\n    \n    Args:\n        pixel_array: list or array of raw pixel frames, each of shape (3, 128).\n        surprising_positions: numpy array of spatial indices, shape (top_k,).\n        window (int): Number of consecutive timesteps to use.\n    \n    Returns:\n        isag_score (float): Mean spatial autocorrelation, clipped to [0, 1].\n    """\n    if len(pixel_array) < 1:\n        return 0.0\n    \n    # Use at most `window` most recent frames\n    frames_used = pixel_array[-window:] if len(pixel_array) >= window else pixel_array\n    \n    sorted_positions = np.sort(surprising_positions)\n    if len(sorted_positions) < 2:\n        return 0.0\n    \n    # Average across RGB channels per frame -> list of (128,)\n    frames_avg = []\n    for frame in frames_used:\n        if frame.ndim == 2 and frame.shape[0] == 3:\n            frames_avg.append(np.mean(frame, axis=0))\n        else:\n            frames_avg.append(frame.reshape(-1))\n    frames_avg = np.stack(frames_avg, axis=0)  # (T, 128)\n    \n    frame_corrs = []\n    for frame_vals in frames_avg:\n        pair_corrs = []\n        for i in range(len(sorted_positions) - 1):\n            pos1 = sorted_positions[i]\n            pos2 = sorted_positions[i + 1]\n            v1 = frame_vals[pos1]\n            v2 = frame_vals[pos2]\n            # Simple spatial autocorrelation metric: normalized product\n            # For a single frame, we can\'t compute Pearson correlation across samples,\n            # so we compute the normalized covariance between adjacent positions.\n            pair_corrs.append(v1 * v2)\n        \n        if pair_corrs:\n            # Normalize by the approximate variance (use mean of squared values at these positions)\n            sq_vals = np.array([frame_vals[pos] ** 2 for pos in sorted_positions])\n            mean_sq = np.mean(sq_vals)\n            if mean_sq > 1e-8:\n                frame_corr = np.mean(pair_corrs) / mean_sq\n                frame_corrs.append(max(0.0, min(1.0, frame_corr)))\n            else:\n                frame_corrs.append(0.0)\n    \n    return float(np.mean(frame_corrs)) if frame_corrs else 0.0\n', 'path': 'src/itag.py'})]
+
+[Tool Result: Successfully wrote to src/itag.py]
+
+
+[Tool Call: write_file({'content': 'import numpy as np\n\nclass PhysicsSandbox:\n    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):\n        """\n        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].\n        Mapped to a 1D array of 128 RGB pixels.\n        \n        Args:\n            N (int): Number of objects (usually 2 or 3).\n            substeps (int): Number of integration sub-steps per environment step.\n            sigma_blur (float): Softness of the continuous rendering.\n            seed (int, optional): Random seed.\n            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.\n            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.\n            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.\n        """\n        self.N = N\n        self.substeps = substeps\n        self.sigma_blur = sigma_blur\n        self.seed = seed\n        self.pixel_noise_std = pixel_noise_std\n        self.noisy_tv = noisy_tv\n        self.structured_distractor = structured_distractor\n        \n        # State variables for standard objects\n        self.positions = np.zeros(N)\n        self.velocities = np.zeros(N)\n        self.radii = np.zeros(N)\n        self.masses = np.zeros(N)\n        self.colors = np.zeros((N, 3))\n        \n        # State variables for Noisy-TV entity\n        self.noisy_tv_pos = 64.0\n        self.noisy_tv_radius = 5.0\n        self.noisy_tv_color = np.array([0.5, 0.5, 0.5])\n        \n        # State variables for Structured Distractor (Sinusoidal Oscillator)\n        self.sd_center = 64.0\n        self.sd_amplitude = 10.0\n        self.sd_omega = 0.03\n        self.sd_phase = 0.0\n        self.sd_color = np.array([0.5, 0.5, 0.5])\n        self.sd_radius = 5.0\n        self.sd_t = 0\n        self.sd_pos = 64.0\n        \n        # Pointer state variables\n        self.pointer_pos = 64.0\n        self.pointer_vel = 0.0\n        self.pointer_radius = 4.0\n        self.pointer_mass = 10.0\n        self.pointer_color = np.array([1.0, 1.0, 1.0])\n        \n        self.reset(seed=seed)\n        \n    def reset(self, seed=None):\n        """\n        Reset environment with randomized parameters (sizes, colors, masses, positions, velocities)\n        and reset pointer position & velocity, then resolve all overlaps.\n        """\n        if seed is not None:\n            np.random.seed(seed)\n            self.seed = seed\n\n        W = 128.0 / self.N\n        for i in range(self.N):\n            # Sample radius and mass\n            r = np.random.uniform(3.0, 8.0)\n            self.radii[i] = r\n            self.masses[i] = r  # Mass is proportional to radius/size\n            \n            # Sample color from [0.3, 1.0] for each channel\n            self.colors[i] = np.random.uniform(0.3, 1.0, size=(3,))\n            \n            # Position inside the segmented interval to prevent initial overlaps\n            low = i * W + r\n            high = (i + 1) * W - r\n            # Just in case the segment is too small (should not happen with N=2 or 3, but let\'s be safe)\n            if low >= high:\n                low = i * W + W / 2.0\n                high = low\n            self.positions[i] = np.random.uniform(low, high)\n            \n            # Velocity from [-2.0, 2.0], non-zero\n            v = np.random.uniform(0.5, 2.0)\n            if np.random.rand() < 0.5:\n                v = -v\n            self.velocities[i] = v\n            \n        # Reset pointer position and velocity\n        self.pointer_pos = 64.0\n        self.pointer_vel = 0.0\n        self.pointer_radius = 4.0\n        self.pointer_mass = 10.0\n        self.pointer_color = np.array([1.0, 1.0, 1.0])\n        \n        # Reset Noisy-TV entity if active\n        if self.noisy_tv:\n            self.noisy_tv_radius = np.random.uniform(3.0, 8.0)\n            self.noisy_tv_pos = np.random.uniform(self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)\n            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))\n        \n        # Reset Structured Distractor if active\n        if self.structured_distractor:\n            self.sd_center = np.random.uniform(32.0, 96.0)\n            self.sd_amplitude = np.random.uniform(5.0, 15.0)\n            self.sd_omega = np.random.uniform(0.02, 0.05)\n            self.sd_phase = np.random.uniform(0.0, 2.0 * np.pi)\n            self.sd_color = np.random.uniform(0.3, 1.0, size=(3,))\n            self.sd_radius = np.random.uniform(3.0, 8.0)\n            self.sd_t = 0\n            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_phase)\n        \n        # Resolve initial overlaps of both the objects and the pointer in a loop\n        temp_positions = np.concatenate([self.positions, [self.pointer_pos]])\n        temp_radii = np.concatenate([self.radii, [self.pointer_radius]])\n        temp_masses = np.concatenate([self.masses, [self.pointer_mass]])\n        \n        for _ in range(50):\n            # Boundary correction\n            for i in range(len(temp_positions)):\n                if temp_positions[i] - temp_radii[i] < 0.0:\n                    temp_positions[i] = temp_radii[i]\n                elif temp_positions[i] + temp_radii[i] > 128.0:\n                    temp_positions[i] = 128.0 - temp_radii[i]\n            \n            # Overlap resolution\n            sort_idx = np.argsort(temp_positions)\n            for idx_in_sort in range(len(temp_positions) - 1):\n                i = sort_idx[idx_in_sort]\n                j = sort_idx[idx_in_sort + 1]\n                \n                dist = temp_positions[j] - temp_positions[i]\n                min_dist = temp_radii[i] + temp_radii[j]\n                if dist < min_dist:\n                    overlap = min_dist - dist\n                    m_inv_i = 1.0 / temp_masses[i]\n                    m_inv_j = 1.0 / temp_masses[j]\n                    sum_inv_m = m_inv_i + m_inv_j\n                    \n                    temp_positions[i] -= overlap * (m_inv_i / sum_inv_m)\n                    temp_positions[j] += overlap * (m_inv_j / sum_inv_m)\n\n        # Assign positions back\n        self.positions = temp_positions[:-1]\n        self.pointer_pos = temp_positions[-1]\n            \n        return self.render()\n\n    def step(self, action=None):\n        """\n        Step the environment by 1.0 time unit using self.substeps, incorporating optional actions.\n        \n        Args:\n            action (dict, optional): containing continuous acceleration \'acc\' (float) and boolean \'push\'.\n        Returns:\n            observation (np.ndarray): Shape (3, 128)\n            info (dict): Useful diagnostic info\n        """\n        if action is not None:\n            acc = action.get(\'acc\', 0.0)\n            push = action.get(\'push\', False)\n        else:\n            acc = 0.0\n            push = False\n            \n        if push:\n            if len(self.positions) > 0:\n                dists = self.positions - self.pointer_pos\n                nearest_idx = np.argmin(np.abs(dists))\n                diff = dists[nearest_idx]\n                direction = 1.0 if diff >= 0 else -1.0\n                self.pointer_vel = direction * 5.0\n                \n        dt = 1.0 / self.substeps\n        \n        for _ in range(self.substeps):\n            # Apply acceleration\n            self.pointer_vel += acc * dt\n            \n            # Pack all N+1 objects\n            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])\n            temp_velocities = np.concatenate([self.velocities, [self.pointer_vel]])\n            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])\n            temp_masses = np.concatenate([self.masses, [self.pointer_mass]])\n            \n            # 1. Update positions\n            temp_positions += temp_velocities * dt\n            \n            # 2. Boundary bounces & position correction\n            for i in range(len(temp_positions)):\n                if temp_positions[i] - temp_radii[i] < 0.0:\n                    temp_positions[i] = temp_radii[i]\n                    if temp_velocities[i] < 0.0:\n                        temp_velocities[i] = -temp_velocities[i]\n                elif temp_positions[i] + temp_radii[i] > 128.0:\n                    temp_positions[i] = 128.0 - temp_radii[i]\n                    if temp_velocities[i] > 0.0:\n                        temp_velocities[i] = -temp_velocities[i]\n            \n            # 3. Resolve elastic collisions between adjacent objects\n            sort_idx = np.argsort(temp_positions)\n            for idx_in_sort in range(len(temp_positions) - 1):\n                i = sort_idx[idx_in_sort]\n                j = sort_idx[idx_in_sort + 1]\n                \n                dist = temp_positions[j] - temp_positions[i]\n                min_dist = temp_radii[i] + temp_radii[j]\n                if dist < min_dist:\n                    overlap = min_dist - dist\n                    m_inv_i = 1.0 / temp_masses[i]\n                    m_inv_j = 1.0 / temp_masses[j]\n                    sum_inv_m = m_inv_i + m_inv_j\n                    \n                    # Resolve overlap proportionally to inverse masses\n                    temp_positions[i] -= overlap * (m_inv_i / sum_inv_m)\n                    temp_positions[j] += overlap * (m_inv_j / sum_inv_m)\n                    \n                    # Conserve momentum and kinetic energy if moving towards each other\n                    if temp_velocities[i] > temp_velocities[j]:\n                        v1 = temp_velocities[i]\n                        v2 = temp_velocities[j]\n                        m1 = temp_masses[i]\n                        m2 = temp_masses[j]\n                        \n                        temp_velocities[i] = (v1 * (m1 - m2) + 2.0 * m2 * v2) / (m1 + m2)\n                        temp_velocities[j] = (v2 * (m2 - m1) + 2.0 * m1 * v1) / (m1 + m2)\n                        \n            # Additional boundary check after collision resolution to ensure no object is pushed out\n            for i in range(len(temp_positions)):\n                if temp_positions[i] - temp_radii[i] < 0.0:\n                    temp_positions[i] = temp_radii[i]\n                    if temp_velocities[i] < 0.0:\n                        temp_velocities[i] = -temp_velocities[i]\n                elif temp_positions[i] + temp_radii[i] > 128.0:\n                    temp_positions[i] = 128.0 - temp_radii[i]\n                    if temp_velocities[i] > 0.0:\n                        temp_velocities[i] = -temp_velocities[i]\n                        \n            # Unpack back to state variables\n            self.positions = temp_positions[:-1]\n            self.velocities = temp_velocities[:-1]\n            self.pointer_pos = temp_positions[-1]\n            self.pointer_vel = temp_velocities[-1]\n\n        # Update Noisy-TV state if active\n        if self.noisy_tv:\n            # Random walk motion: Gaussian step with std 2.0\n            step_noise = np.random.normal(0.0, 2.0)\n            self.noisy_tv_pos += step_noise\n            # Keep inside environment boundaries [radius, 128 - radius]\n            self.noisy_tv_pos = np.clip(self.noisy_tv_pos, self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)\n            # Flicker with maximum entropy: color randomly sampled from [0.3, 1.0]\n            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))\n\n        # Update Structured Distractor state if active\n        if self.structured_distractor:\n            self.sd_t += 1\n            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_omega * self.sd_t + self.sd_phase)\n\n        obs = self.render()\n        \n        info = {\n            "positions": self.positions.copy(),\n            "velocities": self.velocities.copy(),\n            "radii": self.radii.copy(),\n            "masses": self.masses.copy(),\n            "colors": self.colors.copy(),\n            "pointer_pos": self.pointer_pos,\n            "pointer_vel": self.pointer_vel,\n            "pointer_radius": self.pointer_radius,\n            "pointer_mass": self.pointer_mass,\n            "pointer_color": self.pointer_color.copy(),\n        }\n        \n        if self.noisy_tv:\n            info["noisy_tv_pos"] = self.noisy_tv_pos\n            info["noisy_tv_color"] = self.noisy_tv_color.copy()\n            info["noisy_tv_radius"] = self.noisy_tv_radius\n        \n        if self.structured_distractor:\n            info["sd_pos"] = self.sd_pos\n            info["sd_color"] = self.sd_color.copy()\n            info["sd_radius"] = self.sd_radius\n            \n        return obs, info\n\n    def render(self):\n        """\n        Render continuous 1D space to a (3, 128) array with soft continuous blending.\n        Includes original objects, the white physical pointer, and optionally the Noisy-TV entity.\n        """\n        pixel_centers = np.arange(128) + 0.5  # shape (128,)\n        canvas = np.zeros((3, 128))\n        \n        # Combine objects, pointer, and optional Noisy-TV for rendering depth sorting\n        if self.noisy_tv:\n            temp_positions = np.concatenate([self.positions, [self.pointer_pos], [self.noisy_tv_pos]])\n            temp_radii = np.concatenate([self.radii, [self.pointer_radius], [self.noisy_tv_radius]])\n            temp_colors = np.concatenate([self.colors, [self.pointer_color], [self.noisy_tv_color]], axis=0)\n        else:\n            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])\n            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])\n            temp_colors = np.concatenate([self.colors, [self.pointer_color]], axis=0)\n        \n        # Sort objects and pointer by position to blend left-to-right (depth order)\n        sorted_indices = np.argsort(temp_positions)\n        for idx in sorted_indices:\n            pos = temp_positions[idx]\n            r = temp_radii[idx]\n            color = temp_colors[idx]  # shape (3,)\n            \n            # Distance from pixel centers to object center\n            d = np.abs(pixel_centers - pos)\n            \n            # Sigmoid continuous blending\n            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))  # shape (128,)\n            mask = mask[np.newaxis, :]  # shape (1, 128)\n            color_expanded = color[:, np.newaxis]  # shape (3, 1)\n            \n            # Alpha blend onto canvas\n            canvas = canvas * (1.0 - mask) + color_expanded * mask\n        \n        # Render structured distractor after all standard objects and pointer\n        if self.structured_distractor:\n            pos = self.sd_pos\n            r = self.sd_radius\n            color = self.sd_color\n            d = np.abs(pixel_centers - pos)\n            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))\n            mask = mask[np.newaxis, :]\n            color_expanded = color[:, np.newaxis]\n            canvas = canvas * (1.0 - mask) + color_expanded * mask\n            \n        # Apply global pixel noise if specified\n        if self.pixel_noise_std > 0.0:\n            noise = np.random.normal(0.0, self.pixel_noise_std, size=canvas.shape)\n            canvas = np.clip(canvas + noise, 0.0, 1.0)\n            \n        return canvas\n', 'path': 'src/environment.py'})]
+
+[Tool Result: Successfully wrote to src/environment.py]
+
+
+[Tool Call: write_file({'content': '"""\nITAG (Input-Level Temporal AutoCorrelation Gating) and ISAG (Input-Level Spatial AutoCorrelation Gating)\n\nThese metrics operate on raw pixel values at spatial positions identified as surprising by the pre-trained encoder.\nThey avoid all three cold-start pathologies (no encoder cold-start, no predictor cold-start, no optimization transient).\n"""\n\nimport numpy as np\n\n\ndef identify_surprising_positions(prediction_error_map, top_k=16):\n    """\n    Identify the top-K spatial positions with highest per-position prediction error.\n    \n    Args:\n        prediction_error_map: numpy array of shape (128,) or (B, 128) or (B, d_max, 128)\n                              If multi-dimensional, the norm along the channel/feature dimension is used.\n        top_k (int): Number of top positions to return.\n    \n    Returns:\n        surprising_positions: numpy array of shape (top_k,) containing sorted spatial indices.\n    """\n    if prediction_error_map.ndim == 3:\n        # (B, d_max, 128) -> compute L2 norm across d_max dimension\n        error_map = np.linalg.norm(prediction_error_map, axis=1)  # (B, 128)\n    elif prediction_error_map.ndim == 2:\n        # (B, 128) -> use first batch element or mean across batch\n        error_map = prediction_error_map[0] if prediction_error_map.shape[0] > 0 else prediction_error_map\n    else:\n        error_map = prediction_error_map\n    \n    # Ensure 1D\n    error_map = error_map.reshape(-1)\n    \n    # Get top-k indices\n    flat_indices = np.argsort(error_map)[-top_k:]\n    return np.sort(flat_indices)\n\n\ndef compute_itag(pixel_array, surprising_positions, window=20):\n    """\n    Compute Input-Level Temporal Autocorrelation Gating (ITAG).\n    \n    For each position x in surprising_positions, compute the lag-1 temporal\n    autocorrelation of pixel values (averaged across RGB channels) over the last\n    `window` frames. Return the mean across all surprising positions.\n    \n    Args:\n        pixel_array: list or array of raw pixel frames, each of shape (3, 128).\n                     Typically the last `window` frames from the pixel history.\n        surprising_positions: numpy array of spatial indices (int), shape (top_k,).\n        window (int): Number of consecutive timesteps to use for temporal autocorrelation.\n    \n    Returns:\n        itag_score (float): Mean lag-1 temporal autocorrelation, clipped to [0, 1].\n    """\n    if len(pixel_array) < 2:\n        return 0.0\n    \n    # Use at most `window` most recent frames\n    frames_used = pixel_array[-window:] if len(pixel_array) >= window else pixel_array\n    \n    # Average across RGB channels -> (T, 128)\n    frames_avg = []\n    for frame in frames_used:\n        if frame.ndim == 2 and frame.shape[0] == 3:\n            frames_avg.append(np.mean(frame, axis=0))\n        else:\n            frames_avg.append(frame.reshape(-1))\n    frames_avg = np.stack(frames_avg, axis=0)\n    \n    itag_scores = []\n    for pos in surprising_positions:\n        seq = frames_avg[:, pos]  # (T,)\n        mean = seq.mean()\n        std = seq.std(ddof=0)\n        if std < 1e-8:\n            itag_scores.append(0.0)\n        else:\n            seq_norm = (seq - mean) / std\n            # Lag-1 temporal autocorrelation\n            corr = np.mean(seq_norm[:-1] * seq_norm[1:])\n            # Clip negative autocorrelation to 0 (noise should not contribute)\n            itag_scores.append(max(0.0, corr))\n    \n    return float(np.mean(itag_scores)) if itag_scores else 0.0\n\n\ndef compute_isag(pixel_array, surprising_positions, window=20):\n    """\n    Compute Input-Level Spatial Autocorrelation Gating (ISAG).\n    \n    For each frame, consider the pixel values (averaged across RGB channels) at the\n    surprising positions. Compute the lag-1 spatial autocorrelation between adjacent\n    surprising positions within that frame, normalized by the frame-level variance.\n    Then average across frames.\n    \n    Uses at most `window` most recent frames.\n    \n    Args:\n        pixel_array: list or array of raw pixel frames, each of shape (3, 128).\n        surprising_positions: numpy array of spatial indices, shape (top_k,).\n        window (int): Number of consecutive timesteps to use.\n    \n    Returns:\n        isag_score (float): Mean spatial autocorrelation, clipped to [0, 1].\n    """\n    if len(pixel_array) < 1:\n        return 0.0\n    \n    # Use at most `window` most recent frames\n    frames_used = pixel_array[-window:] if len(pixel_array) >= window else pixel_array\n    \n    sorted_positions = np.sort(surprising_positions)\n    if len(sorted_positions) < 2:\n        return 0.0\n    \n    frame_scores = []\n    for frame in frames_used:\n        if frame.ndim == 2 and frame.shape[0] == 3:\n            pixel_vals = np.mean(frame, axis=0)\n        else:\n            pixel_vals = frame.reshape(-1)\n        \n        values = pixel_vals[sorted_positions]\n        mean = values.mean()\n        std = values.std(ddof=0)\n        if std < 1e-8:\n            frame_scores.append(0.0)\n            continue\n        \n        # Lag-1 spatial autocorrelation: correlation between adjacent values\n        corrs = []\n        for i in range(len(values) - 1):\n            corr = (values[i] - mean) * (values[i + 1] - mean) / (std ** 2)\n            corrs.append(corr)\n        \n        frame_scores.append(np.mean(corrs))\n    \n    # Clip negative values to 0\n    frame_scores = [max(0.0, s) for s in frame_scores]\n    return float(np.mean(frame_scores)) if frame_scores else 0.0\n', 'path': 'src/itag.py'})]
+
+[Tool Result: Successfully wrote to src/itag.py]
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python -c "from src.environment import PhysicsSandbox; env = PhysicsSandbox(N=3, structured_distractor=True, seed=42); obs = env.reset(); print(\'Reset OK, obs shape:\', obs.shape); obs, info = env.step(); print(\'Step OK, sd_pos:\', info.get(\'sd_pos\')); obs, info = env.step(); print(\'Step 2 OK, sd_pos:\', info.get(\'sd_pos\'))"'})]
+
+[Tool Result: exit_code: 0
+stdout: Reset OK, obs shape: (3, 128)
+Step OK, sd_pos: 86.72108811118441
+Step 2 OK, sd_pos: 87.23208512584591
+
+stderr: ]
+
+
+[NUDGE RESPONSE]
+ ```yaml
+status: token_limit
+artifacts:
+  - src/itag.py
+  - src/environment.py
+metrics: {}
+log_excerpt: |
+  Reset OK, obs shape: (3, 128)
+  Step OK, sd_pos: 86.72108811118441
+  Step 2 OK, sd_pos: 87.23208512584591
+experimenter_view: |
+  The executor successfully created src/itag.py with ITAG and ISAG metric
+  computation functions, and modified src/environment.py to add the
+  Sinusoidal Oscillator structured distractor. Environment tests passed
+  for the new structured_distractor mode. However, the main experiment
+  runner script (src/run_phase19_experiments.py) was not completed and
+  the experiments were not executed due to reaching the execution limit.
+notes: "Partial completion: ITAG module and environment distractor ready, but experiment runner and execution pending."
+```

@@ -1,7 +1,7 @@
 import numpy as np
 
 class PhysicsSandbox:
-    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False):
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
         """
         PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
         Mapped to a 1D array of 128 RGB pixels.
@@ -13,6 +13,7 @@ class PhysicsSandbox:
             seed (int, optional): Random seed.
             pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
             noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
         """
         self.N = N
         self.substeps = substeps
@@ -20,6 +21,7 @@ class PhysicsSandbox:
         self.seed = seed
         self.pixel_noise_std = pixel_noise_std
         self.noisy_tv = noisy_tv
+        self.structured_distractor = structured_distractor
         
         # State variables for standard objects
         self.positions = np.zeros(N)
@@ -32,6 +34,16 @@ class PhysicsSandbox:
         self.noisy_tv_pos = 64.0
         self.noisy_tv_radius = 5.0
         self.noisy_tv_color = np.array([0.5, 0.5, 0.5])
+        
+        # State variables for Structured Distractor (Sinusoidal Oscillator)
+        self.sd_center = 64.0
+        self.sd_amplitude = 10.0
+        self.sd_omega = 0.03
+        self.sd_phase = 0.0
+        self.sd_color = np.array([0.5, 0.5, 0.5])
+        self.sd_radius = 5.0
+        self.sd_t = 0
+        self.sd_pos = 64.0
         
         # Pointer state variables
         self.pointer_pos = 64.0
@@ -88,6 +100,17 @@ class PhysicsSandbox:
             self.noisy_tv_radius = np.random.uniform(3.0, 8.0)
             self.noisy_tv_pos = np.random.uniform(self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
             self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+        
+        # Reset Structured Distractor if active
+        if self.structured_distractor:
+            self.sd_center = np.random.uniform(32.0, 96.0)
+            self.sd_amplitude = np.random.uniform(5.0, 15.0)
+            self.sd_omega = np.random.uniform(0.02, 0.05)
+            self.sd_phase = np.random.uniform(0.0, 2.0 * np.pi)
+            self.sd_color = np.random.uniform(0.3, 1.0, size=(3,))
+            self.sd_radius = np.random.uniform(3.0, 8.0)
+            self.sd_t = 0
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_phase)
         
         # Resolve initial overlaps of both the objects and the pointer in a loop
         temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
@@ -231,6 +254,11 @@ class PhysicsSandbox:
             # Flicker with maximum entropy: color randomly sampled from [0.3, 1.0]
             self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
 
+        # Update Structured Distractor state if active
+        if self.structured_distractor:
+            self.sd_t += 1
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_omega * self.sd_t + self.sd_phase)
+
         obs = self.render()
         
         info = {
@@ -250,6 +278,11 @@ class PhysicsSandbox:
             info["noisy_tv_pos"] = self.noisy_tv_pos
             info["noisy_tv_color"] = self.noisy_tv_color.copy()
             info["noisy_tv_radius"] = self.noisy_tv_radius
+        
+        if self.structured_distractor:
+            info["sd_pos"] = self.sd_pos
+            info["sd_color"] = self.sd_color.copy()
+            info["sd_radius"] = self.sd_radius
             
         return obs, info
 
@@ -287,6 +320,17 @@ class PhysicsSandbox:
             color_expanded = color[:, np.newaxis]  # shape (3, 1)
             
             # Alpha blend onto canvas
+            canvas = canvas * (1.0 - mask) + color_expanded * mask
+        
+        # Render structured distractor after all standard objects and pointer
+        if self.structured_distractor:
+            pos = self.sd_pos
+            r = self.sd_radius
+            color = self.sd_color
+            d = np.abs(pixel_centers - pos)
+            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))
+            mask = mask[np.newaxis, :]
+            color_expanded = color[:, np.newaxis]
             canvas = canvas * (1.0 - mask) + color_expanded * mask
             
         # Apply global pixel noise if specified
