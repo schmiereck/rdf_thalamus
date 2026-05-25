@@ -666,3 +666,53 @@ The results provide a definitive scientific falsification of the ESUG hypothesis
 
 **Notes:** ESUG hypothesis resoundingly falsified; discovered a symmetric encoder-level cold-start pathology in prediction-independent gating.
 
+
+---
+```yaml
+cached_tokens: 0
+campaign: Thalamus
+cost_usd: 0.87683
+hypothesis: 'phase-18: falsify EG-MDL prediction-trend gate; discover cold-start optimization
+  transient as third cold-start pathology distinct from encoder and predictor cold-starts'
+input_tokens: 825094
+iter: 18
+metrics:
+  arm_p_false_recruitment_rate: 5/5
+  arm_p_mse_cent_mean: 55.58
+  arm_p_recruitment_rate: 5/5
+  arm_p_test_sim_loss_mean: 0.0877
+  arm_s_alt_false_recruitment_rate: 5/5
+  arm_s_alt_mse_cent_mean: 55.58
+  arm_s_alt_recruitment_rate: 5/5
+  arm_s_false_recruitment_rate: 5/5
+  arm_s_mse_cent_mean: 55.58
+  arm_s_recruitment_rate: 5/5
+  arm_s_rho_control_max: 0.0049
+  arm_s_rho_transition_max: 0.006
+  eg_mdl_verdict: FALSIFIED
+  theta_sensitive: false
+output_tokens: 17244
+status: ok
+```
+
+## iter_018: phase-18: falsify EG-MDL prediction-trend gate; discover cold-start optimization transient as third cold-start pathology distinct from encoder and predictor cold-starts
+
+**Analysis:** Phase 18 tested the third approach to solving the distractor-rejection problem that has
+persisted since Phase 16. The first approach (ESUG, Phase 17) failed due to encoder cold-start:
+randomly initialized encoder projections produce rough temporal dynamics (λ ~ 1.0-1.5),
+causing the gate to reject genuine objects. The second approach (EG-MDL, Phase 18) fails due
+to predictor cold-start: randomly i
+
+**Status:** ok
+
+**Metrics:** `{'arm_p_recruitment_rate': '5/5', 'arm_s_recruitment_rate': '5/5', 'arm_s_alt_recruitment_rate': '5/5', 'arm_p_false_recruitment_rate': '5/5', 'arm_s_false_recruitment_rate': '5/5', 'arm_s_alt_false_recruitment_rate': '5/5', 'arm_p_mse_cent_mean': 55.58, 'arm_s_mse_cent_mean': 55.58, 'arm_s_alt_mse_cent_mean': 55.58, 'arm_p_test_sim_loss_mean': 0.0877, 'arm_s_rho_transition_max': 0.006, 'arm_s_rho_control_max': 0.0049, 'eg_mdl_verdict': 'FALSIFIED', 'theta_sensitive': False}`
+
+**Experimenter view:** Phase 18 evaluated the EG-MDL hypothesis: adding a prediction-trend gate (ρ = E_late/E_early)
+to WUP-MDL would reduce Noisy-TV false recruitment from 100% to ≤20% while maintaining
+≥80% genuine recruitment. The hypothesis is resoundingly falsified.
+
+All three arms (P, S, S_alt) produced identical outcomes because ρ provides zero discriminative
+power. ρ is universally near-zero (max 0.006 for genui
+
+**Notes:** EG-MDL hypothesis falsified; cold-start optimization transient discovered as third distinct cold-start pathology
+

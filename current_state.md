@@ -1,26 +1,55 @@
 # Current Research State
-Phase: Phase 17 Complete (ESUG Falsified, Encoder Cold-Start Pathology Discovered)
+Phase: Phase 18 Complete (EG-MDL Falsified, Cold-Start Optimization Transient Discovered)
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 17 evaluated the prediction-independent Encoder-only Smoothness-Uniqueness Gating (ESUG) framework to bypass predictor cold-starts.
+Design and evaluate a novel dynamic representation network ("Thalamus") with hierarchical
+abstraction, dynamic dimension recruitment, and thalamic gating. Current focus: solving the
+distractor-rejection problem for dimension recruitment gating.
 
 ## Confirmed
-- FALSIFICATION OF ESUG HYPOTHESIS (iter_17.1): ESUG gating (Arms Q & Q_fast) is resoundingly falsified. Recruitment rate was only 20% (1/5 seeds), and mean post-transition centroid decoding MSE was 82.83 (Arm Q) and 185.95 (Arm Q_fast), violating the success threshold of < 55.0.
-- ENCODER COLD-START PATHOLOGY (iter_17.1): Randomly initialized proposed dimensions produce highly rough temporal trajectories (lambda ~ 1.0-1.5), triggering immediate ESUG gate rejections. This establishes a symmetric "encoder cold-start" pathology to Phase 15's "predictor cold-start."
-- WUP-MDL PERFORMANCE (iter_17.1): WUP-MDL (Arm P, W=100) remains highly robust for coordinate tracking under drift, achieving 100% recruitment (5/5 seeds) and a centroid decoding MSE of 57.34.
-- DISTRACTOR VULNERABILITY (iter_17.1): Arm P exhibits a 100% false recruitment rate (5/5 seeds) in the Noisy-TV control group, indicating that predictor-dependent gates are easily fooled by high-entropy, localized noise. ESUG has superior noise specificity (rejecting Noisy-TV in 4/5 seeds), but fails due to its severe cold-start bias.
+- FALSIFICATION OF EG-MDL HYPOTHESIS (iter_18.2): The prediction-trend gate ρ = E_late/E_early
+  provides zero discriminative power between genuine objects and Noisy-TV. All arms (P, S, S_alt)
+  recruit the Noisy-TV distractor in 5/5 seeds. Falsified on Criterion C2 (false recruitment > 20%).
+- COLD-START OPTIMIZATION TRANSIENT (iter_18.2): When the predictor's 4th-dimension weights are
+  randomly initialized, E_early is enormous (26-314 across seeds) and E_late drops to near-zero
+  (0.07-0.43) regardless of signal type, driving ρ to ~0.001-0.006. This transient dominates
+  any learnability signal and renders ρ useless as a discriminative metric.
+- WUP-MDL REMAINS BEST BASELINE (iter_18.2): Arm P achieves 100% recruitment (5/5), centroid
+  MSE 55.58, test sim loss 0.0877. But 100% false recruitment on Noisy-TV persists.
+- NO θ-SENSITIVITY (iter_18.2): Both θ=0.90 and θ=0.85 are universally passed (ρ < 0.01
+  << 0.85). The problem is metric confound, not threshold calibration.
+- THREE DISTINCT COLD-START PATHOLOGIES (iter_17, iter_18):
+  1. Encoder cold-start (Phase 17, ESUG): Chaotic encoder output → gate rejects genuine objects
+  2. Predictor cold-start (Phase 15-16, MDL): Cold predictor fails MDL → gate rejects (solved by WUP)
+  3. Optimization transient cold-start (Phase 18, EG-MDL): Rapid weight adaptation → ρ→0 for all signals
 
 ## Refuted / Falsified
-- PREDICTION-INDEPENDENT ESUG GATING (iter_17.1): Encoder-only gating without a warm-up period is fundamentally unsuitable for structural growth due to the rough temporal dynamics of newly spawned encoder projections.
+- PREDICTION-TREND GATE ρ (iter_18.2): Cannot distinguish structured from unstructured signals
+  when the predictor is cold-started because the optimization transient dominates.
+- ESUG (iter_17.1): Encoder-only gating without warm-up rejected genuine objects due to encoder
+  cold-start.
+- PVU GATING (iter_16): Physical-variance-uncorrelated gating rejected all dimensions due to
+  high physical correlation in 1D space.
+- SA-CCR (iter_15): Surprise-adaptive covariance regularization caused destructive interference
+  between learning and attention signals.
 
 ## Best Result
-- Arm P (WUP-MDL, W=100, transition sweep): Centroid Decoding MSE: 57.34, Test Sim Loss: 0.0791 (iter_17.1).
-- Arm Q (ESUG-100, seed 42, recruited): Centroid Decoding MSE: 58.24, Test Sim Loss: 0.0198 (iter_17.1).
+- Arm P (WUP-MDL, W=100): Centroid Decoding MSE: 55.58, Test Sim Loss: 0.0877, 100% recruitment
+  (iter_18.2). But 100% false recruitment on Noisy-TV control.
 
 ## In Progress
-- Designing an Entropy-Gated Minimum Description Length (EG-MDL) framework to combine WUP-MDL's coordinate tracking robustness with active distractor suppression.
+- Designing a post-transient ρ metric with extended WUP window (W=500) to test whether
+  learnability differences emerge after cold-start transient saturation.
+- Exploring warm-started predictor approaches to bypass the optimization transient entirely.
 
 ## Open Questions
-- Can an adaptive temporal smoothness threshold lambda(t) that decays during evaluation resolve the encoder cold-start pathology?
-- How can we modify MDL gating to distinguish a true clean object from a highly unmodelable distractor like Noisy-TV?
-- Is there an information-theoretic gating metric (like mutual information or spatial entropy of centroids) that is robust to both encoder and predictor cold-starts?
+1. Can a post-transient ρ (computed on steps 250-375 vs 375-500 of W=500 WUP) separate
+   genuine objects from Noisy-TV?
+2. Can warm-starting the predictor by weight transfer from existing dimensions avoid the
+   cold-start optimization transient?
+3. Is there a non-predictor-based gating metric (spectral flatness, spatial coherence,
+   cross-dimension MI) that avoids all cold-start pathologies?
+4. Should the Noisy-TV scenario be treated as fundamentally out-of-scope for predictor-based
+   gating, requiring architectural solutions instead?
+5. Can pre-allocated shadow dimensions (always encoding but only sometimes promoted)
+   provide an alternative recruitment paradigm?

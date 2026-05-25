@@ -1,0 +1,609 @@
+I'll start by understanding the current codebase and prior results before decomposing this phase into sub-goals.
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 018
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+Adding a WUP-period prediction-trend gate to WUP-MDL (creating "EG-MDL") will
+maintain ≥80% recruitment rate on the N=3→4 transition sweep while reducing
+the Noisy-TV false recruitment rate from 100% (WUP-MDL baseline) to ≤20%,
+with centroid decoding MSE ≤ 65.0.
+
+The prediction-trend gate computes the improvement ratio ρ = E_late / E_early
+during the WUP period, where E_early and E_late are the mean prediction errors
+over the first and second halves of the warm-up window. A genuine new object
+produces ρ << 1.0 (predictor learning smooth dynamics), while a Noisy-TV
+distractor produces ρ ≈ 1.0 (no learnable structure). The gate accepts the
+dimension only if ρ < θ (θ=0.90) AND the existing MDL consistency criterion
+passes.
+
+## 2. Falsification Criterion
+The EG-MDL hypothesis is falsified if ANY of the following hold across the
+5-seed matched sweep:
+
+1. Recruit...]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+      train_thalamus.py]
+
+
+[Tool Call: read_iteration({'iter_num': 17})]
+
+[Tool Result: ```yaml
+cached_tokens: 2516135
+campaign: Thalamus
+cost_usd: 1.59958
+hypothesis: 'phase-17: falsify prediction-independent ESUG gating and expose symmetric
+  encoder-level cold-start pathology'
+input_tokens: 3466319
+iter: 17
+metrics:
+  arm_p_attn_switch_rate: 0.0566
+  arm_p_centroid_track_err: 59.38
+  arm_p_false_recruitment_ctrl: 5/5
+  arm_p_mse_cent_mean: 57.34
+  arm_p_recruitment_rate: 5/5
+  arm_q_attn_switch_rate: 0.0303
+  arm_q_centroid_track_err: 55.68
+  arm_q_false_recruitment_ctrl: 1/5
+  arm_q_fast_false_recruitment_ctrl: 1/5
+  arm_q_fast_mse_cent_mean: 185.95
+  arm_q_fast_recruitment_rate: 1/5
+  arm_q_mse_cent_mean: 82.83
+  arm_q_recruitment_rate: 1/5
+  esug_hypothesis_verdict: FALSIFIED
+  esug_lambda_range_clean: 0.13_to_1.51
+output_tokens: 6787
+status: ok
+```
+
+## iter_017: phase-17: falsify prediction-independent ESUG gating and expose symmetric encoder-level cold-start pathology
+
+**Analysis:** Phase 17 evaluated the hypothesis that prediction-independent, encoder-only metric...]
+
+
+[Tool Call: read_file({'path': 'src/thalamus.py'})]
+
+[Tool Result: import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+
+class SegmentEncoder(nn.Module):
+    def __init__(self, d_max=8, pos_encoding="none"):
+        """
+        Maps visual segment of shape (B, 3, 32) to latent space of shape (B, d_max).
+        Uses 1D convolution layers.
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.pos_encoding = pos_encoding
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Li...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase17_experiments.py'})]
+
+[Tool Result: """
+Phase 17 experiments: Encoder-only Smoothness-Uniqueness Gating (ESUG)
+vs WUP-MDL baseline.
+
+Pre-registered hypothesis:
+    The ESUG gating criterion — evaluating the encoder's proposed dimension
+    via R_unique (smoothness-uniqueness) and lambda (temporal roughness)
+    on target encoder outputs collected during an evaluation window — will
+    resolve the "representation-prediction temporal mismatch" pathology
+    of WUP-MDL. Specifically:
+    1. ESUG-100 and ESUG-30 will recruit the 4th dimension in >= 4/5
+       seeds (matching WUP-MDL's rate) while achieving lower post-
+       recruitment centroid tracking error and attention switch rates.
+    2. ESUG-30 will match ESUG-100's recruitment rate but in 1/3 the
+       evaluation budget (30 vs 100 steps).
+    3. In the Noisy-TV control, ESUG will achieve a false recruitment
+       rate of 0/5 (lambda > 0.5 for Noisy-TV's erratic encoder signal),
+       outperforming WUP-MDL.
+
+Compares three arms across 5 random seeds (matched compa...]
+
+Let me read the key model file and check the phase 17 results for detailed metrics.
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_...]
+
+
+[Tool Call: read_result_file({'filename': 'results/phase17_report.md', 'iter_num': 17})]
+
+[Tool Result: # Phase 17 Formal Results Report
+
+
+
+## Overview
+
+
+
+Phase 17 evaluates three algorithmic arms across 5 random seeds (42, 123, 456, 789, 999)
+
+under a **transition sweep** (online adaptation with concept drift) and a **control sweep** (no drift).
+
+The goal is to assess whether the experimental arms (Q, Q_fast) are falsified relative to
+
+the reference arm P across three core criteria.
+
+
+
+## Arms
+
+
+
+| Arm | Gating | Window | Description |
+
+|---|---|---|---|
+
+| Arm P (WUP-MDL, W=100) | MDL | W=100 | Windowed Uniform Pool with MDL gating (reference) |
+
+| Arm Q (ESUG-100) | ESUG | W=100 | ESUG gating, default window |
+
+| Arm Q_fast (ESUG-30) | ESUG | W=30 | ESUG gating, fast-adapting window |
+
+
+
+## Transition Sweep Results
+
+
+
+Mean ± SD across seeds, evaluated at final step (step 3000).
+
+
+
+| Metric | Arm P (WUP-MDL, W=100) | Arm Q (ESUG-100) | Arm Q_fast (ESUG-30) |
+
+|---|---|---|---|
+
+| Test Sim Loss | 0.0791 ± 0.0231 | 17097.1995 ± 11774.1588 | 8729.4526 ± 5580.7798 |
+
+| MSE Centroid | 57.34...]
+
+Now I have a thorough understanding of the codebase, the Phase 17 results, and the Manager's strategic guidance. Let me plan Phase 18.
+
+**Phase 18 Analysis:**
+
+The core task is implementing and evaluating EG-MDL (Entropy-Gated MDL) which adds a prediction-trend gate to the existing WUP-MDL framework. The Manager raises three critical concerns:
+1. θ=0.90 needs independent justification (not post-hoc)
+2. The prediction-trend gate is nearly tautological — needs honest framing
+3. Arm T's spatial entropy gate risks re-introducing encoder cold-start
+
+**Sub-goals:**
+1. **Update pre-registration** (medium) — Add threshold justification, honest framing, and Arm T decision per Manager's guidance
+2. **Implement and run EG-MDL experiments** (planner) — Implement Arms P, S (θ=0.90), S_alt (θ=0.85), run both sweeps, analyze against falsification criteria
+
+Let me start with sub-goal 1:
+
+[Tool Call: run_agent({'complexity': 'medium', 'estimated_runtime_sec': 120, 'iter_id': '018.1', 'task': 'Update the pre-registration file at src/pre_registration.md with the Manager\'s three required additions. Read the current file first, then rewrite it with these additions:\n\n## 1. Threshold Justification for θ=0.90\n\nAdd a section "## 4. Threshold Justification" that provides an independent, pre-experimental justification for θ=0.90:\n\nThe predictor architecture is a 2-layer MLP (128 hidden units) operating on 3-step latent histories. During 100 WUP steps at lr=1e-3 with batch_size=32, genuine physical objects in the 1D sandbox exhibit smooth dynamics (constant-velocity trajectories with occasional elastic collisions). The predictor should learn constant-velocity extrapolation within ~50 steps, producing a measurable reduction in prediction error between the first and second halves of the WUP window. A 10% error reduction threshold (ρ < 0.90) is conservative because:\n- For genuine objects, even a partially-trained predictor should reduce error by well over 10% in 50 additional gradient steps\n- For Noisy-TV, which has no learnable temporal structure, the error should remain approximately constant (ρ ≈ 1.0)\n- The threshold is intentionally lenient to avoid false rejections of genuine objects whose dynamics are harder to learn (e.g., post-collision trajectories)\n\nAdditionally, we commit to θ=0.85 as a robustness arm (Arm S_alt). If the result is θ-sensitive (i.e., Arm S passes but S_alt fails, or vice versa), this will be reported honestly rather than cherry-picked.\n\n## 2. Honest Framing of the Prediction-Trend Gate\n\nAdd a section "## 5. Honest Framing: Empirical Falsifiability" that includes this exact paragraph:\n\n> Under the specific parametric predictor used (2-layer MLP, 128 hidden units, 3-step history, finite capacity, W=100 steps), does the prediction-trend ratio ρ reliably separate physical objects from random noise? The answer is not predictable from the construction alone because (a) the predictor has limited capacity, (b) some physical dynamics may not be learnable within 100 steps (e.g., rare collision sequences), and (c) some non-physical signals may exhibit partial temporal regularity (e.g., a Noisy-TV with correlated noise). The prediction-trend gate is nearly definitional — we are verifying that our predictor can learn smooth physics faster than random noise within a fixed budget. The genuinely empirical question is whether the separation is clean enough at the specific threshold θ=0.90 to produce ≥80% recruitment and ≤20% false recruitment simultaneously.\n\n## 3. Arm T Decision: Deferred\n\nModify Section 3 (Proposed Method) to DEFER Arm T. Replace Arm T with the following note:\n\n> Arm T (EG-MDL-Spatial) is DEFERRED to a future iteration. The Manager\'s guidance notes that computing spatial entropy H_norm on a cold-started encoder projection is likely to reject genuine objects — reproducing the ESUG failure mode under a different metric name. Phase 17 established that newly initialized encoder projections produce chaotic spatial representations (λ ~ 1.0-1.5). Even at the end of a 100-step WUP period, the encoder\'s spatial attention for the new dimension may remain diffuse for genuine objects, making H_norm an unreliable gate without further evidence. If Arm S succeeds, Arm T can be revisited with H_norm computed after a longer stabilization period.\n\nReplace Arm T in the method with Arm S_alt:\n> 3. Implement Arm S_alt (EG-MDL, W=100, θ=0.85):\n>    a. Same as Arm S but with θ=0.85 (requiring 15% error reduction during WUP).\n>    b. This robustness arm tests whether results are sensitive to the choice of θ.\n\nAlso update the falsification criteria if needed to account for Arm S_alt.\n\nKeep all other sections of the pre-registration file intact. The file should be well-structured markdown.'})]
+
+[Tool Result: {"error": "Wrong iter_id '018.1' for iteration 18. Use ids like '18.1', '18.2', etc. (not numbers from a previous or future iteration)."}]
+
+
+[Tool Call: run_agent({'complexity': 'medium', 'estimated_runtime_sec': 120, 'iter_id': '18.1', 'task': 'Update the pre-registration file at src/pre_registration.md with the Manager\'s three required additions. Read the current file first, then rewrite it with these additions:\n\n## 1. Threshold Justification for θ=0.90\n\nAdd a section "## 4. Threshold Justification" that provides an independent, pre-experimental justification for θ=0.90:\n\nThe predictor architecture is a 2-layer MLP (128 hidden units) operating on 3-step latent histories. During 100 WUP steps at lr=1e-3 with batch_size=32, genuine physical objects in the 1D sandbox exhibit smooth dynamics (constant-velocity trajectories with occasional elastic collisions). The predictor should learn constant-velocity extrapolation within ~50 steps, producing a measurable reduction in prediction error between the first and second halves of the WUP window. A 10% error reduction threshold (ρ < 0.90) is conservative because:\n- For genuine objects, even a partially-trained predictor should reduce error by well over 10% in 50 additional gradient steps\n- For Noisy-TV, which has no learnable temporal structure, the error should remain approximately constant (ρ ≈ 1.0)\n- The threshold is intentionally lenient to avoid false rejections of genuine objects whose dynamics are harder to learn (e.g., post-collision trajectories)\n\nAdditionally, we commit to θ=0.85 as a robustness arm (Arm S_alt). If the result is θ-sensitive (i.e., Arm S passes but S_alt fails, or vice versa), this will be reported honestly rather than cherry-picked.\n\n## 2. Honest Framing of the Prediction-Trend Gate\n\nAdd a section "## 5. Honest Framing: Empirical Falsifiability" that includes this exact paragraph:\n\n> Under the specific parametric predictor used (2-layer MLP, 128 hidden units, 3-step history, finite capacity, W=100 steps), does the prediction-trend ratio ρ reliably separate physical objects from random noise? The answer is not predictable from the construction alone because (a) the predictor has limited capacity, (b) some physical dynamics may not be learnable within 100 steps (e.g., rare collision sequences), and (c) some non-physical signals may exhibit partial temporal regularity (e.g., a Noisy-TV with correlated noise). The prediction-trend gate is nearly definitional — we are verifying that our predictor can learn smooth physics faster than random noise within a fixed budget. The genuinely empirical question is whether the separation is clean enough at the specific threshold θ=0.90 to produce ≥80% recruitment and ≤20% false recruitment simultaneously.\n\n## 3. Arm T Decision: Deferred\n\nModify Section 3 (Proposed Method) to DEFER Arm T. Replace Arm T with the following note:\n\n> Arm T (EG-MDL-Spatial) is DEFERRED to a future iteration. The Manager\'s guidance notes that computing spatial entropy H_norm on a cold-started encoder projection is likely to reject genuine objects — reproducing the ESUG failure mode under a different metric name. Phase 17 established that newly initialized encoder projections produce chaotic spatial representations (λ ~ 1.0-1.5). Even at the end of a 100-step WUP period, the encoder\'s spatial attention for the new dimension may remain diffuse for genuine objects, making H_norm an unreliable gate without further evidence. If Arm S succeeds, Arm T can be revisited with H_norm computed after a longer stabilization period.\n\nReplace Arm T in the method with Arm S_alt:\n> 3. Implement Arm S_alt (EG-MDL, W=100, θ=0.85):\n>    a. Same as Arm S but with θ=0.85 (requiring 15% error reduction during WUP).\n>    b. This robustness arm tests whether results are sensitive to the choice of θ.\n\nAlso update the falsification criteria if needed to account for Arm S_alt.\n\nKeep all other sections of the pre-registration file intact. The file should be well-structured markdown.'})]
+
+[Tool Result: {"started": true, "iter_id": "18.1", "done": true, "final_result": {"status": "ok", "artifacts": ["src/pre_registration.md"], "metrics": {}, "log_excerpt": "Successfully wrote to src/pre_registration.md\nRead and verified the updated content of src/pre_registration.md\n", "experimenter_view": "Updated the pre-registration file for Iteration 018 with the Manager's three required additions:\n1) Added Section 4 (Threshold Justification) providing an independent rationale for \u03b8=0.90 and committing to \u03b8=0.85 as a robustness arm (Arm S_alt).\n2) Added Section 5 (Honest Framing: Empirical Falsifiability) with the exact paragraph provided.\n3) Defeered Arm T (replacing it with the provided justification note) and added Arm S_alt to the Proposed Method (Section 3). Updated Falsification Criteria to include Arm S_alt \u03b8-sensitivity. All original sections remain intact.\n", "notes": "Pre-registration updated with Manager's three required additions."}, "intermediate_state": "=== stdo...]
+
+Sub-goal 1 is complete. Now let me launch the main experiment implementation and execution.
+
+[Tool Call: run_agent({'complexity': 'planner', 'estimated_runtime_sec': 3600, 'iter_id': '18.2', 'task': '## Phase 18: EG-MDL (Entropy-Gated MDL) Implementation and Experimentation\n\nYou must implement and run the full EG-MDL experiment, then analyze the results against the pre-registered falsification criteria. Read `src/pre_registration.md` FIRST to understand the exact hypothesis, arms, and falsification criteria.\n\n### Context\n\nThe Thalamus project has been iteratively solving the problem of dimension recruitment gating. Phase 16 established WUP-MDL (Probationary Warm-Up Period + MDL consistency gate) which achieves 100% recruitment rate on N=3→4 transition but 100% false recruitment on Noisy-TV distractors. Phase 17 falsified ESUG (encoder-only gating without warm-up) because cold-started encoder projections produce rough temporal dynamics.\n\nThe Phase 18 hypothesis: Adding a prediction-trend gate to WUP-MDL will maintain ≥80% recruitment while reducing Noisy-TV false recruitment from 100% to ≤20%.\n\n### Arms to Implement\n\n1. **Arm P (WUP-MDL, W=100)** — Baseline from Phase 17. Re-implement identically for matched comparison.\n2. **Arm S (EG-MDL, W=100, θ=0.90)** — During the WUP period, record per-step prediction error e[t] for the proposed 4th dimension. At end of WUP, compute ρ = E_late / E_early where E_early = mean(e[0:W/2]) and E_late = mean(e[W/2:W]). Gate accepts if MDL ratio < 1.0 AND ρ < 0.90.\n3. **Arm S_alt (EG-MDL, W=100, θ=0.85)** — Same as Arm S but θ=0.85. Robustness arm to test θ-sensitivity.\n\n### Implementation Details\n\n**Reference code:** `src/run_phase17_experiments.py` provides the complete experimental pipeline. Create `src/run_phase18_experiments.py` based on this, with the following modifications:\n\n#### Prediction-Trend Gate Computation\n\nDuring the WUP probationary period, at each training step, compute the **per-dimension prediction error for the 4th dimension** (index 3):\n\nFrom the forward pass outputs `(z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)`:\n```python\n# Per-dimension prediction error for dimension 3\ne_coord_dim3 = F.mse_loss(z_pred_coord[:, 3], z_target_coord[:, 3])\ne_dyn_dim3 = F.mse_loss(z_pred_dyn[:, 3], z_target_dyn[:, 3])\ne_total_dim3 = (e_coord_dim3 + e_dyn_dim3).item()\n```\n\nStore these in a list `wup_errors` throughout the WUP period.\n\nAt the end of WUP (step = probation_end_step):\n```python\nW = len(wup_errors)\nE_early = np.mean(wup_errors[:W//2])\nE_late = np.mean(wup_errors[W//2:])\nrho = E_late / max(E_early, 1e-8)\n```\n\n**Composite gate for Arm S:**\n- MDL criterion: ratio < 1.0 (same as Arm P)\n- Prediction-trend: ρ < 0.90\n- BOTH must pass for acceptance\n\n**Composite gate for Arm S_alt:**\n- Same but ρ < 0.85\n\n#### Arm-specific Branch Logic\n\nModify `run_active_branch()` to support a new `gating="eg_mdl"` option alongside the existing "mdl" and "esug":\n\nFor Arms S and S_alt:\n1. Same WUP period as Arm P (d_t=4, train both encoder and predictor for W steps)\n2. During WUP, record `wup_errors` (per-step dim-3 prediction error)\n3. At end of WUP, compute MDL ratio AND prediction-trend ratio ρ\n4. Apply composite gate\n\nThe arm definitions should be:\n```python\narms = [\n    ("Arm P (WUP-MDL, W=100)",    100,  None, "mdl",    None),\n    ("Arm S (EG-MDL, θ=0.90)",    100,  None, "eg_mdl", 0.90),\n    ("Arm S_alt (EG-MDL, θ=0.85)",100,  None, "eg_mdl", 0.85),\n]\n```\n\n### Experimental Protocol\n\n**Seeds:** [42, 123, 456, 789, 999] (same as Phase 17 for matched comparison)\n\n**Sweep 1 — Transition Sweep:** N=3→4 clean objects. \n- Passive training on N=3 for 1500 steps (shared across arms per seed)\n- Active CLTS training for steps 1501-3000 with 4th object introduced at step 1500\n- WUP proposal triggered at step 1800 (same as Phase 17)\n- Evaluate at steps [1500, 1600, 1700, 1800, 1900, 2000, 2500, 3000]\n\n**Sweep 2 — Control Sweep:** N=3 clean + 1 Noisy-TV distractor.\n- Same passive pre-training on N=3\n- Active CLTS with Noisy-TV replacing the 4th object\n- Same WUP proposal at step 1800\n- Measure false recruitment rate\n\n### Metrics to Collect\n\nPer arm per seed:\n- `recruitment_accepted` (bool): whether the dimension was permanently recruited\n- `mse_cent` (float): centroid decoding MSE for the 4th object/distractor\n- `test_sim_loss` (float): test simulation loss on N=4 (or N=3 for control)\n- `mdl_ratio` (float): MDL consistency ratio at gate evaluation\n- `rho` (float): prediction-trend ratio at gate evaluation\n- `wup_errors` (list): per-step prediction errors during WUP\n- `attention_switch_rate` (float): post-recruitment attention stability\n- `centroid_tracking_error` (float): post-recruitment centroid tracking accuracy\n\n### Analysis Required\n\nAfter all sweeps complete:\n\n1. **Recruitment rates** per arm (transition sweep): count of seeds where accepted\n2. **False recruitment rates** per arm (control sweep): count of seeds where accepted\n3. **Mean ± std** of mse_cent per arm (transition sweep, only recruited seeds)\n4. **Welch\'s t-tests**: Arm P vs Arm S on mse_cent, attention_switch_rate\n5. **Falsification audit** against the pre-registered criteria:\n   - C1: Recruitment rate < 80% on transition sweep\n   - C2: False recruitment rate > 20% on control sweep\n   - C3: Mean centroid decoding MSE > 65.0 on transition sweep\n   - C4 (NEW): θ-sensitivity: if Arm S passes but Arm S_alt fails (or vice versa), report as θ-sensitive finding\n6. **Save results** to `archive/iter_018/results/` as CSV, JSON, and markdown report\n\n### Important Implementation Notes\n\n- The model class is `NonParametricJEPASpatial` from `src/models_dual_stream.py`\n- The environment class is `PhysicsSandbox` from `src/environment.py` \n- The motor controller is `CLTSMotorController` from `src/motor.py`\n- Use `device = torch.device("cuda" if torch.cuda.is_available() else "cpu")`\n- The passive training function `train_passive_cached()` from Phase 17 can be reused as-is\n- The evaluation function `evaluate_branch()` can be reused\n- The `categorizer_consistency_ratio()` function can be reused for MDL gate computation\n\n### Output Requirements\n\n1. Create `src/run_phase18_experiments.py` with the full experiment code\n2. Run the experiment and save all results to `archive/iter_018/results/`\n3. Produce a comprehensive markdown report at `archive/iter_018/results/phase18_report.md`\n4. The report must include: hypothesis, method, per-seed results table, mean±std summary, falsification audit, and interpretation\n\n### CRITICAL: Pre-Registration Compliance\n\nBefore running ANY code, read `src/pre_registration.md` and ensure your implementation exactly matches the pre-registered method. Do NOT deviate from the specified arms, thresholds, or evaluation protocol. The Manager will audit your results against this file.'})]
+
+[Tool Result: {"started": true, "iter_id": "18.2", "done": false, "final_result": null, "intermediate_state": "=== files in iter_18.2/ ===\n  checkpoint.yaml (7,396 B)\n  iter_001/result.yaml (1,322 B)\n  iter_001/stderr.txt (0 B)\n  iter_001/stdout.txt (5,772 B)\n  iter_001/task.md (3,733 B)\n  iter_002/result.yaml (929 B)\n  iter_002/stderr.txt (0 B)\n  iter_002/stdout.txt (6,589 B)\n  iter_002/task.md (3,509 B)\n  iter_003/result.yaml (1,184 B)\n  iter_003/stderr.txt (0 B)\n  iter_003/stdout.txt (56,301 B)\n  iter_003/task.md (46,704 B)\n  iter_004/result.yaml (2,504 B)\n  iter_004/stderr.txt (0 B)\n  iter_004/stdout.txt (16,558 B)\n  iter_004/task.md (1,035 B)\n  iter_005/checkpoint.yaml (2,198 B)\n  iter_005/task.md (1,928 B)\n  planner_prompt.txt (6,934 B)\n  task.md (6,771 B)", "elapsed_sec": 3600.015000000014}]
+
+
+[Tool Call: poll_agent({'iter_id': '18.2'})]
+
+[Tool Result: {"done": true, "final_result": {"status": "ok", "metrics": {"arm_p_recruitment_rate": 1.0, "arm_s_recruitment_rate": 1.0, "arm_s_alt_recruitment_rate": 1.0, "arm_p_false_recruitment_rate": 1.0, "arm_s_false_recruitment_rate": 1.0, "arm_s_alt_false_recruitment_rate": 1.0, "mean_centroid_mse_transition": 55.58, "arm_s_mean_rho_transition": 0.00196, "arm_s_mean_rho_control": 0.00213}, "experimenter_view": "The EG-MDL implementation successfully executed, but the core hypothesis was falsified. \nWhile recruitment of genuine dimensions remained high (100%), the prediction-trend gate (theta=0.90 and 0.85) failed to block Noisy-TV distractors, resulting in 100% false recruitment. \n\nWe discovered a critical machine learning confound: the \"Cold-Start Optimization Transient\". \nBecause the predictor's MLP weights for the proposed 4th dimension are randomly initialized at step 1800, the early prediction error (E_early) is extremely large. Over the 100-step warm-up period, gradient descent rap...]
+
+The experiment is complete. Let me read the detailed results.
+
+[Tool Call: read_result_file({'filename': 'results/phase18_report.md', 'iter_num': 18})]
+
+[Tool Result: # Phase 18 Experiment Report: EG-MDL (Entropy-Gated MDL)
+
+
+
+## 1. Hypothesis
+
+
+
+Adding a prediction-trend gate (ρ) to the standard WUP-MDL consistency gate will maintain ≥80% recruitment rate (≥4/5 seeds) on the transition sweep while successfully reducing the false recruitment rate to ≤20% (≤1/5 seeds) on the Noisy-TV control sweep, with post-transition centroid decoding MSE ≤ 65.0.
+
+
+
+During the WUP probationary period, the per-dimension prediction error $e[t]$ of the proposed 4th dimension (index 3) is recorded at each training step.
+
+At the end of the WUP window (W steps), we compute:
+
+$$E_{\text{early}} = \text{mean}(e[0:W/2])$$
+
+$$E_{\text{late}} = \text{mean}(e[W/2:W])$$
+
+$$\rho = E_{\text{late}} / E_{\text{early}}$$
+
+
+
+For EG-MDL (Arms S and S_alt), the dimension is accepted if and only if both conditions pass:
+
+1. **MDL Consistency Gate**: MDL Ratio $< 1.0$
+
+2. **Prediction-Trend Gate**: $\rho < \theta$ (where $\theta=0.90$ for Arm S, and $\theta=0.85$ for Arm S_alt)
+
+
+
+## 2. ...]
+
+
+[Tool Call: read_result_file({'filename': 'results/audit_results_phase18.json', 'iter_num': 18})]
+
+[Tool Result: {
+
+    "arms": [
+
+        "Arm P (WUP-MDL, W=100)",
+
+        "Arm S (EG-MDL, theta=0.90)",
+
+        "Arm S_alt (EG-MDL, theta=0.85)"
+
+    ],
+
+    "seeds": [
+
+        42,
+
+        123,
+
+        456,
+
+        789,
+
+        999
+
+    ],
+
+    "eval_steps": [
+
+        1500,
+
+        1600,
+
+        1700,
+
+        1800,
+
+        1900,
+
+        2000,
+
+        2500,
+
+        3000
+
+    ],
+
+    "falsification_per_arm": {
+
+        "Arm P (WUP-MDL, W=100)": {
+
+            "recruitment_count": 5,
+
+            "mse_cent_mean": 55.58310887092455,
+
+            "test_sim_loss_mean": 0.08772564679384232,
+
+            "false_recruitment_count": 5,
+
+            "c1_recruitment_falsified": false,
+
+            "c2_false_recruitment_falsified": true,
+
+            "c3_mse_threshold_falsified": false,
+
+            "any_falsified": true
+
+        },
+
+        "Arm S (EG-MDL, theta=0.90)": {
+
+            "recruitment_count": 5,
+
+            "mse_cent_mean": 55.58310887092455,
+
+            "test_sim_loss_mean": 0.087...]
+
+
+[Tool Call: read_result_file({'filename': 'results/summary_phase18.csv', 'iter_num': 18})]
+
+[Tool Result: seed,arm,sweep,wup_window,gating,theta,test_sim_loss,abs_r_centroid,mse_cent,mse_cent_overall,mean_var,std_x_mean,std_vel,mean_abs_vel,collapsed,pointer_entropy,online_auc_1501_2000,online_auc_1501_3000,active_transition_accepted,active_transition_accepted_step,final_d_t,final_gating,attention_switch_rate,centroid_tracking_error,mdl_ratio,rho,wup_errors
+
+42,"Arm P (WUP-MDL, W=100)",transition,100.0,mdl,-1.0,0.05950909107923508,0.06870253623366826,65.73894967633814,84.82529787470408,6.445071220397949,0.10258007049560547,0.025866152718663216,0.016294943168759346,1.0,3.9655870310338037,656.9477862939239,829.4160897955298,1,1900.0,4,"{""criterion"": ""mdl"", ""ratio"": 0.4313916623492536, ""sim_new"": 0.1596607118844986, ""sim_old"": 0.37010616064071655, ""rho"": 0.00604249065900888}",0.04040404040404041,60.33170753930917,0.4313916623492536,0.00604249065900888,"[1224.3878173828125, 396.48272705078125, 94.45509338378906, 32.56578826904297, 22.24638557434082, 22.56015968322754, 23.7778854370...]
+
+Now let me verify the updated pre-registration file is correct:
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 018
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+Adding a WUP-period prediction-trend gate to WUP-MDL (creating "EG-MDL") will
+maintain ≥80% recruitment rate on the N=3→4 transition sweep while reducing
+the Noisy-TV false recruitment rate from 100% (WUP-MDL baseline) to ≤20%,
+with centroid decoding MSE ≤ 65.0.
+
+The prediction-trend gate computes the improvement ratio ρ = E_late / E_early
+during the WUP period, where E_early and E_late are the mean prediction errors
+over the first and second halves of the warm-up window. A genuine new object
+produces ρ << 1.0 (predictor learning smooth dynamics), while a Noisy-TV
+distractor produces ρ ≈ 1.0 (no learnable structure). The gate accepts the
+dimension only if ρ < θ (θ=0.90) AND the existing MDL consistency criterion
+passes.
+
+## 2. Falsification Criterion
+The EG-MDL hypothesis is falsified if ANY of the following hold across the
+5-seed matched sweep:
+
+1. Recruit...]
+
+I now have all the information needed to synthesize the final report. The experiment is complete and the results are definitive.
+
+```yaml
+# --- Synthesised result (aggregate across all sub-agents) ---
+status: ok
+metrics:
+  arm_p_recruitment_rate: "5/5"
+  arm_s_recruitment_rate: "5/5"
+  arm_s_alt_recruitment_rate: "5/5"
+  arm_p_false_recruitment_rate: "5/5"
+  arm_s_false_recruitment_rate: "5/5"
+  arm_s_alt_false_recruitment_rate: "5/5"
+  arm_p_mse_cent_mean: 55.58
+  arm_s_mse_cent_mean: 55.58
+  arm_s_alt_mse_cent_mean: 55.58
+  arm_p_test_sim_loss_mean: 0.0877
+  arm_s_rho_transition_max: 0.0060
+  arm_s_rho_control_max: 0.0049
+  eg_mdl_verdict: "FALSIFIED"
+  theta_sensitive: false
+experimenter_view: |
+  Phase 18 evaluated the EG-MDL hypothesis: adding a prediction-trend gate (ρ = E_late/E_early)
+  to WUP-MDL would reduce Noisy-TV false recruitment from 100% to ≤20% while maintaining
+  ≥80% genuine recruitment. The hypothesis is resoundingly falsified.
+
+  All three arms (P, S, S_alt) produced identical outcomes because ρ provides zero discriminative
+  power. ρ is universally near-zero (max 0.006 for genuine objects, max 0.005 for Noisy-TV) —
+  more than 100× below the strictest threshold θ=0.85. The prediction-trend gate never blocks
+  any recruitment in either sweep.
+
+  Root cause: "Cold-Start Optimization Transient". When the predictor's 4th-dimension weights are
+  randomly initialized at WUP start, E_early is enormous (26–314 across seeds). Over 100 gradient
+  steps, the predictor learns trivial first-order statistics (mean, variance) of the target
+  regardless of whether it is a structured physical object or unstructured Noisy-TV. This drives
+  E_late to near-zero and ρ to ~0.001-0.006 for both signal types.
+
+  The cold-start optimization transient completely dominates any learnability signal. The
+  prediction-trend gate conflates (1) parameter optimization transient (rapid MSE reduction as
+  random weights adapt to scale) with (2) signal learnability (capacity to capture higher-order
+  temporal structure). Phenomenon 1 drowns out phenomenon 2.
+
+  Detailed WUP error trajectories confirm the pattern:
+  - Seed 42, Transition: E_early=39.34 → E_late=0.24, ρ=0.006
+  - Seed 42, Noisy-TV: E_early=26.27 → E_late=0.07, ρ=0.003
+  - Seed 123, Transition: E_early=294.47 → E_late=0.28, ρ=0.001
+  - Seed 123, Noisy-TV: E_early=313.89 → E_late=0.15, ρ=0.0005
+
+  No θ-sensitivity: both θ=0.90 and θ=0.85 are universally passed. The issue is not threshold
+  calibration — the metric itself is confounded.
+notes: "EG-MDL hypothesis falsified; cold-start optimization transient discovered as third distinct cold-start pathology"
+artifacts:
+  - archive/iter_018/results/summary_phase18.csv
+  - archive/iter_018/results/audit_results_phase18.json
+  - archive/iter_018/results/phase18_report.md
+  - src/run_phase18_experiments.py
+  - src/pre_registration.md
+# --- Planning and State ---
+analysis: |
+  Phase 18 tested the third approach to solving the distractor-rejection problem that has
+  persisted since Phase 16. The first approach (ESUG, Phase 17) failed due to encoder cold-start:
+  randomly initialized encoder projections produce rough temporal dynamics (λ ~ 1.0-1.5),
+  causing the gate to reject genuine objects. The second approach (EG-MDL, Phase 18) fails due
+  to predictor cold-start: randomly initialized predictor weights produce enormous early errors
+  that drop by orders of magnitude regardless of signal learnability.
+
+  These two failures reveal a fundamental symmetry in the cold-start problem:
+  - Encoder cold-start (Phase 17): chaotic ENCODER output → ESUG gate rejects genuine objects
+  - Predictor cold-start (Phase 18): chaotic PREDICTOR output → ρ gate accepts all objects
+
+  The WUP-MDL framework (Phase 16) partially solves the encoder cold-start by giving the
+  encoder 100 gradient steps to align, but it does NOT solve the predictor cold-start for the
+  prediction-trend metric. The WUP period warms up the encoder (allowing MDL ratio to work),
+  but the predictor's optimization transient during WUP overwhelms the ρ signal.
+
+  The key insight from the WUP error trajectories is that the predictor learning curve has
+  two distinct phases:
+  1. Phase A (steps 1-20): Rapid exponential decay as weights adapt to the scale/mean of
+     the new dimension. E drops from ~1000-6000 to ~1-10.
+  2. Phase B (steps 20-100): Slow convergence toward residual error. E oscillates around 0.2-0.4.
+
+  The prediction-trend ratio ρ = E_late/E_early measures the ratio of Phase B to Phase A, which
+  is dominated by the trivial scale-adaptation in Phase A. Any discriminative signal from
+  learnability differences would need to be extracted from Phase B exclusively.
+
+  Future approaches must either: (a) compute ρ only on Phase B (discarding the cold-start
+  transient), (b) warm-start the predictor on existing dimensions before the proposal, or
+  (c) use a fundamentally different metric that is not confounded by cold-start dynamics.
+open_questions:
+  - "Can a 'post-transient' ρ metric — computed only on the second half of a longer WUP window
+     (W=500+, comparing steps 250-375 vs 375-500) — separate genuine objects from Noisy-TV
+     after the cold-start transient has saturated?"
+  - "Can a warm-started predictor — initialized by transferring weights from an existing
+     dimension's predictor head — avoid the cold-start optimization transient entirely?"
+  - "Is there an information-theoretic gating metric (e.g., spectral flatness of the
+     prediction residual, mutual information between spatial attention and temporal dynamics)
+     that avoids both encoder and predictor cold-start confounds?"
+  - "Should we abandon predictor-based gating entirely and explore architectural solutions
+     (e.g., pre-allocated shadow dimensions, spatial coherence constraints) for distractor
+     rejection?"
+  - "Is the Noisy-TV distractor scenario inherently too difficult for any predictor-based
+     gate operating within 100-500 gradient steps, given that the predictor can trivially
+     fit the marginal statistics of any signal?"
+chosen_direction: "Explore post-transient ρ with extended WUP window (W=500) to test whether
+  learnability differences emerge after cold-start transient saturation"
+hypothesis: "phase-18: falsify EG-MDL prediction-trend gate; discover cold-start optimization
+  transient as third cold-start pathology distinct from encoder and predictor cold-starts"
+rationale: |
+  EG-MDL was the most promising approach to combine WUP-MDL's recruitment robustness with
+  distractor rejection. The pre-registration included honest framing (acknowledging near-
+  tautological nature), threshold justification, and a robustness arm (θ=0.85). Arm T was
+  correctly deferred per Manager guidance. The experimental execution was rigorous: matched
+  5-seed sweep, two sweeps (transition + control), pre-registered falsification criteria.
+
+  The falsification is definitive because ρ is universally near-zero regardless of signal type,
+  meaning no threshold adjustment can fix the problem. The root cause (cold-start optimization
+  transient) is a fundamental property of gradient descent on randomly initialized networks,
+  not an implementation artifact.
+# --- Meta ---
+milestone_reached: ""
+user_question: ""
+campaign: Thalamus
+campaign_status: ""
+campaign_summary: ""
+state_update: |
+  # Current Research State
+  Phase: Phase 18 Complete (EG-MDL Falsified, Cold-Start Optimization Transient Discovered)
+
+  ## Goal
+  Design and evaluate a novel dynamic representation network ("Thalamus") with hierarchical
+  abstraction, dynamic dimension recruitment, and thalamic gating. Current focus: solving the
+  distractor-rejection problem for dimension recruitment gating.
+
+  ## Confirmed
+  - FALSIFICATION OF EG-MDL HYPOTHESIS (iter_18.2): The prediction-trend gate ρ = E_late/E_early
+    provides zero discriminative power between genuine objects and Noisy-TV. All arms (P, S, S_alt)
+    recruit the Noisy-TV distractor in 5/5 seeds. Falsified on Criterion C2 (false recruitment > 20%).
+  - COLD-START OPTIMIZATION TRANSIENT (iter_18.2): When the predictor's 4th-dimension weights are
+    randomly initialized, E_early is enormous (26-314 across seeds) and E_late drops to near-zero
+    (0.07-0.43) regardless of signal type, driving ρ to ~0.001-0.006. This transient dominates
+    any learnability signal and renders ρ useless as a discriminative metric.
+  - WUP-MDL REMAINS BEST BASELINE (iter_18.2): Arm P achieves 100% recruitment (5/5), centroid
+    MSE 55.58, test sim loss 0.0877. But 100% false recruitment on Noisy-TV persists.
+  - NO θ-SENSITIVITY (iter_18.2): Both θ=0.90 and θ=0.85 are universally passed (ρ < 0.01
+    << 0.85). The problem is metric confound, not threshold calibration.
+  - THREE DISTINCT COLD-START PATHOLOGIES (iter_17, iter_18):
+    1. Encoder cold-start (Phase 17, ESUG): Chaotic encoder output → gate rejects genuine objects
+    2. Predictor cold-start (Phase 15-16, MDL): Cold predictor fails MDL → gate rejects (solved by WUP)
+    3. Optimization transient cold-start (Phase 18, EG-MDL): Rapid weight adaptation → ρ→0 for all signals
+
+  ## Refuted / Falsified
+  - PREDICTION-TREND GATE ρ (iter_18.2): Cannot distinguish structured from unstructured signals
+    when the predictor is cold-started because the optimization transient dominates.
+  - ESUG (iter_17.1): Encoder-only gating without warm-up rejected genuine objects due to encoder
+    cold-start.
+  - PVU GATING (iter_16): Physical-variance-uncorrelated gating rejected all dimensions due to
+    high physical correlation in 1D space.
+  - SA-CCR (iter_15): Surprise-adaptive covariance regularization caused destructive interference
+    between learning and attention signals.
+
+  ## Best Result
+  - Arm P (WUP-MDL, W=100): Centroid Decoding MSE: 55.58, Test Sim Loss: 0.0877, 100% recruitment
+    (iter_18.2). But 100% false recruitment on Noisy-TV control.
+
+  ## In Progress
+  - Designing a post-transient ρ metric with extended WUP window (W=500) to test whether
+    learnability differences emerge after cold-start transient saturation.
+  - Exploring warm-started predictor approaches to bypass the optimization transient entirely.
+
+  ## Open Questions
+  1. Can a post-transient ρ (computed on steps 250-375 vs 375-500 of W=500 WUP) separate
+     genuine objects from Noisy-TV?
+  2. Can warm-starting the predictor by weight transfer from existing dimensions avoid the
+     cold-start optimization transient?
+  3. Is there a non-predictor-based gating metric (spectral flatness, spatial coherence,
+     cross-dimension MI) that avoids all cold-start pathologies?
+  4. Should the Noisy-TV scenario be treated as fundamentally out-of-scope for predictor-based
+     gating, requiring architectural solutions instead?
+  5. Can pre-allocated shadow dimensions (always encoding but only sometimes promoted)
+     provide an alternative recruitment paradigm?
+```
