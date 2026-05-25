@@ -1,146 +1,147 @@
-"""
-ITAG (Input-Level Temporal AutoCorrelation Gating) and ISAG (Input-Level Spatial AutoCorrelation Gating)
-
-These metrics operate on raw pixel values at spatial positions identified as surprising by the pre-trained encoder.
-They avoid all three cold-start pathologies (no encoder cold-start, no predictor cold-start, no optimization transient).
-"""
-
 import numpy as np
 import torch
 
-
 def identify_surprising_positions(prediction_error_map, top_k=16):
     """
-    Identify the top-K spatial positions with highest per-position prediction error.
+    Identify top-K spatial positions with highest prediction error.
+    Args:
+        prediction_error_map: (B, 128) or (128,) - per-position prediction error from the encoder
+        top_k: number of positions to select
+    Returns:
+        positions: list of indices into the 128-pixel array
+    """
+    # If batched, take mean across batch
+    if prediction_error_map.dim() == 2:
+        prediction_error_map = prediction_error_map.mean(dim=0)  # (128,)
+    elif prediction_error_map.dim() == 3:
+        # (B, C, 128) -> take norm across C, mean across B
+        prediction_error_map = prediction_error_map.norm(dim=1).mean(dim=0)  # (128,)
+    
+    _, top_indices = torch.topk(prediction_error_map, min(top_k, prediction_error_map.shape[0]))
+    return top_indices.sort()[0].tolist()
+
+def compute_itag(pixel_buffer, surprising_positions, window=20):
+    """
+    Compute ITAG score: mean lag-1 temporal autocorrelation of raw pixel values 
+    at surprising positions over a sliding window.
     
     Args:
-        prediction_error_map: torch.Tensor of shape (128,) or (B, 128) or (B, d_max, 128)
-                              If multi-dimensional, the norm along the channel/feature dimension is used.
-        top_k (int): Number of top positions to return.
-    
+        pixel_buffer: list of length W_t, each element is (3, 128) numpy array
+        surprising_positions: list of spatial indices
+        window: number of timesteps to use (uses last `window` from buffer)
     Returns:
-        surprising_positions: numpy array of shape (top_k,) containing sorted spatial indices.
+        itag_score: float in [-1, 1]
     """
-    if prediction_error_map.ndim == 3:
-        # (B, d_max, 128) -> compute L2 norm across d_max dimension
-        error_map = torch.norm(prediction_error_map, dim=1)  # (B, 128)
-    elif prediction_error_map.ndim == 2:
-        # (B, 128) -> use first batch element or mean across batch
-        error_map = prediction_error_map[0] if prediction_error_map.shape[0] > 0 else prediction_error_map
-    else:
-        error_map = prediction_error_map
-    
-    # Ensure 1D
-    error_map = error_map.reshape(-1)
-    
-    # Get top-k indices using torch
-    _, flat_indices = torch.topk(error_map, top_k, largest=True, sorted=False)
-    flat_indices = flat_indices.cpu().numpy()
-    
-    # Sort indices before returning
-    return np.sort(flat_indices)
-
-
-def compute_itag(pixel_array, surprising_positions, window=20):
-    """
-    Compute Input-Level Temporal Autocorrelation Gating (ITAG).
-    
-    For each position x in surprising_positions, compute the lag-1 temporal
-    autocorrelation of pixel values (averaged across RGB channels) over the last
-    `window` frames. Return the mean across all surprising positions.
-    
-    Args:
-        pixel_array: list or array of raw pixel frames, each of shape (3, 128).
-                     Typically the last `window` frames from the pixel history.
-        surprising_positions: numpy array of spatial indices (int), shape (top_k,).
-        window (int): Number of consecutive timesteps to use for temporal autocorrelation.
-    
-    Returns:
-        itag_score (float): Mean lag-1 temporal autocorrelation, clipped to [0, 1].
-    """
-    if len(pixel_array) < 2:
+    if len(pixel_buffer) < 2 or len(surprising_positions) == 0:
         return 0.0
     
-    # Use at most `window` most recent frames
-    frames_used = pixel_array[-window:] if len(pixel_array) >= window else pixel_array
+    # Use last `window` timesteps
+    buffer_slice = pixel_buffer[-window:]
+    if len(buffer_slice) < 2:
+        return 0.0
     
-    # Average across RGB channels -> (T, 128)
-    frames_avg = []
-    for frame in frames_used:
-        if frame.ndim == 2 and frame.shape[0] == 3:
-            frames_avg.append(np.mean(frame, axis=0))
-        else:
-            frames_avg.append(frame.reshape(-1))
-    frames_avg = np.stack(frames_avg, axis=0)
+    # Stack into array: (T, 3, 128)
+    pixel_array = np.stack(buffer_slice, axis=0)
+    T = pixel_array.shape[0]
     
-    itag_scores = []
+    # Compute per-position temporal autocorrelation
+    autocorrs = []
     for pos in surprising_positions:
-        seq = frames_avg[:, pos]  # (T,)
-        mean = seq.mean()
-        std = seq.std(ddof=0)
-        if std < 1e-8:
-            itag_scores.append(0.0)
-        else:
-            seq_norm = (seq - mean) / std
-            # Lag-1 temporal autocorrelation
-            corr = np.mean(seq_norm[:-1] * seq_norm[1:])
-            # Clip negative autocorrelation to 0 (noise should not contribute)
-            itag_scores.append(max(0.0, corr))
-    
-    return float(np.mean(itag_scores)) if itag_scores else 0.0
-
-
-def compute_isag(pixel_array, surprising_positions, window=20):
-    """
-    Compute Input-Level Spatial Autocorrelation Gating (ISAG).
-    
-    For each frame, consider the pixel values (averaged across RGB channels) at the
-    surprising positions. Compute the lag-1 spatial autocorrelation between adjacent
-    surprising positions within that frame, normalized by the frame-level variance.
-    Then average across frames.
-    
-    Uses at most `window` most recent frames.
-    
-    Args:
-        pixel_array: list or array of raw pixel frames, each of shape (3, 128).
-        surprising_positions: numpy array of spatial indices, shape (top_k,).
-        window (int): Number of consecutive timesteps to use.
-    
-    Returns:
-        isag_score (float): Mean spatial autocorrelation, clipped to [0, 1].
-    """
-    if len(pixel_array) < 1:
-        return 0.0
-    
-    # Use at most `window` most recent frames
-    frames_used = pixel_array[-window:] if len(pixel_array) >= window else pixel_array
-    
-    sorted_positions = np.sort(surprising_positions)
-    if len(sorted_positions) < 2:
-        return 0.0
-    
-    frame_scores = []
-    for frame in frames_used:
-        if frame.ndim == 2 and frame.shape[0] == 3:
-            pixel_vals = np.mean(frame, axis=0)
-        else:
-            pixel_vals = frame.reshape(-1)
+        if pos < 0 or pos >= 128:
+            continue
+        # Get pixel intensity at this position across time (sum across RGB channels for robustness)
+        # Shape: (T,)
+        pixel_vals = pixel_array[:, :, pos].sum(axis=1)  # (T,)
         
-        values = pixel_vals[sorted_positions]
-        mean = values.mean()
-        std = values.std(ddof=0)
-        if std < 1e-8:
-            frame_scores.append(0.0)
+        # Compute lag-1 autocorrelation
+        if T < 2:
+            autocorrs.append(0.0)
             continue
         
-        # Lag-1 spatial autocorrelation: correlation between adjacent values
-        corrs = []
-        for i in range(len(values) - 1):
-            corr = (values[i] - mean) * (values[i + 1] - mean) / (std ** 2)
-            corrs.append(corr)
+        x_t = pixel_vals[:-1]  # (T-1,)
+        x_t1 = pixel_vals[1:]  # (T-1,)
         
-        frame_scores.append(np.mean(corrs))
+        # Pearson correlation between x_t and x_{t+1}
+        std_t = np.std(x_t)
+        std_t1 = np.std(x_t1)
+        
+        if std_t < 1e-8 or std_t1 < 1e-8:
+            # Constant signal: high autocorrelation
+            autocorrs.append(1.0 if np.mean(np.abs(x_t - x_t[0])) < 1e-6 else 0.0)
+            continue
+        
+        corr = np.corrcoef(x_t, x_t1)[0, 1]
+        if np.isnan(corr):
+            corr = 0.0
+        autocorrs.append(corr)
     
-    # Clip negative values to 0
-    frame_scores = [max(0.0, s) for s in frame_scores]
-    return float(np.mean(frame_scores)) if frame_scores else 0.0
+    if len(autocorrs) == 0:
+        return 0.0
+    
+    return float(np.mean(autocorrs))
+
+def compute_isag(pixel_buffer, surprising_positions):
+    """
+    Compute ISAG score: mean lag-1 spatial autocorrelation of raw pixel values 
+    at adjacent surprising positions, computed per frame.
+    
+    Args:
+        pixel_buffer: list of (3, 128) numpy arrays (single frame used from last)
+        surprising_positions: list of spatial indices (sorted)
+    Returns:
+        isag_score: float in [-1, 1]
+    """
+    if len(pixel_buffer) == 0 or len(surprising_positions) < 2:
+        return 0.0
+    
+    # Use last frame
+    frame = pixel_buffer[-1]  # (3, 128)
+    
+    # Sort positions
+    sorted_pos = sorted(surprising_positions)
+    
+    # Compute spatial autocorrelation between adjacent surprising positions
+    spatial_corrs = []
+    for i in range(len(sorted_pos) - 1):
+        pos_a = sorted_pos[i]
+        pos_b = sorted_pos[i + 1]
+        
+        if pos_a >= 128 or pos_b >= 128:
+            continue
+        
+        # Pixel intensity (sum across RGB)
+        val_a = frame[:, pos_a].sum()
+        val_b = frame[:, pos_b].sum()
+        
+        # For spatial autocorrelation we need multiple adjacent pairs
+        # Since we only have one frame, compute correlation across the spatial positions
+        # using a simpler approach: check if adjacent surprising positions have similar intensity
+        # This is a proxy for spatial smoothness
+        spatial_corrs.append(val_a * val_b)  # unnormalized similarity
+    
+    if len(spatial_corrs) == 0:
+        return 0.0
+    
+    # Normalize: compare actual similarity to expected if positions were independent
+    all_vals = [frame[:, p].sum() for p in sorted_pos if p < 128]
+    if len(all_vals) == 0:
+        return 0.0
+    
+    mean_val = np.mean(all_vals)
+    var_val = np.var(all_vals)
+    
+    if var_val < 1e-8:
+        return 1.0  # All positions same intensity -> perfectly smooth
+    
+    # Spatial autocorrelation (Moran's I style)
+    n = len(sorted_pos)
+    w_sum = n - 1  # number of adjacent pairs
+    numerator = sum((all_vals[i] - mean_val) * (all_vals[i+1] - mean_val) 
+                    for i in range(len(all_vals)-1))
+    denominator = var_val * w_sum
+    
+    if abs(denominator) < 1e-8:
+        return 0.0
+    
+    isag = numerator / denominator
+    return float(np.clip(isag, -1.0, 1.0))
