@@ -203,6 +203,7 @@ def train_passive_cached(seed, device, cache_dir="cache"):
     if os.path.exists(cache_path):
         print(f"     [passive] loading cached model for seed {seed} from {cache_path}")
         model.load_state_dict(torch.load(cache_path, map_location=device))
+        model.d_t = 3  # <-- ADD THIS CRITICAL LINE!
         model = model.to(device)
         return model, {"S_bar_end": 0.05, "final_d_t": 3}
 
