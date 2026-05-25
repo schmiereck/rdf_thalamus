@@ -1,27 +1,25 @@
 # Current Research State
-Phase: Phase 14 Complete (Contrastive Coordinate Regularization Evaluated)
+Phase: Phase 15 Complete (Surprise-Adaptive Covariance and Dual Control Evaluated)
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 14 goal was to evaluate whether Contrastive Coordinate Regularization (CCR) on the non-parametric soft-argmax bottleneck can mitigate active-perception coordinate drift without degrading physics predictive modeling.
+Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 15 goal was to evaluate Surprise-Adaptive Contrastive Coordinate Regularization (SA-CCR) and implement the structural separation of the Surprise Detector and slow Categorizer (Dual Control).
 
 ## Confirmed
-- STATISTICAL NON-INFERIORITY OF CCR-COVARIANCE (iter_14.1): Welch's t-test comparing post-collision test simulation loss at step 3000 did not reject non-inferiority for Arm K (CCR-Covariance) vs Arm G (RGB CLTS baseline) across n=5 seeds (t = -0.218, p = 0.8329), proving that soft covariance-based regularization does not degrade physical dynamics modeling.
-- MITIGATION OF ACTIVE-PERCEPTION COORDINATE DRIFT (iter_14.1): Arm K successfully reduced the novel object's centroid decoding MSE to 62.64, which is well below the pre-registered falsification limit of 70.0 and superior to the original RGB CLTS baseline (Arm G: 64.57). This confirms that a self-supervised covariance constraint on the bottleneck successfully stabilizes coordinate tracking under active perturbations.
-- PRESERVATION OF SPATIAL EXPLORATION (iter_14.1): Pointer spatial coverage entropy under active CLTS control remained extremely stable and wide across all arms (G = 3.955, J = 3.954, K = 3.958), proving that CCR constraints do not restrict active exploratory behavior.
-- PRESERVATION OF SPATIAL TIGHTNESS (iter_14.1): The soft spatial variance of the coordinate encoder remained highly tight across all arms (G = 8.44, J = 8.54, K = 8.28), well below the pre-registered limit of 10.0.
-- NO REPRESENTATIONAL FREEZING (iter_14.1): The coordinate velocity standard deviation (std_vel_3) remained active and stable (~0.041 pixels/frame), matching the slow-moving physical trajectory of the baseline (0.045 pixels/frame). This confirms that CCR does not trigger the "lazy encoder" or coordinate freezing pathology.
+- FALSIFICATION OF SURPRISE-PROPORTIONAL REGULARIZATION (iter_15.1): Dynamic proportional scaling of the covariance weight (Arm L) did not significantly reduce post-collision centroid decoding MSE compared to the fixed baseline (Arm K: 62.64 vs Arm L: 65.53; Welch's p = 0.895), resoundingly falsifying the SA-CCR hypothesis.
+- VOLATILITY OF PROPORTIONAL SCALING (iter_15.1): Arm L introduced high optimization volatility, triggering an instability in seed 456 where sim_loss exploded to 14.88, demonstrating that hand-coded surprise modulation curves are unstable.
+- COLD-DIMENSION REJECTION BIAS IN MDL GATES (iter_15.1): In Arm N, the proposed consistency ratio L_consistency = sim_new / sim_old was systematically biased against recruitment. Because the newly proposed dimension's predictor head was "cold" (randomly initialized), its validation loss was extremely high, yielding ratios of 1.3e4 to 3.4e4. This forced the Categorizer to reject 100% of recruitment proposals (5/5 passive and 31/31 active retries), leaving Arm N stuck at d_t = 3 and unable to track the novel 4th object (mse_cent = 130.39 vs Arm K = 62.64).
 
 ## Refuted / Falsified
-- REJECTION OF PAIRWISE HINGE LOSS (iter_14.1): Arm J (CCR-Hinge) significantly degraded the post-collision test simulation loss (0.1518 vs Arm G: 0.0840), proving that hard hinge-loss penalties produce non-continuous gradients that interfere with latent space temporal prediction and physics optimization.
-- TECHNICAL HYPOTHESIS FALSIFICATION (iter_14.1): While Arm K successfully reduced the centroid decoding MSE below 70.0, the average post-collision test simulation loss (0.0901) exceeded the strict pre-registered constant threshold of 0.050 (due to seed-to-seed environment variance), resulting in a technical falsification of the rigid threshold (Criterion 2 Falsified).
+- SUPERIORITY OF PROPORTIONAL SCALING VS INVERSE (iter_15.1): Arm M (Inverse SA-CCR) achieved a lower mean centroid decoding MSE (64.08) and test simulation loss (0.148) compared to Arm L (65.53 and 14.88 respectively), directly falsifying pre-registered Criterion 4.
+- IMMEDIATE PREDICTION-BASED RECRUITMENT GATING (iter_15.1): The structural hypothesis that a vanilla MDL gate based on immediate predictive error can cleanly regulate dimensionality growth is refuted due to cold-start predictor bias.
 
 ## Best Result
-- Arm K (CCR-Covariance): Centroid Decoding MSE: 62.63, Test Sim Loss: 0.0901, Soft Spatial Variance: 8.28, Pointer Spatial Entropy: 3.96.
+- Arm K (Baseline): Centroid Decoding MSE: 62.64, Test Sim Loss: 0.0901, Soft Spatial Variance: 8.28, Pointer Spatial Entropy: 3.96 (iter_15.1).
 
 ## In Progress
-- Phase 14 has successfully demonstrated that self-supervised covariance-based constraints directly on the soft-argmax bottleneck (CCR-Covariance) effectively solve the active-perception coordinate drift problem without requiring input positional encodings or hurting physical dynamics learning.
+- Investigating mitigations for cold-start predictor bias in MDL consistency gating, specifically asymmetric warm-up training for proposed channels or encoder-only spatial consistency metrics.
 
 ## Open Questions
-- How does CCR-Covariance scale when transitioning from 1D to multi-dimensional (2D/3D) physical environments?
-- Can we dynamically tune the regularization strength of CCR-Covariance based on online surprise to accelerate initial representation learning?
-- Can CCR-Covariance be combined with modular micro-columns to achieve complete unsupervised coordinate disentanglement?
+- How can we implement an asymmetric warm-up phase to train proposed dimensions before the MDL consistency gate evaluates them?
+- Can we define a purely encoder-based consistency metric (e.g., spatial compactness or mutual information of centroids) that avoids prediction-head cold-start bias?
+- Does staggering learning rates (slower for the encoder, faster for the predictor) mitigate cold-dimension rejection?

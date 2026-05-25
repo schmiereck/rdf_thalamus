@@ -526,3 +526,56 @@ status: ok
 
 **Notes:** Phase 14 complete: Arm K (CCR-Covariance) successfully limits coordinate drift without degrading predictive loss.
 
+
+---
+```yaml
+cached_tokens: 1283395
+cost_usd: 0.82553
+hypothesis: 'phase-15: evaluate surprise-adaptive covariance weights and structural
+  dual control'
+input_tokens: 1768446
+iter: 15
+metrics:
+  arm_k_mean_var_3_mean: 8.280742
+  arm_k_mse_cent_mean: 62.638553
+  arm_k_test_sim_loss_mean: 0.090083
+  arm_l_mean_var_3_mean: 8.130941
+  arm_l_mse_cent_mean: 65.525914
+  arm_l_test_sim_loss_mean: 14.879666
+  arm_m_mean_var_3_mean: 8.217082
+  arm_m_mse_cent_mean: 64.081884
+  arm_m_test_sim_loss_mean: 0.147899
+  arm_n_mean_var_3_mean: 33.78426
+  arm_n_mse_cent_mean: 130.392762
+  arm_n_test_sim_loss_mean: 0.1669
+  c1_falsified: 1
+  c2_falsified: 0
+  c3_falsified: 0
+  c4_falsified: 1
+  hypothesis_falsified: 1
+  welch_L_vs_K_mse_p: 0.895003
+  welch_L_vs_K_sim_p: 0.373408
+  welch_M_vs_L_mse_p: 0.949795
+  welch_M_vs_L_sim_p: 0.375091
+  welch_N_vs_K_mse_p: 0.368471
+  welch_N_vs_K_sim_p: 0.244935
+output_tokens: 6542
+status: ok
+```
+
+## iter_015: phase-15: evaluate surprise-adaptive covariance weights and structural dual control
+
+**Analysis:** Phase 15 executed a matched 5-seed sweep to audit both the "soft-patch" surprise-modulation heuristics (SA-CCR) and the "structural-transition" Dual Control architecture.
+
+First, the soft-patch SA-CCR experiments (Arms L and M) proved that dynamically adjusting regularization strength as a function of instantaneous surprise is counterproductive. When an elastic collision occurs, surprise spikes. S
+
+**Status:** ok
+
+**Metrics:** `{'arm_k_mse_cent_mean': 62.638553, 'arm_l_mse_cent_mean': 65.525914, 'arm_m_mse_cent_mean': 64.081884, 'arm_n_mse_cent_mean': 130.392762, 'arm_k_test_sim_loss_mean': 0.090083, 'arm_l_test_sim_loss_mean': 14.879666, 'arm_m_test_sim_loss_mean': 0.147899, 'arm_n_test_sim_loss_mean': 0.1669, 'arm_k_mean_var_3_mean': 8.280742, 'arm_l_mean_var_3_mean': 8.130941, 'arm_m_mean_var_3_mean': 8.217082, 'arm_n_mean_var_3_mean': 33.78426, 'welch_L_vs_K_mse_p': 0.895003, 'welch_L_vs_K_sim_p': 0.373408, 'welch_M_vs_L_mse_p': 0.949795, 'welch_M_vs_L_sim_p': 0.375091, 'welch_N_vs_K_mse_p': 0.368471, 'welch_N_vs_K_sim_p': 0.244935, 'c1_falsified': 1, 'c2_falsified': 0, 'c3_falsified': 0, 'c4_falsified': 1, 'hypothesis_falsified': 1}`
+
+**Experimenter view:** We completed the Phase 15 evaluation across 5 matched seeds under Closed-Loop Thalamic Subsumption (CLTS) control, comparing stable fixed regularization (Arm K) against proportional surprise-adaptive scaling (Arm L), inverse surprise-adaptive scaling (Arm M), and the structural Dual Control Architecture (Arm N).
+
+1. Falsification of SA-CCR (Arms L & M): The pre-registered hypothesis that dynamical
+
+**Notes:** SA-CCR hypothesis falsified; Dual Control Arm N exposed a critical 'cold-start' bias in prediction-based MDL gating.
+
