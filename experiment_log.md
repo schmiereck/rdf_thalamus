@@ -619,3 +619,50 @@ Under
 
 **Notes:** WUP-MDL resolves cold-start pathology completely (100% recruitment, centroid MSE reduced from 130.39 to 52.68); PVU gating hypothesis falsified due to high physical correlation in 1D space.
 
+
+---
+```yaml
+cached_tokens: 2516135
+campaign: Thalamus
+cost_usd: 1.59958
+hypothesis: 'phase-17: falsify prediction-independent ESUG gating and expose symmetric
+  encoder-level cold-start pathology'
+input_tokens: 3466319
+iter: 17
+metrics:
+  arm_p_attn_switch_rate: 0.0566
+  arm_p_centroid_track_err: 59.38
+  arm_p_false_recruitment_ctrl: 5/5
+  arm_p_mse_cent_mean: 57.34
+  arm_p_recruitment_rate: 5/5
+  arm_q_attn_switch_rate: 0.0303
+  arm_q_centroid_track_err: 55.68
+  arm_q_false_recruitment_ctrl: 1/5
+  arm_q_fast_false_recruitment_ctrl: 1/5
+  arm_q_fast_mse_cent_mean: 185.95
+  arm_q_fast_recruitment_rate: 1/5
+  arm_q_mse_cent_mean: 82.83
+  arm_q_recruitment_rate: 1/5
+  esug_hypothesis_verdict: FALSIFIED
+  esug_lambda_range_clean: 0.13_to_1.51
+output_tokens: 6787
+status: ok
+```
+
+## iter_017: phase-17: falsify prediction-independent ESUG gating and expose symmetric encoder-level cold-start pathology
+
+**Analysis:** Phase 17 evaluated the hypothesis that prediction-independent, encoder-only metrics (ESUG) could govern dimension recruitment without a warm-up period, avoiding predictor-head bias. The experimental results resoundingly falsify this hypothesis.
+
+The root cause is a fundamental physical-mathematical constraint of spatial feature representation in raw visual environments: a newly initialized ("cold"
+
+**Status:** ok
+
+**Metrics:** `{'arm_p_recruitment_rate': '5/5', 'arm_q_recruitment_rate': '1/5', 'arm_q_fast_recruitment_rate': '1/5', 'arm_p_mse_cent_mean': 57.34, 'arm_q_mse_cent_mean': 82.83, 'arm_q_fast_mse_cent_mean': 185.95, 'arm_p_false_recruitment_ctrl': '5/5', 'arm_q_false_recruitment_ctrl': '1/5', 'arm_q_fast_false_recruitment_ctrl': '1/5', 'arm_p_attn_switch_rate': 0.0566, 'arm_q_attn_switch_rate': 0.0303, 'arm_p_centroid_track_err': 59.38, 'arm_q_centroid_track_err': 55.68, 'esug_lambda_range_clean': '0.13_to_1.51', 'esug_hypothesis_verdict': 'FALSIFIED'}`
+
+**Experimenter view:** Phase 17 experiments systematically evaluated the prediction-independent Encoder-only Smoothness-Uniqueness Gating (ESUG) framework across a matched 5-seed sweep under both a transition sweep (concept drift) and a control sweep (noisy-TV distractor).
+
+The results provide a definitive scientific falsification of the ESUG hypothesis:
+1. ENCODER COLD-START PATHOLOGY: Under ESUG, the 4th-dimension's p
+
+**Notes:** ESUG hypothesis resoundingly falsified; discovered a symmetric encoder-level cold-start pathology in prediction-independent gating.
+
