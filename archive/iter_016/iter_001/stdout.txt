@@ -1,0 +1,166 @@
+Now let me check the model's interface so I can correctly invoke it with the partial-dim slicing:
+Now I have enough context. Let me write the Phase 16 script:
+Before running the full sweep, let me do a quick syntax check and a brief smoke test by running a small section to confirm the imports work:
+Now let me run the full sweep. Given the 2500-second estimated runtime, I'll run it in the background and stream the log:
+I'll wait for the run to complete (it will notify me) — no need to poll, but let me set up a monitor for any error/exception signature in case the run crashes early:
+Phase 16 has started running. The first passive-cache training is in progress. I'll continue waiting for the run to complete.
+The arm_n passive cache for seed 42 has correctly rejected the 2->3 transition (as expected from Phase 15 behavior). Tasks are up to date — continuing to wait for the sweep to complete.
+Arm N's immediate MDL gate is rejecting 3→4 as expected (matches Phase 15 cold-start bias). Continuing to wait.
+Continuing to wait.
+Continuing to wait.
+Continuing to wait — Arm N keeps rejecting as in Phase 15, no surprises.
+Continuing to wait.
+Continuing to wait.
+Continuing to wait.
+Continuing to wait.
+These rejections are noise (expected Arm N behavior). Let me tighten the monitor to suppress them so signal events are easier to see:
+Restarted with a tighter filter to suppress the per-step Arm N rejections. Continuing to wait for the run to complete.
+Seed 42 finished, seed 123 starting. Continuing to wait.
+Seed 456 starting. Continuing to wait.
+Seed 789 starting. Continuing to wait.
+Final seed running. Continuing to wait.
+Sweep complete. Continuing to wait for the final audit output.
+Run completed successfully (exit code 0). Let me read the final audit output:
+The run completed but reveals a critical issue: GDASR (the existing recruitment mechanism inside `update_recruitment_logic`) fires early in the active phase (~step 1502-1600), pushing `d_t` from 3 to 4 BEFORE step 1800. This pre-empts the probation mechanism — for Arms K, O, O_big, P, P_big the probation check `branch_model.d_t == 3 at step 1800` never triggers, producing identical results across these 5 arms.
+
+Per the protocol spec ("At step 1800, propose 3->4"), the probation mechanism is supposed to be the only path to d_t=4 for the WUP arms, and Arm K's spec is "unconditional 3->4 at step 1800" (not earlier). Let me suppress GDASR-driven recruitment in the active phase for these arms, then re-run:
+Now let me re-run with the corrected mechanism:
+Re-running with GDASR suppressed for K/O/O_big/P/P_big arms so the protocol's step-1800 trigger and the WUP probation mechanism are actually exercised. Continuing to wait.
+Seed 42 starting. Continuing to wait.
+First probation triggered correctly at step 1800. The fix works.
+First PVU evaluation rejected: 4th dim collapsed onto an existing direction (max_corr=0.9952), u_new=0.5752 above threshold. Probation will retry at step+50. Continuing to wait.
+Tasks are up to date. Probation retry started at step 1950. Continuing to wait.
+Continuing to wait.
+Continuing to wait.
+u_new passed (0.4535 < 0.5), but max_corr stayed high (0.9933). Uniqueness is the binding constraint. Continuing.
+Continuing to wait.
+Continuing to wait.
+Continuing to wait.
+Continuing to wait.
+Continuing to wait.
+Continuing to wait.
+Tasks are up to date. Continuing to wait.
+Continuing to wait.
+Continuing to wait.
+The PVU uniqueness constraint (max_corr > 0.98) keeps rejecting 4th dim — it consistently collapses onto an existing dim during the 100-step warm-up. Continuing to wait for Arm O_big with W=500 to see if longer warm-up helps.
+Continuing to wait — Arm O finished without accepting. Arm O_big up next for seed 42.
+Continuing to wait.
+Same pattern with W=500: u_new passed but max_corr=0.9919. Even longer warm-up doesn't decorrelate the new dim. Continuing.
+Continuing to wait.
+Continuing to wait.
+Continuing to wait — this probation's end step (3400) exceeds the active phase end (3000), so it won't evaluate. Arm P (MDL) up next for seed 42.
+Tasks are up to date. Arm P (WUP-MDL, W=100) probation started. Continuing.
+WUP-MDL accepted on first try (ratio=0.196 < 1.0). The 100-step warm-up resolves the cold-start MDL failure that Arm N suffers. Scientifically meaningful finding. Continuing.
+Continuing to wait.
+Continuing to wait.
+Seed 42 complete. Seed 123 starting. Continuing to wait.
+Continuing to wait.
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
+You've hit your session limit · resets 11am (Europe/Vienna)
