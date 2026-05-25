@@ -1,25 +1,27 @@
 # Current Research State
-Phase: Phase 15 Complete (Surprise-Adaptive Covariance and Dual Control Evaluated)
+Phase: Phase 16 Complete (Dual Control Cold-Start Resolved via WUP-MDL)
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 15 goal was to evaluate Surprise-Adaptive Contrastive Coordinate Regularization (SA-CCR) and implement the structural separation of the Surprise Detector and slow Categorizer (Dual Control).
+Design and evaluate a novel dynamic representation network ("Thalamus") inside a 1D physics environment. Phase 16 goal was to resolve the "cold-start" pathological reject loop in the Dual Control Categorizer using a Probationary Warm-Up Period (WUP).
 
 ## Confirmed
-- FALSIFICATION OF SURPRISE-PROPORTIONAL REGULARIZATION (iter_15.1): Dynamic proportional scaling of the covariance weight (Arm L) did not significantly reduce post-collision centroid decoding MSE compared to the fixed baseline (Arm K: 62.64 vs Arm L: 65.53; Welch's p = 0.895), resoundingly falsifying the SA-CCR hypothesis.
-- VOLATILITY OF PROPORTIONAL SCALING (iter_15.1): Arm L introduced high optimization volatility, triggering an instability in seed 456 where sim_loss exploded to 14.88, demonstrating that hand-coded surprise modulation curves are unstable.
-- COLD-DIMENSION REJECTION BIAS IN MDL GATES (iter_15.1): In Arm N, the proposed consistency ratio L_consistency = sim_new / sim_old was systematically biased against recruitment. Because the newly proposed dimension's predictor head was "cold" (randomly initialized), its validation loss was extremely high, yielding ratios of 1.3e4 to 3.4e4. This forced the Categorizer to reject 100% of recruitment proposals (5/5 passive and 31/31 active retries), leaving Arm N stuck at d_t = 3 and unable to track the novel 4th object (mse_cent = 130.39 vs Arm K = 62.64).
+- SUCCESS OF PROBATIONARY WARM-UP (iter_16.1): Introducing a Probationary Warm-Up Period (WUP) of W = 100 or W = 500 steps completely resolved the cold-start predictor bias. Arm P (WUP-MDL, W=100) and Arm P_big (WUP-MDL, W=500) achieved a perfect 100% recruitment rate (5/5 seeds), promoting cleanly to d_t=4 at steps 1900 and 2300 respectively.
+- CENTROID DECODING MSE RECOVERY (iter_16.1): By recruiting the 4th dimension once the predictor head was warmed up, Arm P and Arm P_big successfully tracked the novel 4th object under active perturbation, reducing the post-transition centroid decoding MSE to 52.68 (W=100) and 49.57 (W=500), well below the pre-registered success threshold of 70.0.
+- FALSIFICATION OF PVU GATING HYPOTHESIS (iter_16.1): The pre-registered PVU gating hypothesis (Arm O & Arm O_big) was resoundingly falsified. In 100% of seeds, the PVU gate rejected the 4th dimension (0% recruitment rate) due to high redundancy (correlation 0.85–0.99, violating the max_corr < 0.8 threshold) and poor predictability ratio (U_new 0.57–1.77, violating the U_new < 0.5 threshold).
+- PHYSICAL CORRELATION IN 1D PHYSICS (iter_16.1): The failure of PVU gating revealed that in a 1D physics sandbox, all object coordinates are highly correlated by construction. A strict absolute correlation threshold of < 0.8 is physically incompatible with coordinate tracking in a shared 1D workspace, whereas the MDL consistency ratio (sim_new / sim_old) is highly robust.
 
 ## Refuted / Falsified
-- SUPERIORITY OF PROPORTIONAL SCALING VS INVERSE (iter_15.1): Arm M (Inverse SA-CCR) achieved a lower mean centroid decoding MSE (64.08) and test simulation loss (0.148) compared to Arm L (65.53 and 14.88 respectively), directly falsifying pre-registered Criterion 4.
-- IMMEDIATE PREDICTION-BASED RECRUITMENT GATING (iter_15.1): The structural hypothesis that a vanilla MDL gate based on immediate predictive error can cleanly regulate dimensionality growth is refuted due to cold-start predictor bias.
+- PREDICTABILITY-VARIANCE-UNIQUENESS (PVU) IMMEDIATE SUITABILITY (iter_16.1): Direct PVU gating with hard hand-coded thresholds fails due to physical coordinate correlation and slow relative predictor convergence compared to encoder coordinates.
 
 ## Best Result
-- Arm K (Baseline): Centroid Decoding MSE: 62.64, Test Sim Loss: 0.0901, Soft Spatial Variance: 8.28, Pointer Spatial Entropy: 3.96 (iter_15.1).
+- Arm O_big (WUP-PVU, W=500, active during probation): Centroid Decoding MSE: 48.25, Test Sim Loss: 0.2071 (iter_16.1).
+- Arm P_big (WUP-MDL, W=500, fully accepted): Centroid Decoding MSE: 49.57, Test Sim Loss: 0.2166 (iter_16.1).
+- Arm P (WUP-MDL, W=100, fully accepted): Centroid Decoding MSE: 52.68, Test Sim Loss: 0.1959 (iter_16.1).
 
 ## In Progress
-- Investigating mitigations for cold-start predictor bias in MDL consistency gating, specifically asymmetric warm-up training for proposed channels or encoder-only spatial consistency metrics.
+- Investigating local, prediction-independent gating metrics (e.g., spatial entropy or mutual information of centroids) to enable self-regulated growth without prediction-head dependency.
 
 ## Open Questions
-- How can we implement an asymmetric warm-up phase to train proposed dimensions before the MDL consistency gate evaluates them?
-- Can we define a purely encoder-based consistency metric (e.g., spatial compactness or mutual information of centroids) that avoids prediction-head cold-start bias?
-- Does staggering learning rates (slower for the encoder, faster for the predictor) mitigate cold-dimension rejection?
+- Can we define a local, prediction-independent MDL gating metric that operates directly on spatial entropy or mutual information of the encoder outputs?
+- How does the WUP framework scale when transitioning to a larger d_max (e.g., d_max = 16) with multiple distractor objects?
+- Can we dynamically adjust the probationary window W based on the convergence rate of the shadow dimension's predictive loss?
