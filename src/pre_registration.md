@@ -1,121 +1,137 @@
-# RDF Scientific Pre-Registration
+# RDF Scientific Pre-Registration — Phase 19
 
-*   **Iteration:** 019
-*   **Pre-Registration File:** src/pre_registration.md
+## 1. Hypothesis (Modified per Manager Review)
 
-## 1. Hypothesis
-The temporal autocorrelation of raw pixel values at spatial positions identified
-as "surprising" by the pre-trained encoder's prediction error map provides a
-discriminative signal between genuine object transitions and Noisy-TV distractors
-that is immune to all three known cold-start pathologies.
+### 1.1 Original ITAG Hypothesis (Reframed)
+The temporal autocorrelation of raw pixel values at spatial positions identified as "surprising" by the pre-trained encoder provides a signal that can distinguish genuine N=3→4 object transitions from Noisy-TV distractors.
 
-Formally, when overall prediction error exceeds the recruitment threshold:
-1. Identify the top-K spatial positions S with highest per-position prediction
-   error from the pre-trained encoder (NOT from any new/cold dimension).
-2. Compute ITAG = (1/|S|) Σ_{x∈S} Corr[pixel(x,t), pixel(x,t+1)]
-   over W_t=20 consecutive timesteps (lag-1 temporal autocorrelation of raw
-   pixel values at each surprising position, averaged across positions).
-3. Gating decision: if ITAG > τ=0.3, initiate WUP-MDL recruitment; if ITAG ≤ τ,
-   reject the dimension proposal as noise.
+**Manager's Reframing:** This is a **verification of a definitional identity**, not an empirical discovery. Noisy-TV is defined as white noise (independent across frames), so zero temporal autocorrelation is a mathematical identity. Cohen's d > 1.5 is virtually guaranteed by construction. This arm serves as a **sanity check** confirming the metric computation is correct — not as evidence of discriminative power.
 
-For genuine N=3→4 transitions: ITAG > 0.5 (object pixels persist and move
-smoothly, producing temporally autocorrelated pixel trajectories).
-For Noisy-TV distractors: ITAG < 0.1 (noise pixels are independent each frame,
-producing zero temporal autocorrelation by definition of white noise).
+### 1.2 Primary Scientific Question (New)
+The genuinely non-trivial test is: **can ITAG distinguish structured-but-task-irrelevant distractors from genuine objects?**
 
-This metric avoids cold-start pathologies because:
-(a) It operates on raw pixel values, not encoder output → no encoder cold-start.
-(b) It requires no predictor → no predictor cold-start.
-(c) It requires no learning during evaluation → no optimization transient.
+If the distractor is temporally correlated but not a genuine physics object (e.g., a sinusoidal oscillator, a slowly drifting colored patch), ITAG will also produce high scores because the distractor has high temporal autocorrelation. This is the **failure regime** that would falsify the hypothesis.
 
-Additionally, the spatial autocorrelation ISAG = Corr[pixel(x,t), pixel(x+1,t)]
-for adjacent surprising positions provides a complementary per-frame discriminative
-signal (genuine objects produce spatially smooth pixel patches; noise produces
-spatially independent pixels).
+### 1.3 Formal Definition
+When overall prediction error exceeds the recruitment threshold:
+1. Identify the top-K spatial positions S with highest per-position prediction error from the pre-trained encoder's error map.
+2. Compute ITAG = (1/|S|) Σ_{x∈S} Corr[pixel(x,t), pixel(x,t+1)] over W_t=20 consecutive timesteps.
+3. Gating decision: if ITAG > τ=0.3, initiate WUP-MDL recruitment; if ITAG ≤ τ, reject.
 
-## 2. Falsification Criterion
-The hypothesis is falsified if EITHER of the following holds across a 5-seed
-experimental sweep:
+**Predictions:**
+- Genuine N=3→4 transitions: ITAG > 0.5 (verification of definitional identity)
+- Noisy-TV distractors: ITAG < 0.1 (verification of definitional identity)
+- Structured distractors (sinusoidal oscillator): ITAG > 0.5 (CONJECTURE — this is the empirical test)
 
-C1 (Discriminative Power): Cohen's d between the ITAG score distributions for
-genuine N=3→4 transitions and Noisy-TV controls is less than 1.5. This would
-indicate that temporal autocorrelation of raw pixels at surprising positions
-does not carry sufficient discriminative information to separate structured
-from unstructured signals.
+If ITAG > 0.5 for structured distractors, they will pass the ITAG gate, causing false recruitment identical to WUP-MDL without ITAG. This would falsify the hypothesis that ITAG provides discriminative power beyond the trivial Noisy-TV case.
 
-C2 (Gating Performance): The ITAG pre-filter (threshold τ=0.3) applied before
-WUP-MDL recruitment fails to achieve BOTH:
-  - False recruitment rate on Noisy-TV ≤ 20% (currently 100% without ITAG)
-  - Genuine recruitment rate ≥ 80% (currently 100% without ITAG)
-If ITAG pre-filtering rejects too many genuine objects OR accepts too many
-Noisy-TV distractors, the metric is insufficient for practical gating.
+### 1.4 Cold-Start Immunity Claim (Verified by Construction)
+ITAG avoids all three known cold-start pathologies because:
+(a) It operates on raw pixel values, not encoder output → no encoder cold-start
+(b) It requires no predictor → no predictor cold-start
+(c) It requires no learning during evaluation → no optimization transient
 
-## 3. Proposed Method
-Step-by-step experimental protocol:
+This claim is verified by construction and does not require empirical validation.
 
-1. CODE: Add ITAG computation module (src/itag.py):
-   - Function compute_itag(pixel_array, surprising_positions, window=20):
-     For each position x in surprising_positions, compute lag-1 temporal
-     autocorrelation of pixel values over the window. Return mean across
-     positions.
-   - Function compute_isag(pixel_array, surprising_positions):
-     For each frame, compute lag-1 spatial autocorrelation of pixel values
-     at adjacent surprising positions. Return mean across frames.
-   - Function identify_surprising_positions(prediction_error_map, top_k=16):
-     Return indices of top-K positions by prediction error norm.
+## 2. Falsification Criteria
 
-2. CODE: Modify the dimension recruitment gating logic:
-   - When prediction error exceeds recruitment threshold, BEFORE initiating WUP:
-     a. Compute surprising positions from pre-trained encoder's error map
-     b. Collect W_t=20 timesteps of raw pixel data at those positions
-     c. Compute ITAG score
-     d. If ITAG > τ=0.3: proceed with WUP-MDL (Arm B) or immediate
-        recruitment (Arm C)
-     e. If ITAG ≤ τ: reject the dimension proposal, log the rejection
+### C1 — Noisy-TV Discrimination (Sanity Check)
+Cohen's d between ITAG score distributions for genuine transitions and Noisy-TV controls is less than 1.5. **Expected: NOT falsified** (trivially true by construction). If falsified, the ITAG computation has a bug.
 
-3. EXPERIMENTAL ARMS (5 seeds each, matched random seeds):
+### C2 — Structured Distractor Discrimination (Primary Test)
+Cohen's d between ITAG score distributions for genuine transitions and **structured distractor** controls is less than 1.5. This would indicate that temporal autocorrelation of raw pixels does NOT distinguish physics-based objects from non-physics temporally correlated patterns. **Expected: FALSIFIED** — both classes have high temporal autocorrelation, so ITAG cannot separate them.
 
-   Arm A (Baseline): WUP-MDL (W=100) with no ITAG pre-filter.
-     - Current best performer: 100% genuine recruitment, 100% false recruitment
-     - Serves as the comparison baseline
-  
-   Arm B (ITAG+MDL): ITAG pre-filter (τ=0.3, W_t=20) + WUP-MDL (W=100).
-     - ITAG pre-filter blocks Noisy-TV from entering WUP
-     - WUP-MDL handles cold-start predictor for genuine objects that pass ITAG
-     - Expected: high genuine recruitment, low false recruitment
-  
-   Arm C (ITAG-only): ITAG-only gating (τ=0.3, W_t=20), no WUP.
-     - If ITAG > τ, immediately recruit the dimension (skip WUP entirely)
-     - Tests whether ITAG alone is sufficient, or whether WUP is still needed
-     - Expected: faster recruitment, but potentially lower quality dimensions
-       if cold-start predictor is problematic without WUP
+### C3 — Gating Performance on Noisy-TV
+The ITAG pre-filter (τ=0.3) applied before WUP-MDL recruitment achieves:
+  - False recruitment rate on Noisy-TV ≤ 20%
+  - Genuine recruitment rate ≥ 80%
+**Expected: ACHIEVED** (trivially, since Noisy-TV has near-zero ITAG).
 
-4. SWEEPS per arm:
-   - Transition sweep: N=3→4 (genuine 4th object introduced)
-   - Control sweep: N=3 + Noisy-TV distractor (noise region added)
+### C4 — Gating Performance on Structured Distractors
+The ITAG pre-filter (τ=0.3) applied before WUP-MDL recruitment achieves:
+  - False recruitment rate on structured distractors ≤ 20%
+  - Genuine recruitment rate ≥ 80%
+**Expected: NOT ACHIEVED** — structured distractors will pass ITAG with high scores, causing false recruitment ≥ 80%.
 
-5. METRICS:
-   - ITAG score distribution for genuine vs Noisy-TV (per-timestep, across
-     the evaluation window) — for Cohen's d computation
-   - ISAG score distribution (secondary analysis)
-   - Genuine recruitment rate (target ≥ 80%)
-   - False recruitment rate on Noisy-TV (target ≤ 20%)
-   - Centroid decoding MSE
-   - Test simulation loss
-   - Time-to-recruitment (steps from introduction to recruitment decision)
+### C5 — Scope-Reduction Trigger (Mandatory)
+If criteria C2 AND C4 are both failed (ITAG cannot distinguish structured distractors from genuine objects), the project will fall back to **fixed dimensionality with logged growth points** as specified in the Research Manager's guidance. Specifically:
+  - Set dimensionality to a pre-allocated maximum (d_max=8)
+  - Disable dynamic recruitment entirely
+  - Log the conditions under which recruitment would have been triggered as observational data
+  - Unblock progress on Phase 13 (Dimension-Width Trade-off) and Phase 15 (Dual Control)
 
-6. ANALYSIS:
-   - Compute Cohen's d between ITAG distributions → test C1
-   - Compute optimal τ via ROC analysis on ITAG distributions
-   - Compare Arm B vs Arm A on false recruitment rate → test C2
-   - Compare Arm C vs Arm B on genuine recruitment quality → determine
-     whether WUP is still needed after ITAG pre-filtering
+## 3. Structured Distractor Definition
 
-7. FILES TO CREATE/MODIFY:
-   - CREATE: src/itag.py — ITAG and ISAG metric computation
-   - MODIFY: Dimension recruitment gating module — add ITAG pre-filter
-   - MODIFY: Experiment runner — add Arms B and C with ITAG logic
-   - MODIFY: Logging — record ITAG/ISAG scores per timestep for analysis
+The structured distractor is a **Sinusoidal Oscillator** entity:
+- Position: x(t) = center + amplitude × sin(ω×t + φ)
+  - center ∈ [32, 96] (randomly initialized)
+  - amplitude ∈ [5, 15] (randomly initialized)
+  - ω ∈ [0.02, 0.05] (slow oscillation period ~125-314 steps)
+  - φ ∈ [0, 2π] (randomly initialized)
+- Color: persistent, randomly initialized from [0.3, 1.0] per channel
+- Radius: randomly initialized from [3.0, 8.0]
+- **No collision physics**: passes through other objects (non-interacting)
+- Renders as a soft-edged circle (same rendering as other objects)
+
+This entity has:
+- High temporal autocorrelation in position (smooth sinusoidal motion)
+- High temporal autocorrelation in color (persistent)
+- High spatial autocorrelation (smooth edges)
+- BUT: does not follow Newtonian collision physics
+- BUT: is not semantically relevant to the agent's physical interaction task
+
+## 4. Proposed Method
+
+### 4.1 Code Changes
+- CREATE: src/itag.py — ITAG and ISAG metric computation functions
+- MODIFY: src/environment.py — add `structured_distractor` mode with Sinusoidal Oscillator
+- CREATE: src/run_phase19_experiments.py — full experiment runner
+
+### 4.2 Experimental Arms (5 seeds each, matched seeds = [42, 123, 456, 789, 999])
+
+Arm A (Baseline): WUP-MDL (W=100) with no ITAG pre-filter.
+  - Serves as the comparison baseline (same as Phase 18 Arm P)
+
+Arm B (ITAG+MDL): ITAG pre-filter (τ=0.3, W_t=20) + WUP-MDL (W=100).
+  - ITAG pre-filter blocks low-autocorrelation signals from entering WUP
+  - WUP-MDL handles cold-start predictor for signals that pass ITAG
+
+Arm C (ITAG-only): ITAG-only gating (τ=0.3, W_t=20), no WUP.
+  - If ITAG > τ, immediately recruit (skip WUP)
+  - Tests whether ITAG alone is sufficient
+
+### 4.3 Sweeps per Arm (3 conditions × 5 seeds = 15 per arm, 45 total)
+
+Sweep 1 (Transition): N=3→4 (genuine 4th physics object) — ITAG should be high
+Sweep 2 (Noisy-TV Control): N=3 + Noisy-TV — ITAG should be low (sanity check)
+Sweep 3 (Structured Distractor Control): N=3 + Sinusoidal Oscillator — ITAG should be high (falsification test)
+
+### 4.4 Metrics
+- ITAG score distribution per timestep for each condition (for Cohen's d)
+- ISAG score distribution (secondary analysis)
+- Genuine recruitment rate (target ≥ 80%)
+- False recruitment rate per distractor type (target ≤ 20%)
+- Centroid decoding MSE
+- Test simulation loss
+- Time-to-recruitment
+
+### 4.5 Analysis
+- Compute Cohen's d between ITAG distributions: genuine vs Noisy-TV (C1), genuine vs structured (C2)
+- ROC analysis on ITAG distributions
+- Compare Arm B vs Arm A on false recruitment rates
+- Evaluate scope-reduction trigger (C5)
+
+## 5. Scope-Reduction Trigger (Pre-Registered)
+
+**IF** C2 is falsified (Cohen's d < 1.5 between genuine and structured distractor ITAG distributions) **AND** C4 is failed (false recruitment rate on structured distractors > 20%), **THEN**:
+
+The project will enact the following scope reduction:
+1. Disable dynamic dimension recruitment (GDASR) entirely
+2. Pre-allocate d_max=8 dimensions from initialization
+3. Log hypothetical recruitment events (timestamp, error level, would-have-recruited) as observational data
+4. Resume Phase 13 (Dimension-Width Trade-off) and Phase 15 (Dual Control) with fixed dimensionality
+
+This scope reduction is pre-committed and will be enacted regardless of any post-hoc rationalization about why ITAG "should have worked" on structured distractors.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
