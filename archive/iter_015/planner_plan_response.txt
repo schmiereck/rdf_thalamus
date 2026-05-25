@@ -1,0 +1,69 @@
+I will start by listing the directories and files in the project to understand the structure of the repository.
+
+[Tool Call: list_dir({'path': '.'})]
+
+[Tool Result: Tool not available: list_dir]
+
+I will list the completed iterations to find out which past iterations are relevant and check their hypotheses and metrics.
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: Tool not available: list_iterations]
+
+I will read the core `src/thalamus.py` file to understand the architecture and see if the read_file tool is functioning.
+
+[Tool Call: read_file({'path': 'src/thalamus.py', 'end_line': 100, 'start_line': 1})]
+
+[Tool Result: Tool not available: read_file]
+
+I will search for the word 'thalamus' in the codebase using grep_search to verify if grep_search is available.
+
+[Tool Call: grep_search({'pattern': 'thalamus'})]
+
+[Tool Result: Tool not available: grep_search]
+
+I will try to read the results file for iteration 14 to see if `read_result_file` is available.
+
+[Tool Call: read_result_file({'iter_num': 14, 'filename': 'rules.csv'})]
+
+[Tool Result: Tool not available: read_result_file]
+
+```yaml
+hypothesis: |
+  Surprise-Adaptive Contrastive Coordinate Regularization (SA-CCR)—where the covariance regularization weight on the non-parametric soft-argmax bottleneck is dynamically scaled proportionally to the local temporal prediction error (surprise)—will stabilize coordinate representations during high-surprise transitions (collisions) more effectively than a fixed regularization weight. 
+
+  Formally, we define the adaptive weight as:
+  \lambda_{cov}(t) = \lambda_{cov, 0} \cdot (1 + \gamma \cdot \bar{S}(t))
+  where \lambda_{cov, 0} is the baseline regularization weight, \bar{S}(t) is the exponentially smoothed temporal prediction error (surprise), and \gamma > 0 is the surprise scaling rate. We hypothesize that proportional surprise scaling (Arm L, \gamma = 2.0) will outperform fixed regularization (Arm K, \gamma = 0.0) and inverse surprise scaling (Arm M, \lambda_{cov}(t) = \lambda_{cov, 0} / (1 + \gamma \cdot \bar{S}(t))) in tracking accuracy and coordinate stability under active closed-loop motor control, without degrading overall physics prediction.
+falsification_criterion: |
+  Our hypothesis is falsified if any of the following occur:
+  1. Arm L (Proportional SA-CCR) does not achieve a statistically significant reduction in post-collision centroid decoding MSE compared to Arm K (fixed CCR-Covariance) across 5 random seeds (Welch's t-test, p >= 0.05).
+  2. Arm L's post-collision test simulation loss is statistically inferior to Arm K's (Welch's t-test, p < 0.05).
+  3. The soft spatial variance of Arm L's coordinate bottleneck exceeds 8.5 pixels^2 during high-surprise phases.
+  4. Arm M (Inverse SA-CCR) achieves lower centroid decoding MSE than Arm L while maintaining equal or better test simulation loss.
+proposed_method: |
+  Step-by-step description of the experiment:
+  1. Modify the loss computation in `src/thalamus.py` or the training pipeline to compute the exponentially smoothed local surprise \bar{S}(t) = \alpha \cdot S(t) + (1 - \alpha) \cdot \bar{S}(t-1) with smoothing factor \alpha = 0.1.
+  2. Implement three experimental arms inside the training loop:
+     - Arm K (Baseline): Fixed covariance weight \lambda_{cov, 0} = 0.1 (as validated in Phase 14).
+     - Arm L (Proportional SA-CCR): Dynamic weight \lambda_{cov}(t) = \lambda_{cov, 0} * (1 + 2.0 * \bar{S}(t)).
+     - Arm M (Inverse SA-CCR): Dynamic weight \lambda_{cov}(t) = \lambda_{cov, 0} / (1 + 2.0 * \bar{S}(t)).
+  3. Run a matched 5-seed sweep across all three arms under Closed-Loop Thalamic Subsumption (CLTS) control (N=3 objects during passive pre-training, transitioning to N=4 objects during active training).
+  4. Record and evaluate:
+     - Post-collision centroid decoding MSE (overall and post-collision specific frames).
+     - Standardized test simulation loss.
+     - Soft spatial variance of the coordinate bottleneck.
+     - Pointer spatial coverage entropy (to monitor exploration).
+  5. Apply Welch's t-test and Levene's test on the results across the 5 seeds to validate statistical significance.
+pre_registration_file: "src/pre_registration.md"
+```
+
+## Scientific Justification & Architectural Alignment
+
+In Phase 14, the introduction of Contrastive Coordinate Regularization (CCR) via soft covariance-based constraints (Arm K) successfully resolved the active-perception coordinate drift problem. However, applying a static regularization strength ($\lambda_{cov}$) across all steps introduces a trade-off:
+- During stable physical trajectories (low surprise), the spatial bottleneck requires less constraint as the dynamics are already well-modeled.
+- During high-velocity collisions or transitions (high surprise), the prediction gradient spikes enormously, dominating the optimization landscape and causing the spatial bottleneck to drift temporarily (known as tracking lag or slip).
+
+By introducing **Surprise-Adaptive Contrastive Coordinate Regularization (SA-CCR)**, we directly address this trade-off. Proportional scaling (Arm L) dynamically tightens the spatial bottleneck constraint when prediction error spikes, shielding the coordinate representations from gradient washouts during chaotic collisions. Conversely, inverse scaling (Arm M) relaxes constraints during high-surprise events to allow maximum representational flexibility. 
+
+Comparing these two dynamic regimes against the fixed-weight baseline (Arm K) provides a highly rigorous, falsifiable scientific test of how surprise-driven gating can modulate representation-level constraints in real-time.
