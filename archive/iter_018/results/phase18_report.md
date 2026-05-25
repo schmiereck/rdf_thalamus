@@ -31,9 +31,9 @@ For EG-MDL (Arms S and S_alt), the dimension is accepted if and only if both con
 
 | Arm | Recruitment Rate (n/5) | False Recruitment Rate (n/5) | Centroid MSE (mean±std, recruited only) | Test Sim Loss (mean±std) | Attention Switch Rate (mean) | Centroid Track Err (mean) |
 |-----|-------------------|-------------------------|--------------------------------------|----------------------|---------------------------|---------------------------|
-| Arm P (WUP-MDL, W=100) | 5/5 | 0/5 | 55.58 ± 27.67 | 0.0877 ± 0.0405 | 0.0444 | 62.5085 |
-| Arm S (EG-MDL, theta=0.90) | 5/5 | 0/5 | 55.58 ± 27.67 | 0.0877 ± 0.0405 | 0.0444 | 62.5085 |
-| Arm S_alt (EG-MDL, theta=0.85) | 5/5 | 0/5 | 55.58 ± 27.67 | 0.0877 ± 0.0405 | 0.0444 | 62.5085 |
+| Arm P (WUP-MDL, W=100) | 5/5 | 5/5 | 55.58 ± 27.67 | 0.0877 ± 0.0405 | 0.0444 | 62.5085 |
+| Arm S (EG-MDL, theta=0.90) | 5/5 | 5/5 | 55.58 ± 27.67 | 0.0877 ± 0.0405 | 0.0444 | 62.5085 |
+| Arm S_alt (EG-MDL, theta=0.85) | 5/5 | 5/5 | 55.58 ± 27.67 | 0.0877 ± 0.0405 | 0.0444 | 62.5085 |
 
 ### 3.2 Gate Evaluation Metric Details (Step 1900)
 
@@ -54,46 +54,46 @@ For EG-MDL (Arms S and S_alt), the dimension is accepted if and only if both con
 | 999 | Arm P (WUP-MDL, W=100) | Transition | 0.8120 | 0.0009 | nan | nan | YES |
 | 999 | Arm S (EG-MDL, theta=0.90) | Transition | 0.8120 | 0.0009 | 269.815652 | 0.235164 | YES |
 | 999 | Arm S_alt (EG-MDL, theta=0.85) | Transition | 0.8120 | 0.0009 | 269.815652 | 0.235164 | YES |
-| 42 | Arm P (WUP-MDL, W=100) | Control | nan | nan | nan | nan | NO |
-| 42 | Arm S (EG-MDL, theta=0.90) | Control | nan | nan | nan | nan | NO |
-| 42 | Arm S_alt (EG-MDL, theta=0.85) | Control | nan | nan | nan | nan | NO |
-| 123 | Arm P (WUP-MDL, W=100) | Control | nan | nan | nan | nan | NO |
-| 123 | Arm S (EG-MDL, theta=0.90) | Control | nan | nan | nan | nan | NO |
-| 123 | Arm S_alt (EG-MDL, theta=0.85) | Control | nan | nan | nan | nan | NO |
-| 456 | Arm P (WUP-MDL, W=100) | Control | nan | nan | nan | nan | NO |
-| 456 | Arm S (EG-MDL, theta=0.90) | Control | nan | nan | nan | nan | NO |
-| 456 | Arm S_alt (EG-MDL, theta=0.85) | Control | nan | nan | nan | nan | NO |
-| 789 | Arm P (WUP-MDL, W=100) | Control | nan | nan | nan | nan | NO |
-| 789 | Arm S (EG-MDL, theta=0.90) | Control | nan | nan | nan | nan | NO |
-| 789 | Arm S_alt (EG-MDL, theta=0.85) | Control | nan | nan | nan | nan | NO |
-| 999 | Arm P (WUP-MDL, W=100) | Control | nan | nan | nan | nan | NO |
-| 999 | Arm S (EG-MDL, theta=0.90) | Control | nan | nan | nan | nan | NO |
-| 999 | Arm S_alt (EG-MDL, theta=0.85) | Control | nan | nan | nan | nan | NO |
+| 42 | Arm P (WUP-MDL, W=100) | Control | 0.0981 | 0.0025 | nan | nan | YES |
+| 42 | Arm S (EG-MDL, theta=0.90) | Control | 0.0981 | 0.0025 | 26.271327 | 0.065876 | YES |
+| 42 | Arm S_alt (EG-MDL, theta=0.85) | Control | 0.0981 | 0.0025 | 26.271327 | 0.065876 | YES |
+| 123 | Arm P (WUP-MDL, W=100) | Control | 0.4327 | 0.0005 | nan | nan | YES |
+| 123 | Arm S (EG-MDL, theta=0.90) | Control | 0.4327 | 0.0005 | 313.885570 | 0.149621 | YES |
+| 123 | Arm S_alt (EG-MDL, theta=0.85) | Control | 0.4327 | 0.0005 | 313.885570 | 0.149621 | YES |
+| 456 | Arm P (WUP-MDL, W=100) | Control | 0.1007 | 0.0003 | nan | nan | YES |
+| 456 | Arm S (EG-MDL, theta=0.90) | Control | 0.1007 | 0.0003 | 267.992796 | 0.087818 | YES |
+| 456 | Arm S_alt (EG-MDL, theta=0.85) | Control | 0.1007 | 0.0003 | 267.992796 | 0.087818 | YES |
+| 789 | Arm P (WUP-MDL, W=100) | Control | 0.1728 | 0.0049 | nan | nan | YES |
+| 789 | Arm S (EG-MDL, theta=0.90) | Control | 0.1728 | 0.0049 | 87.211729 | 0.426421 | YES |
+| 789 | Arm S_alt (EG-MDL, theta=0.85) | Control | 0.1728 | 0.0049 | 87.211729 | 0.426421 | YES |
+| 999 | Arm P (WUP-MDL, W=100) | Control | 0.4951 | 0.0007 | nan | nan | YES |
+| 999 | Arm S (EG-MDL, theta=0.90) | Control | 0.4951 | 0.0007 | 293.058376 | 0.193040 | YES |
+| 999 | Arm S_alt (EG-MDL, theta=0.85) | Control | 0.4951 | 0.0007 | 293.058376 | 0.193040 | YES |
 
 ## 4. Pre-Registered Falsification Audit
 
 ### Arm P (WUP-MDL, W=100) Audit
 - **C1: Recruitment Rate (Transition)**: 5/5 (OK if ≥ 4/5) → OK
-- **C2: False Recruitment Rate (Control)**: 0/5 (OK if ≤ 1/5) → OK
+- **C2: False Recruitment Rate (Control)**: 5/5 (OK if ≤ 1/5) → FALSIFIED
 - **C3: Mean Centroid MSE (Recruited only)**: 55.5831 (OK if ≤ 65.0) → OK
-- **Verdict**: **VALIDATED**
+- **Verdict**: **FALSIFIED**
 
 ### Arm S (EG-MDL, theta=0.90) Audit
 - **C1: Recruitment Rate (Transition)**: 5/5 (OK if ≥ 4/5) → OK
-- **C2: False Recruitment Rate (Control)**: 0/5 (OK if ≤ 1/5) → OK
+- **C2: False Recruitment Rate (Control)**: 5/5 (OK if ≤ 1/5) → FALSIFIED
 - **C3: Mean Centroid MSE (Recruited only)**: 55.5831 (OK if ≤ 65.0) → OK
-- **Verdict**: **VALIDATED**
+- **Verdict**: **FALSIFIED**
 
 ### Arm S_alt (EG-MDL, theta=0.85) Audit
 - **C1: Recruitment Rate (Transition)**: 5/5 (OK if ≥ 4/5) → OK
-- **C2: False Recruitment Rate (Control)**: 0/5 (OK if ≤ 1/5) → OK
+- **C2: False Recruitment Rate (Control)**: 5/5 (OK if ≤ 1/5) → FALSIFIED
 - **C3: Mean Centroid MSE (Recruited only)**: 55.5831 (OK if ≤ 65.0) → OK
-- **Verdict**: **VALIDATED**
+- **Verdict**: **FALSIFIED**
 
 ### Robustness Arm Sensitivity
 - **C4: $\theta$-Sensitivity**: Arm S ($\theta=0.90$) and Arm S_alt ($\theta=0.85$) comparison: **ROBUST**.
-  - Arm S status: PASSED
-  - Arm S_alt status: PASSED
+  - Arm S status: FAILED
+  - Arm S_alt status: FAILED
 
 ## 5. Statistical Analyses
 
