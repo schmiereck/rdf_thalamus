@@ -6,6 +6,7 @@ They avoid all three cold-start pathologies (no encoder cold-start, no predictor
 """
 
 import numpy as np
+import torch
 
 
 def identify_surprising_positions(prediction_error_map, top_k=16):
@@ -13,7 +14,7 @@ def identify_surprising_positions(prediction_error_map, top_k=16):
     Identify the top-K spatial positions with highest per-position prediction error.
     
     Args:
-        prediction_error_map: numpy array of shape (128,) or (B, 128) or (B, d_max, 128)
+        prediction_error_map: torch.Tensor of shape (128,) or (B, 128) or (B, d_max, 128)
                               If multi-dimensional, the norm along the channel/feature dimension is used.
         top_k (int): Number of top positions to return.
     
@@ -22,7 +23,7 @@ def identify_surprising_positions(prediction_error_map, top_k=16):
     """
     if prediction_error_map.ndim == 3:
         # (B, d_max, 128) -> compute L2 norm across d_max dimension
-        error_map = np.linalg.norm(prediction_error_map, axis=1)  # (B, 128)
+        error_map = torch.norm(prediction_error_map, dim=1)  # (B, 128)
     elif prediction_error_map.ndim == 2:
         # (B, 128) -> use first batch element or mean across batch
         error_map = prediction_error_map[0] if prediction_error_map.shape[0] > 0 else prediction_error_map
@@ -32,8 +33,11 @@ def identify_surprising_positions(prediction_error_map, top_k=16):
     # Ensure 1D
     error_map = error_map.reshape(-1)
     
-    # Get top-k indices
-    flat_indices = np.argsort(error_map)[-top_k:]
+    # Get top-k indices using torch
+    _, flat_indices = torch.topk(error_map, top_k, largest=True, sorted=False)
+    flat_indices = flat_indices.cpu().numpy()
+    
+    # Sort indices before returning
     return np.sort(flat_indices)
 
 
