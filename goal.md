@@ -7,8 +7,8 @@ hierarchical abstraction **without generative decoders**. The system must:
 
 - dynamically **allocate new representational dimensions** to encode unexpected
   inputs,
-- learn **temporal prediction** in latent space (no backprop-through-time over
-  pixel reconstructions),
+- learn **action-conditioned temporal prediction** with **adaptive horizons** in
+  latent space (no backprop-through-time over pixel reconstructions),
 - develop a **thalamic gating mechanism** that focuses plasticity and motor
   behavior on the epistemically most relevant entities in the scene.
 
@@ -164,6 +164,32 @@ is detected, motor primitives are attached layer by layer.
 
 *Inspiration:* Subsumption Architecture (Brooks), Artificial Curiosity
 (Schmidhuber).
+
+### F. Action-Conditioned Predictive Processing & Adaptive Temporal Horizons
+
+The network does not predict sensory transitions in a vacuum. Instead of predicting the next state solely from past observations ($z_t \rightarrow z_{t+1}$), the network accepts the agent's own active actions/motor commands $a_t$ (e.g., pointer acceleration, foveation/gaze velocity) as a conditioning input ("efference copy" or "corollary discharge"):
+$$\hat{z}_{t+1} = f(z_t, a_t)$$
+Since the physical world and foveated sensory input operate under continuous physical laws, motor commands provide a strong prior for predicting state transitions.
+
+#### F.1 Primary Output: Future Prediction
+The core output of each layer/node is a **prediction of a future state** rather than a mere description of the present:
+- At time $t$, each node outputs a prediction $\hat{z}_{t+k}$ for a state at future time $t+k$.
+- When the actual state $z_{t+k}$ arrives, it is compared with the previous prediction $\hat{z}_{t+k}$.
+
+#### F.2 Saliency and Drive: Surprise vs. Boredom
+The discrepancy between the predicted and observed future state defines the local temporal energy:
+$$E_{\text{surprise}}(t+k) = \|z_{t+k} - \hat{z}_{t+k}\|$$
+- **Surprise (Überraschung):** High prediction error indicates that the current representational manifold (categories, dimensions, edges) has failed to capture the causal physics or agency. Surprise triggers local **plasticity, dimension recruitment (GDASR), and attention routing**.
+- **Boredom (Langeweile):** When prediction error approaches zero ($E_{\text{surprise}} \approx 0$), the environment's dynamics are fully predicted. This "boredom" inhibits plasticity, stabilizing the representation and preventing catastrophic forgetting/overfitting.
+
+#### F.3 Decentralized Adaptive Horizon & Multi-Scale Precision Blurring
+Due to chaos and entropy, predicting far into the future ($k > 1$) is inherently uncertain. To maintain predictive utility, the network must adaptively balance prediction distance against the "blurriness" (uncertainty/low-precision) of its representations.
+- **Hierarchical Self-Selection:** Each node/layer independently decides its temporal predictive horizon $k$ and its associated precision.
+- **Lower Layers:** Predict very near-term, high-resolution states (small $k$, high precision, low blurriness). They track immediate physical changes.
+- **Higher Layers:** Predict long-term, abstract states (large $k$, low precision, high blurriness, high semantic abstraction). They track macro-entities and trajectories, ignoring high-frequency sensory noise.
+- **Dynamic Optimization:** The network dynamically optimizes this horizon-precision trade-off, enabling the self-organization of a multi-scale temporal and spatial hierarchy.
+
+*Inspiration:* Predictive Coding (Rao & Ballard), Active Inference (Friston), Efference Copies / Corollary Discharges.
 
 ## 5. Mandatory Comparison Baselines
 
