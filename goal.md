@@ -14,7 +14,8 @@ hierarchical abstraction **without generative decoders**. The system must:
 
 Learning is driven entirely by the minimization of local **temporal prediction
 error ("surprise")**, constrained by anti-collapse and anti-dark-room
-mechanisms, inside a 1D physics environment.
+mechanisms, inside a 1D physics environment. **All learning is lifelong and
+continuous (online), with no distinct training and testing phases.**
 
 The project name "Thalamus" reflects the central role of the gating mechanism:
 in biological brains the thalamus performs analogous selective routing of
@@ -39,6 +40,13 @@ sensory information and attention.
 - **Incremental validation:** Planners decompose the architecture into isolated
   mathematical proofs and minimal viable code experiments before assembling
   the full network. See phasing in Section 7.
+- **Pure Online Lifelong Learning (No Offline Phases):** Beginning from Phase 5,
+  the traditional separation between training and inference phases (epochs,
+  evaluation freezes) is completely abolished. The network must operate in a
+  single, continuous, uninterrupted lifetime (Single-Stream Lifelong Learning).
+  Learning, sensory-motor exploration, attention shifts, and structural
+  adaptation must happen concurrently in real-time, driven entirely by the
+  agent's interaction with the streaming environment.
 
 ## 3. Test Environment: 1D Physics Sandbox
 
