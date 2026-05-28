@@ -1,62 +1,81 @@
 falsification_criterion: "The hypothesis is falsified if ANY of the following hold\
-  \ across the 5-seed sweep:\nC1 (Collapse): SFA+VICReg arm collapses (has_collapsed=True\
-  \ OR any active dimension std < 0.5)\n    in >= 2 out of 5 seeds.\nC2 (Centroid\
-  \ MSE): Mean centroid-decoding MSE of the SFA arm exceeds 1.10 * mean MSE of the\n\
-  \    JEPA baseline arm (i.e., SFA degrades spatial readout by more than 10%).\n\
-  C3 (Slowness separation): The ratio mean(||z_dyn(t)-z_dyn(t-1)||^2) / mean(||z_coord(t)-z_coord(t-1)||^2)\n\
-  \    is >= 0.6 for the SFA arm (i.e., z_dyn is not substantially slower than z_coord,\n\
-  \    failing the identity-position separation hypothesis).\n"
-hypothesis: "On the existing NonParametricJEPASpatial CNN encoder with frozen d_t=3\
-  \ and no dynamic\nrecruitment, replacing the JEPA prediction objective with SFA\
-  \ (slowness) on z_dyn as the\nprimary representation objective, combined with batch\
-  \ VICReg on z_dyn, will:\n(1) Train without representation collapse (all per-dimension\
-  \ std >= 0.5, no has_collapsed trigger),\n(2) Achieve centroid-decoding MSE via\
-  \ Arm F (soft-argmax on z_coord) at most 10% higher\n    than the JEPA+VICReg baseline\
-  \ (i.e., MSE_SFA <= 1.10 * MSE_JEPA, where MSE_JEPA ~ 55.6),\n(3) Produce z_dyn\
-  \ representations that are significantly slower (mean ||z_dyn(t) - z_dyn(t-1)||^2\n\
-  \    at least 40% lower) than z_coord temporal variation, indicating that SFA separates\
-  \ slow\n    identity from fast position by construction.\n"
+  \ across the 5-seed\nsweep for the CGIR+SFA arm:\n\nC1 (Collapse): Per-dimension\
+  \ std < 0.5 in ≥ 2 out of 5 seeds (i.e., the\n    CGIR architecture causes representation\
+  \ collapse no better than the\n    mean-pooling baseline).\n\nC2 (Centroid MSE degradation):\
+  \ Mean centroid-decoding MSE of the CGIR+SFA\n    arm exceeds 1.10 × mean MSE of\
+  \ the mean-pooling SFA baseline (i.e.,\n    CGIR degrades spatial readout by more\
+  \ than 10% relative to iter_020\n    Arm A1 result of MSE ≈ 121.9).\n\nC3 (Semantic\
+  \ disentanglement failure): delta_R2_color < 0.10 for the\n    CGIR+SFA arm, where\
+  \ delta_R2_color = R²_dyn_color - R²_coord_color.\n    This is the same criterion\
+  \ that failed in iter_020. If CGIR does not\n    fix it, the root cause is NOT the\
+  \ spatial-mean computation and the\n    hypothesis is falsified. A delta_R2_color\
+  \ ≥ 0.10 would mean z_dyn\n    predicts object color meaningfully better than z_coord,\
+  \ confirming\n    identity-position separation.\n"
+hypothesis: "The spatial-mean z_dyn computation (z_dyn = a_spatial.mean(dim=-1)) in\n\
+  NonParametricEncoder is the primary structural cause of the semantic\ndisentanglement\
+  \ failure (delta_R2_color = -0.074, target ≥ 0.10) observed\nacross all arms in\
+  \ iter_020. Replacing it with a Centroid-Gated Identity\nReadout (CGIR) — a separate\
+  \ 1x1 convolution (conv_identity) producing an\nidentity feature map, pooled at\
+  \ the soft-argmax-attended spatial positions\nwith stop-gradient on the spatial\
+  \ attention — will enable SFA+VICReg to\nproduce z_dyn representations that encode\
+  \ object identity (color) while\nz_coord encodes object position. Specifically:\n\
+  \n(1) CGIR+SFA will train without collapse (per-dim std ≥ 0.5 in ≥ 4/5 seeds).\n\
+  (2) CGIR+SFA centroid MSE will be within 10% of the mean-pooling SFA baseline\n\
+  \    (MSE_CGIR ≤ 1.10 × MSE_mean, where MSE_mean ≈ 121.9 from iter_020 Arm A1).\n\
+  (3) CGIR+SFA will achieve semantic disentanglement: delta_R2_color ≥ 0.10,\n   \
+  \ where delta_R2_color = R²_dyn_color - R²_coord_color. This is the metric\n   \
+  \ that persistently failed in iter_020 (all arms had negative delta_R2_color).\n\
+  \nThe CGIR mechanism works because: (a) the soft-argmax attention naturally\nlocalizes\
+  \ each channel d to a specific object, (b) pooling identity features\nat the attended\
+  \ position reads out the object's local appearance (color),\n(c) SFA on z_dyn then\
+  \ correctly encourages this readout to be slow (color\nIS slow across frames), and\
+  \ (d) VICReg prevents the trivial constant solution.\nThe stop-gradient on the spatial\
+  \ attention prevents SFA from distorting\nposition tracking. This is structurally\
+  \ different from the mean-pooling\nz_dyn, which averages over ALL spatial positions\
+  \ and cannot isolate per-object\nidentity information.\n"
 pre_registration_file: src/pre_registration.md
-proposed_method: "Step 1: Create SFA training infrastructure.\n- MODIFY src/models_dual_stream.py:\
-  \ Add an SFA loss computation to NonParametricJEPASpatial.forward()\n  that computes\
-  \ L_sfa = ||z_dyn_target - z_dyn_prev||^2 over the batch, where z_dyn_prev is\n\
-  \  z_dyn from the previous frame in the history. Also add batch VICReg on z_dyn_target\
-  \ (the \n  target frame's dynamics representation). The total representation loss\
-  \ becomes:\n  L_repr = sfa_weight * L_sfa + var_weight * VICReg_var(z_dyn) + cov_weight\
-  \ * VICReg_cov(z_dyn)\n  The JEPA sim_loss is retained ONLY as a readout/surprise\
-  \ signal (stop-gradient detached from\n  the representation), not as a training\
-  \ objective for the encoder.\n- Keep the predictor's forward pass for surprise computation,\
-  \ but detach its output from the\n  encoder's gradient path when SFA is the primary\
-  \ objective.\n\nStep 2: Create the Phase 0 experiment runner.\n- CREATE src/run_phase0_sfa.py:\
-  \ A 5-seed sweep comparing three arms:\n  Arm A (SFA+VICReg): Primary objective\
-  \ = SFA on z_dyn + batch VICReg on z_dyn.\n    - sfa_weight=1.0, var_weight=25.0,\
-  \ cov_weight=25.0\n    - Predictor is retained for surprise readout but gradients\
-  \ do NOT flow to encoder from sim_loss.\n    - z_coord is NOT slowed (M2 mandate).\n\
-  \    - d_t frozen at 3, no recruitment.\n  Arm B (JEPA+VICReg Baseline, B1): Same\
-  \ as current NonParametricJEPASpatial with\n    sim_weight=25.0, var_weight=25.0,\
-  \ cov_weight=25.0. d_t frozen at 3, no recruitment.\n    This is the direct comparison\
-  \ baseline.\n  Arm C (SFA+VICReg with pos_encoding=\"sinusoidal\"): Same as Arm\
-  \ A but with sinusoidal\n    position encoding added to the input. Tests whether\
-  \ explicit position channels\n    narrow the Spatial Specialization Gap under SFA.\n\
-  \nStep 3: Training protocol (shared across arms).\n- Environment: PhysicsSandbox(N=3,\
-  \ seed=seed) for 3000 training steps, batch_size=32.\n- History buffer: deque(maxlen=4)\
-  \ for H=3 history + 1 target.\n- Replay buffer: capacity 2000, prefill 100 transitions.\n\
-  - Optimizer: Adam, lr=1e-3.\n- d_t = 3 frozen from start (no recruitment logic).\n\
-  - GDASR runs in log-only mode (computes and logs growth-point signals without modifying\
-  \ d_t).\n- Seeds: [42, 123, 456, 789, 999].\n\nStep 4: Evaluation protocol (at step\
-  \ 3000 and checkpoint at 1500).\n- Non-collapse check: has_collapsed criterion +\
-  \ per-dimension std >= 0.5.\n- Centroid decoding MSE: linear probe on soft-argmax\
-  \ centroids vs. true object positions\n  (all 3 objects, report mean and per-object).\n\
-  - Slowness metrics: mean ||z_dyn(t) - z_dyn(t-1)||^2 and mean ||z_coord(t) - z_coord(t-1)||^2\n\
-  \  over 200 test frames, and their ratio.\n- VICReg health: per-dimension std, mean\
-  \ absolute correlation between active dimensions.\n- GDASR growth-point log: count\
-  \ and timing of would-have-recruited events.\n\nStep 5: Statistical analysis.\n\
-  - Welch's t-test comparing SFA arm vs JEPA arm on centroid MSE.\n- Welch's t-test\
-  \ comparing SFA arm z_dyn slowness ratio vs 0.6 threshold.\n- Cohen's d for effect\
-  \ sizes.\n- Report with confidence intervals per reporting standards (Section 9).\n\
-  \nStep 6: Falsification audit against C1, C2, C3.\n- C1: Count collapsed seeds per\
-  \ arm.\n- C2: Compare mean MSE_SFA vs 1.10 * mean MSE_JEPA.\n- C3: Compute slowness\
-  \ ratio for SFA arm; check >= 0.6.\n\nFiles to create/modify:\n- MODIFY: src/models_dual_stream.py\
-  \ (add SFA objective option to NonParametricJEPASpatial.forward)\n- CREATE: src/run_phase0_sfa.py\
-  \ (experiment runner with 3 arms × 5 seeds)\n- UPDATE: src/pre_registration.md (with\
-  \ Phase 0 pre-registration)\n"
+proposed_method: "Step 1: Modify NonParametricEncoder (src/models_dual_stream.py).\n\
+  - Add conv_identity = nn.Conv1d(128, d_max, kernel_size=1) as a separate\n  identity\
+  \ head alongside the existing conv_spatial.\n- Add a dyn_readout parameter (\"mean\"\
+  \ or \"centroid_gated\") to control\n  z_dyn computation (default \"mean\" for backward\
+  \ compatibility).\n- In \"centroid_gated\" mode:\n  a) Compute backbone features\
+  \ via existing conv1-4 → (B, 128, 8).\n  b) Compute position spatial map: conv_spatial(features)\
+  \ → (B, d_max, 8)\n     → interpolate → (B, d_max, 128) → soft-argmax → z_coord.\n\
+  \  c) Compute identity spatial map: conv_identity(features) → (B, d_max, 8)\n  \
+  \   → interpolate → (B, d_max, 128) → a_identity.\n  d) Compute z_dyn via centroid-gated\
+  \ readout:\n     p_c = softmax(a_spatial, dim=-1)  # spatial attention, shape (B,\
+  \ d_max, 128)\n     z_dyn = sum(a_identity * p_c.detach(), dim=-1)  # (B, d_max)\n\
+  \     The p_c.detach() prevents SFA gradient from distorting position tracking.\n\
+  - Keep forward_spatial() unchanged for backward compatibility.\n- Parameter increase:\
+  \ conv_identity adds 128×8 + 8 = 1,032 params (< 0.5% of total).\n\nStep 2: Update\
+  \ NonParametricJEPASpatial.forward() SFA mode.\n- The existing SFA mode computes\
+  \ sfa_loss on z_dyn_target vs z_dyn_prev.\n  With CGIR, z_dyn is now computed differently\
+  \ but has the same shape (B, d_max).\n  No changes to the loss computation are needed\
+  \ — only the z_dyn values change.\n- The VICReg var/cov losses on z_dyn remain unchanged.\n\
+  - The predictor (surprise readout) remains unchanged (takes detached z_dyn and z_coord).\n\
+  - The CCR losses on z_coord remain unchanged.\n\nStep 3: Create src/run_phase0_sfa_cgir.py.\n\
+  Three arms × 5 seeds:\n\nArm A (CGIR+SFA w=0.1): Centroid-gated identity readout,\
+  \ sfa_weight=0.1,\n  var_weight=25.0, cov_weight=25.0, pos_encoding=\"none\", CCR=none,\n\
+  \  d_t=3, gdasr_log_only=True. This is the primary test of the hypothesis.\n\nArm\
+  \ B (Mean+SFA w=0.1+CCR): Original mean-pooling z_dyn, sfa_weight=0.1,\n  var_weight=25.0,\
+  \ cov_weight=25.0, pos_encoding=\"none\", CCR=covariance\n  (ccr_smooth=10, ccr_spatial=10),\
+  \ d_t=3, gdasr_log_only=True.\n  Direct replication of iter_020 Arm A1 for comparison\
+  \ — confirms that\n  the only difference is the CGIR architecture change.\n\nArm\
+  \ C (CGIR+SFA w=0.1+pos): Centroid-gated identity readout, sfa_weight=0.1,\n  var_weight=25.0,\
+  \ cov_weight=25.0, pos_encoding=\"sinusoidal\", CCR=none,\n  d_t=3, gdasr_log_only=True.\
+  \ Tests whether positional encoding further\n  improves CGIR (it helped collapse\
+  \ in iter_020 Arm C).\n\nSeeds: [42, 123, 456, 789, 999].\nTraining: 5000 steps,\
+  \ Adam lr=1e-3, batch_size=32, replay_buffer=2000.\nEvaluation: same protocol as\
+  \ iter_020 (collapse check, centroid MSE via\n  linear probe, slowness metrics,\
+  \ VICReg health, semantic disentanglement\n  probes with delta_R2_color, GDASR growth-point\
+  \ logging).\nCheckpoint evaluation at step 2500 and final evaluation at step 5000.\n\
+  \nStep 4: Falsification audit.\nCompare CGIR+SFA arm vs Mean+SFA baseline on all\
+  \ three criteria.\nThe primary claim is that CGIR enables delta_R2_color ≥ 0.10\
+  \ (C3).\nIf CGIR achieves C3 but degrades C1 or C2, report the trade-off honestly.\n\
+  If CGIR fails C3, the root cause is NOT the spatial-mean computation and\nthe hypothesis\
+  \ is falsified — future work would need to explore other\narchitectural changes\
+  \ (slot attention, explicit color bottlenecks, etc.).\n\nFiles to create/modify:\n\
+  - MODIFY: src/models_dual_stream.py (add CGIR to NonParametricEncoder,\n  add dyn_readout\
+  \ parameter, implement centroid-gated readout)\n- CREATE: src/run_phase0_sfa_cgir.py\
+  \ (experiment runner, 3 arms × 5 seeds)\n- UPDATE: src/pre_registration.md (with\
+  \ Phase 0 CGIR pre-registration)\n"
