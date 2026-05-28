@@ -1045,4 +1045,5 @@ class NonParametricJEPASpatial(nn.Module):
         cloned.steps_since_recruitment = self.steps_since_recruitment
         cloned.error_buffer = copy.deepcopy(self.error_buffer)
         cloned.ema_error = self.ema_error
+        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
         return cloned
