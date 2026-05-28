@@ -1,0 +1,1 @@
+Augment the falsification audit inside `src/run_phase0_sfa.py` with the semantic C3 criterion (delta_R2_color >= 0.10). Also update `src/pre_registration.md` to reframe slowness ratio as a sanity check and include the semantic C3 criterion. Run `python src/run_phase0_sfa.py --dry-run` to verify that the whole script runs correctly in dry-run mode and performs the correct audit.
