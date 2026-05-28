@@ -174,6 +174,8 @@ class DualStreamJEPASpatial(nn.Module):
         self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable periods
         self.ema_error = None
         self.ema_alpha = 0.05
+        self.gdasr_log_only = False
+        self.gdasr_growth_points = []
 
     def reset_error_buffer(self):
         self.error_buffer.clear()
@@ -326,7 +328,7 @@ class DualStreamJEPASpatial(nn.Module):
             "loss_spatial": loss_spatial
         }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
 
-    def update_recruitment_logic(self, error_val, target_dim=None):
+    def update_recruitment_logic(self, error_val, target_dim=None, step=None):
         if target_dim is None:
             target_dim = self.d_t
 
@@ -345,9 +347,20 @@ class DualStreamJEPASpatial(nn.Module):
                 mean = np.mean(self.error_buffer)
                 std = np.std(self.error_buffer)
                 if self.ema_error > mean + self.k * std:
-                    self.d_t = target_dim + 1
-                    self.steps_since_recruitment = 0
-                    print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+                    if self.gdasr_log_only:
+                        self.steps_since_recruitment = 0
+                        self.gdasr_growth_points.append({
+                            "step": step,
+                            "ema_error": self.ema_error,
+                            "mean": mean,
+                            "std": std
+                        })
+                        print(f"[GDASR LOG-ONLY] Growth point detected at d_t={self.d_t}, "
+                              f"error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+                    else:
+                        self.d_t = target_dim + 1
+                        self.steps_since_recruitment = 0
+                        print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
 
     def clone(self):
         """
@@ -366,6 +379,8 @@ class DualStreamJEPASpatial(nn.Module):
         cloned.steps_since_recruitment = self.steps_since_recruitment
         cloned.error_buffer = copy.deepcopy(self.error_buffer)
         cloned.ema_error = self.ema_error
+        cloned.gdasr_log_only = self.gdasr_log_only
+        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
         return cloned
 
 
@@ -664,6 +679,7 @@ class NonParametricJEPASpatial(nn.Module):
         self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable periods
         self.ema_error = None
         self.ema_alpha = 0.05
+        self.gdasr_growth_points = []
 
     def reset_error_buffer(self):
         self.error_buffer.clear()
@@ -970,7 +986,7 @@ class NonParametricJEPASpatial(nn.Module):
                 "ccr_spatial_loss": ccr_spatial_loss
             }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
 
-    def update_recruitment_logic(self, error_val, target_dim=None):
+    def update_recruitment_logic(self, error_val, target_dim=None, step=None):
         if target_dim is None:
             target_dim = self.d_t
 
@@ -991,6 +1007,13 @@ class NonParametricJEPASpatial(nn.Module):
                     mean = np.mean(self.error_buffer)
                     std = np.std(self.error_buffer)
                     if self.ema_error > mean + self.k * std:
+                        self.steps_since_recruitment = 0
+                        self.gdasr_growth_points.append({
+                            "step": step,
+                            "ema_error": self.ema_error,
+                            "mean": mean,
+                            "std": std
+                        })
                         print(f"[GDASR LOG-ONLY] Growth point detected at d_t={self.d_t}, "
                               f"error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
         else:
