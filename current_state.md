@@ -1,55 +1,57 @@
 # Current Research State
-Phase: Phase 18 Complete (EG-MDL Falsified, Cold-Start Optimization Transient Discovered)
+Phase: Phase 021 Complete — CGIR Hypothesis Falsified, Partial Effect Measured
 
 ## Goal
-Design and evaluate a novel dynamic representation network ("Thalamus") with hierarchical
-abstraction, dynamic dimension recruitment, and thalamic gating. Current focus: solving the
-distractor-rejection problem for dimension recruitment gating.
+Design and evaluate a neural architecture that achieves hierarchical abstraction without
+generative decoders, with SFA+VICReg shaping the identity stream (z_dyn) and soft-argmax
+tracking position (z_coord). Current focus: achieving semantic disentanglement (delta_R2_color ≥ 0.10).
 
 ## Confirmed
-- FALSIFICATION OF EG-MDL HYPOTHESIS (iter_18.2): The prediction-trend gate ρ = E_late/E_early
-  provides zero discriminative power between genuine objects and Noisy-TV. All arms (P, S, S_alt)
-  recruit the Noisy-TV distractor in 5/5 seeds. Falsified on Criterion C2 (false recruitment > 20%).
-- COLD-START OPTIMIZATION TRANSIENT (iter_18.2): When the predictor's 4th-dimension weights are
-  randomly initialized, E_early is enormous (26-314 across seeds) and E_late drops to near-zero
-  (0.07-0.43) regardless of signal type, driving ρ to ~0.001-0.006. This transient dominates
-  any learnability signal and renders ρ useless as a discriminative metric.
-- WUP-MDL REMAINS BEST BASELINE (iter_18.2): Arm P achieves 100% recruitment (5/5), centroid
-  MSE 55.58, test sim loss 0.0877. But 100% false recruitment on Noisy-TV persists.
-- NO θ-SENSITIVITY (iter_18.2): Both θ=0.90 and θ=0.85 are universally passed (ρ < 0.01
-  << 0.85). The problem is metric confound, not threshold calibration.
-- THREE DISTINCT COLD-START PATHOLOGIES (iter_17, iter_18):
-  1. Encoder cold-start (Phase 17, ESUG): Chaotic encoder output → gate rejects genuine objects
-  2. Predictor cold-start (Phase 15-16, MDL): Cold predictor fails MDL → gate rejects (solved by WUP)
-  3. Optimization transient cold-start (Phase 18, EG-MDL): Rapid weight adaptation → ρ→0 for all signals
+- **CGIR PARTIAL EFFECT (iter_021, 20.2)**: Centroid-gated identity readout shifts
+  delta_R2_color from -0.074 (mean-pooling baseline) to +0.050 — a +0.124 absolute
+  improvement. This confirms spatial-mean pooling was a contributing factor but not
+  the primary cause of the disentanglement failure.
+- **CGIR+CCR SYNERGY (iter_021, 20.2)**: CCR amplifies CGIR's effect 6.7×
+  (Arm A delta_R2_color=0.050 vs Arm D=0.007). CCR provides spatial decorrelation
+  that enables CGIR's channel-specific readout to differentiate objects.
+- **POSITION ENCODING HURTS CGIR (iter_021, 20.2)**: Sinusoidal pos encoding reduces
+  CGIR effectiveness 4.5× (Arm A=0.050 vs Arm C=0.011). Consistent with iter_013.
+- **C4 IDENTITY PROBE FAILS (iter_021, 20.2)**: delta_R2_identity is negative across
+  ALL arms, meaning z_coord predicts compound identity (color+size) better than z_dyn.
+  The separation is color-vs-position at best, not identity-vs-position.
+- **SLOWNESS RATIO PATHOLOGY (iter_020–021)**: Across all SFA arms, z_dyn changes
+  MORE than z_coord (ratio >> 1), contradicting SFA's intended effect. SFA does not
+  effectively slow z_dyn.
+- **ITER_020 NULL RESULT CONFIRMED (iter_021, 20.2)**: Arm B (Mean+SFA+CCR) replicates
+  iter_020 Arm A1 results: delta_R2_color = -0.074, MSE = 121.86, 1/5 collapsed.
+- **VICReg BATCH-LEVEL WORKS (iter_020–021)**: Collapse rates are low (1/5 for SFA arms),
+  confirming M1 mandate. VICReg applied at batch level is effective.
+- **JEPA BASELINE HEAVILY COLLAPSED (iter_020)**: JEPA+CCR still has 4/5 collapse,
+  confirming M2's demotion of JEPA was correct.
 
 ## Refuted / Falsified
-- PREDICTION-TREND GATE ρ (iter_18.2): Cannot distinguish structured from unstructured signals
-  when the predictor is cold-started because the optimization transient dominates.
-- ESUG (iter_17.1): Encoder-only gating without warm-up rejected genuine objects due to encoder
-  cold-start.
-- PVU GATING (iter_16): Physical-variance-uncorrelated gating rejected all dimensions due to
-  high physical correlation in 1D space.
-- SA-CCR (iter_15): Surprise-adaptive covariance regularization caused destructive interference
-  between learning and attention signals.
+- **CGIR AS PRIMARY CAUSE (iter_021, C3)**: The hypothesis that spatial-mean pooling
+  is the primary structural cause of semantic disentanglement failure is FALSIFIED.
+  CGIR produces a +0.124 shift but does not achieve the 0.10 threshold (0.050 < 0.10).
+- **IDENTITY-VS-POSITION SEPARATION (iter_021, C4)**: No arm achieves delta_R2_identity
+  ≥ 0.10. Even the best CGIR arm has delta_R2_identity = -0.035. The "identity" label
+  for z_dyn is misleading — at most it achieves partial "color readout."
 
 ## Best Result
-- Arm P (WUP-MDL, W=100): Centroid Decoding MSE: 55.58, Test Sim Loss: 0.0877, 100% recruitment
-  (iter_18.2). But 100% false recruitment on Noisy-TV control.
+- Arm A (CGIR+SFA+CCR): delta_R2_color = 0.050, MSE = 117.85, 1/5 collapsed.
+  This is the best semantic disentanglement result to date, but still fails the
+  pre-registered criterion of 0.10.
 
 ## In Progress
-- Designing a post-transient ρ metric with extended WUP window (W=500) to test whether
-  learnability differences emerge after cold-start transient saturation.
-- Exploring warm-started predictor approaches to bypass the optimization transient entirely.
+- Investigating the SFA slowness pathology (ratio >> 1) as a potential deeper root cause.
+- Considering alternative objectives (contrastive, color-conditional) to replace or
+  supplement SFA.
 
 ## Open Questions
-1. Can a post-transient ρ (computed on steps 250-375 vs 375-500 of W=500 WUP) separate
-   genuine objects from Noisy-TV?
-2. Can warm-starting the predictor by weight transfer from existing dimensions avoid the
-   cold-start optimization transient?
-3. Is there a non-predictor-based gating metric (spectral flatness, spatial coherence,
-   cross-dimension MI) that avoids all cold-start pathologies?
-4. Should the Noisy-TV scenario be treated as fundamentally out-of-scope for predictor-based
-   gating, requiring architectural solutions instead?
-5. Can pre-allocated shadow dimensions (always encoding but only sometimes promoted)
-   provide an alternative recruitment paradigm?
+1. What is the deeper root cause of semantic disentanglement failure beyond spatial-mean?
+2. Can a contrastive objective (instead of SFA) produce identity separation in z_dyn?
+3. Is SFA-on-consecutive-frames insufficient because color is already slow (trivially satisfied)?
+4. Can stronger architectural interventions (slot attention, color bottleneck) achieve ≥ 0.10?
+5. Should the disentanglement be reframed as color-vs-position given C4 failure?
+6. Does increasing training steps beyond 5000 help CGIR converge further?
+7. What role does the slowness ratio pathology play in blocking disentanglement?

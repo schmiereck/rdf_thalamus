@@ -743,3 +743,61 @@ For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/St
 **Notes:** Planner call failed: Client error '403 Forbidden' for url 'https://openrouter.ai/api/v1/chat/completions'
 For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
 
+
+---
+```yaml
+cached_tokens: 1183371
+cost_usd: 1.38791
+hypothesis: 'phase-021: CGIR partially improves semantic disentanglement (+0.124 shift)
+  but fails the 0.10 threshold; spatial-mean is a contributing factor, not the primary
+  cause'
+input_tokens: 2727963
+iter: 20
+metrics:
+  arm_a_collapsed_seeds: 1
+  arm_a_delta_r2_color: 0.0498
+  arm_a_delta_r2_identity: -0.0346
+  arm_a_mse_mean: 117.85
+  arm_a_per_dim_std: 0.893
+  arm_a_slowness_ratio: 208.8
+  arm_b_collapsed_seeds: 1
+  arm_b_delta_r2_color: -0.0736
+  arm_b_delta_r2_identity: 0.0028
+  arm_b_mse_mean: 121.86
+  arm_b_per_dim_std: 0.812
+  arm_b_slowness_ratio: 338.0
+  arm_c_delta_r2_color: 0.011
+  arm_d_delta_r2_color: 0.0074
+  c1_pass: true
+  c2_pass: true
+  c3_pass: false
+  c4_pass: false
+  total_runs: 20
+  training_steps_per_run: 5000
+output_tokens: 70535
+status: ok
+```
+
+## iter_020: phase-021: CGIR partially improves semantic disentanglement (+0.124 shift) but fails the 0.10 threshold; spatial-mean is a contributing factor, not the primary cause
+
+**Analysis:** The CGIR experiment represents the first architectural intervention aimed at solving the
+persistent semantic disentanglement failure (delta_R2_color < 0.10) observed since iter_020.
+
+The experiment was well-controlled: Arm A vs Arm B differs ONLY in dyn_readout (centroid_gated
+vs mean), isolating the CGIR effect. The addition of Arms C (pos encoding) and D (no CCR)
+provided useful interaction data
+
+**Status:** ok
+
+**Metrics:** `{'arm_a_delta_r2_color': 0.0498, 'arm_b_delta_r2_color': -0.0736, 'arm_c_delta_r2_color': 0.011, 'arm_d_delta_r2_color': 0.0074, 'arm_a_delta_r2_identity': -0.0346, 'arm_b_delta_r2_identity': 0.0028, 'arm_a_mse_mean': 117.85, 'arm_b_mse_mean': 121.86, 'arm_a_collapsed_seeds': 1, 'arm_b_collapsed_seeds': 1, 'arm_a_slowness_ratio': 208.8, 'arm_b_slowness_ratio': 338.0, 'arm_a_per_dim_std': 0.893, 'arm_b_per_dim_std': 0.812, 'c1_pass': True, 'c2_pass': True, 'c3_pass': False, 'c4_pass': False, 'total_runs': 20, 'training_steps_per_run': 5000}`
+
+**Experimenter view:** Phase 021 evaluated the CGIR (Centroid-Gated Identity Readout) hypothesis across 4 arms × 5 seeds
+× 5000 steps. The hypothesis was that the spatial-mean z_dyn computation (a_spatial.mean(dim=-1))
+was the primary structural cause of the semantic disentanglement failure (delta_R2_color = -0.074)
+observed in iter_020.
+
+RESULTS:
+C1 (Collapse): PASS — Arm A (CGIR+SFA+CCR) has 1/5 collapsed seeds, same 
+
+**Notes:** CGIR hypothesis falsified on C3; partial directional effect (+0.124) but insufficient for 0.10 threshold.
+

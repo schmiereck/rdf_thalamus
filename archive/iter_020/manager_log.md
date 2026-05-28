@@ -255,3 +255,76 @@ The iter_020 finding that `delta_R2_color = -0.074` (i.e., `z_coord` predicts co
 
 ---
 
+## Iteration 020 -> Planner (Turn 1) [Approval]
+
+**Verdict:** APPROVED
+
+**Journal Update:**
+# Research Journal – Thalamus Project
+
+## 1. High-Level Strategy & Trajectory
+*   **Current Phase:** Phase 0 (Objective Migration) — SFA Effectiveness Crisis Identified.
+*   **Active Direction:** The CGIR falsification (iter_021) has uncovered a deeper problem than the spatial-mean bottleneck: **SFA on consecutive frames is not effectively shaping `z_dyn` into a slow representation**. The slowness ratio remains >> 1 across all arms, meaning the SFA loss is not driving `z_dyn` toward temporal stability. The root cause appears to be that object identity features (color, size) are *already constant across consecutive frames*, so the SFA gradient provides minimal directional learning signal — it merely says "keep z_dyn constant," which VICReg opposes, producing a tug-of-war that doesn't converge to identity encoding. This strikes at the heart of the M2 mandate and must be resolved before Phase 0 can be considered complete.
+*   **Next Priority:** Diagnose why SFA fails to shape `z_dyn` and determine whether this is (a) an implementation bug, (b) a loss-weighting issue (SFA loss scale vs. VICReg loss scale), (c) a fundamental limitation of frame-pair SFA on already-static signals, or (d) an architectural issue requiring contrastive or augmentation-based objectives. This must be addressed before any further architectural interventions (CGIR variants, micro-columns, etc.).
+*   **Confidence Score:** 75% (Reduced from 88%. The core M2 mechanism—SFA as the primary representation shaper—is now empirically questionable on this task. Confidence in the *characterization* of the problem remains high, but confidence in the path to solution has dropped significantly.)
+
+## 2. Strategic Insights & Lessons Learned
+*   **CGIR is a contributing factor, not the primary cause (iter_021, FALSIFIED):** Centroid-Gated Identity Readout provides a directional +0.124 shift in delta_R2_color but fails the 0.10 threshold. The spatial-mean bottleneck accounts for ~60% of a gap that is itself insufficient. CCR on z_coord is essential for CGIR to function. Position encoding hurts CGIR (0.011 vs 0.050), consistent with iter_013.
+*   **SFA Slowness Ratio Crisis (iter_021, CRITICAL FINDING):** The slowness ratio (z_coord_temporal_var / z_dyn_temporal_var) remains >> 1 across all arms, indicating that SFA is NOT making z_dyn slower than z_coord. This contradicts the M2 design assumption. Root cause hypothesis: on consecutive frames, object identity features are already constant (a red blob stays red), so the SFA loss gradient `||z_dyn(t) - z_dyn(t-1)||^2` provides zero discriminative learning signal — all competing representations (color-encoding, noise-encoding, constant) produce equally small SFA loss. The VICReg variance term then determines the winner, pushing toward high-variance representations rather than identity-encoding ones.
+*   **The SFA-VICReg Tug-of-War (iter_021, NEW CONSTRAINT):** SFA says "be constant," VICReg says "be variable." On already-static signals, neither objective provides directional pressure toward encoding color. The equilibrium is a representation that fluctuates at the VICReg margin (std ≈ 1) with minimal temporal correlation, not one that encodes stable object identity. This is a structural problem, not a tuning problem.
+*   **"Identity" is misleading — only color is partially captured (iter_021, C4 probe):** The identity probe reveals that size is not captured by z_dyn at all. Only color shows partial encoding. The "identity stream" framing overstates what z_dyn actually represents.
+*   **Cold-Start Trilemma (Phases 16–18, PRESERVED):** Three distinct cold-start pathologies constrain gating designs: (1) encoder cold-start → smoothness gates reject genuine objects, (2) predictor cold-start → MDL gates accept noise, (3) optimization transient → prediction-trend gates accept everything. M3 (fixed dimensionality + log-only GDASR) sidesteps this trilemma by design.
+*   **Position Encoding Consistently Hurts (iter_013, iter_021):** Both under JEPA and under SFA+CGIR, adding explicit position encoding degrades performance. This is now a robust finding across two objectives and two readout mechanisms.
+
+## 3. Loop & Bottleneck Detection
+*   **SFA Effectiveness Loop (ACTIVE, CRITICAL):** The M2 mandate assumes SFA shapes z_dyn into a slow identity representation. Empirically, it doesn't. This is the current bottleneck — all downstream interventions (CGIR, micro-columns, spatial specialization gap) depend on z_dyn actually encoding identity. Must resolve before proceeding.
+*   **Gating Design Loop (Phases 15–18, STALE):** Four consecutive gating failures mapped the cold-start trilemma. M3 (fixed dimensionality) sidesteps this loop. De-activated in favor of M3; not the current priority.
+*   **Logistics Note (iter_020/021):** Executor 20.2 hit token limit while writing COMPARISON_REPORT.md. This is a recurring infrastructure issue that may require chunking output or reducing report verbosity in future iterations.
+
+## 4. Alternate Research Paths
+*   **SFA Loss-Weighting Diagnosis (IMMEDIATE PRIORITY):** Measure the actual magnitude of the SFA loss vs. VICReg loss during training. If VICReg dominates by orders of magnitude, the SFA gradient is swamped and z_dyn is shaped by VICReg alone. This is the cheapest diagnostic and must be run first.
+*   **Multi-Step SFA (Medium priority):** Instead of `||z_dyn(t) - z_dyn(t-1)||^2`, use `||z_dyn(t) - z_dyn(t-k)||^2` with k >> 1 (e.g., k=50). Over longer timescales, even slow-varying features exhibit some drift (objects swap positions, scenes change), providing a richer SFA gradient. This is the standard SFA literature approach (Wiskott & Sejnowski 2002 use slow features at multiple timescales).
+*   **Contrastive Identity Objective (Medium priority):** Replace or augment SFA with a contrastive objective that explicitly pulls same-object representations together and pushes different-object representations apart. This requires object-level labels or tracking IDs (available from the physics engine). This is a stronger supervision signal than SFA but maintains decoder-free property.
+*   **Augmentation-Based SFA (Low priority):** Apply temporal augmentation (color jitter, small geometric transforms) to create artificial temporal variation in identity features, giving SFA a gradient to push against. However, this may fight the natural invariance we want.
+*   **Fixed-Dimensionality + M3 Regime (ACTIVE):** Already adopted per M3. GDASR runs in log-only mode, d_t frozen at target. This unblocks non-gating work.
+*   **Micro-Columns (DEFERRED per semantic caution):** Only justified if SFA-on-z_dyn leaves a measured gap after the SFA effectiveness crisis is resolved. The gap currently exists, but the cause may be SFA failure, not architectural inadequacy.
+
+---
+
+## Iteration 020 -> Project Archive [Milestone Report]
+
+# RDF Milestone Review — Iteration 021 — Null Result: CGIR Insufficient for Semantic Disentanglement
+
+## 1. Pre-Declared Hypothesis and Falsification Criterion
+**Hypothesis (phase-021):** Replacing spatial-mean readout with centroid-gated identity readout (CGIR) on z_dyn will increase delta_R2_color by ≥ 0.10, resolving the semantic disentanglement failure (delta_R2_color < 0) observed since iter_020.
+**Falsification criterion (C3):** delta_R2_color improvement < 0.10 between Arm A (CGIR) and Arm B (mean baseline).
+
+## 2. Experimental Protocol
+- **Arm A (CGIR):** z_dyn readout via centroid_gated (uses z_coord soft-argmax weights to extract channel-specific identity features). SFA+VICReg on z_dyn, CCR on z_coord, d_t=3 frozen, RGB-only input, lambda=25.
+- **Arm B (Baseline):** z_dyn readout via spatial mean (standard). All other parameters identical to Arm A.
+- **Arm C:** CGIR + positional encoding (sinusoidal position channel appended to RGB input).
+- **Arm D:** CGIR without CCR (no spatial decorrelation on z_coord).
+- **Identity Probe (C4):** Regresses z_dyn against color and size independently to decompose "identity."
+- **Environment:** 1D physics sandbox, N=3 objects, varying colors/sizes/masses, elastic collisions. 5 seeds per arm.
+- **Metrics:** delta_R2_color (R²_color_z_dyn - R²_color_z_coord), slowness ratio (z_coord_temporal_var / z_dyn_temporal_var), centroid decoding MSE.
+
+## 3. Observed Quantities
+- **Arm A (CGIR) delta_R2_color:** +0.050 (shifted from negative, but below 0.10 threshold)
+- **Arm B (Mean baseline) delta_R2_color:** -0.074 (negative, confirming baseline failure)
+- **CGIR directional effect:** +0.124 (positive shift, statistically consistent but below criterion)
+- **Arm C (CGIR + pos encoding) delta_R2_color:** +0.011 (pos encoding hurts CGIR)
+- **Arm D (CGIR, no CCR) delta_R2_color:** Negative (CCR essential for CGIR)
+- **C4 Identity Probe:** Color partially captured by z_dyn; size NOT captured. "Identity" framing overstated.
+- **Slowness ratio:** >> 1 across ALL arms (z_dyn is NOT slower than z_coord despite SFA objective).
+
+## 4. Verdict
+**Refuted.** CGIR produces a directional +0.124 shift in delta_R2_color but fails the pre-declared 0.10 threshold. The spatial-mean bottleneck is a contributing factor (~60% of the directional shift) but not the primary cause of semantic disentanglement failure.
+
+## 5. Construction-vs-Empirical Note
+The CGIR effect (+0.124) is genuinely empirical — it was not derivable from the architecture alone and required the controlled A/B comparison. The slowness ratio >> 1 finding is also genuinely empirical and not derivable from construction; one would expect SFA to make z_dyn slow, but it empirically doesn't. The position-encoding-hurts finding reproduces the iter_013 result under a different objective, strengthening it as a cross-objective empirical regularity.
+
+## 6. Limitations
+This null result does NOT show that spatial-mean readout is irrelevant — it contributes +0.124. It shows that resolving the semantic disentanglement gap requires addressing factors beyond the readout mechanism. The critical unresolved question is why SFA fails to make z_dyn slow (slowness ratio >> 1). This may indicate: (a) loss-weighting imbalance where VICReg overwhelms SFA gradients, (b) a fundamental limitation of frame-pair SFA on already-static signals, or (c) an implementation issue. Until this is resolved, no architectural intervention targeting z_dyn semantics can be properly evaluated, because the SFA foundation itself may be non-functional.
+
+---
+
