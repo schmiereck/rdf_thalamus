@@ -23,12 +23,12 @@ Seeds: [42, 123, 456, 789, 999].
 
 | Metric | Ctrl | Arm A (conv4) | Arm B (d=16) | Arm C (K=4) |
 |--------|------|---------------|--------------|-------------|
-| Collapse | 1/1 | 1/1 | 1/1 | 1/1 |
-| MSE | nan | nan | nan | nan |
-| dR2_color | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
-| dR2_ident | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
-| norm_dyn_var | 0.000017 | 0.000409 | 0.000050 | 0.000022 |
-| norm_coord_var | 0.000002 | 0.000002 | 0.000002 | 0.000002 |
+| Collapse | 1/5 | 3/5 | 1/5 | 5/5 |
+| MSE | 117.85 | 111.57 | 119.49 | 112.52 |
+| dR2_color | 0.0498 | 0.0904 | 0.1299 | 0.1003 |
+| dR2_ident | -0.0346 | -0.0168 | -0.0270 | -0.0555 |
+| norm_dyn_var | 0.008557 | 0.008891 | 0.010455 | 0.017713 |
+| norm_coord_var | 0.000017 | 0.000023 | 0.000030 | 0.000019 |
 | SFA effective | no | no | no | no |
 
 ## Criterion Definitions
@@ -43,11 +43,11 @@ Seeds: [42, 123, 456, 789, 999].
 
 | Criterion | Result | Detail |
 |-----------|--------|--------|
-| C1 (Collapse) | PASS | Ctrl: 1/1, Arm C: 1/1 |
-| C2 (Centroid MSE) | FAIL | Arm C MSE=nan vs threshold=nan (1.10 x Ctrl) |
-| C3 (Color disentanglement) | FAIL | Diff=0.0000 |
-| C4 (Identity probe) | FAIL | Diff=0.0000 |
-| C5 (SFA effective) | FAIL | Arm C norm_dyn=0.000022 < norm_coord=0.000002 |
+| C1 (Collapse) | FAIL | Ctrl: 1/5, Arm C: 5/5 |
+| C2 (Centroid MSE) | PASS | Arm C MSE=112.5158 vs threshold=129.6309 (1.10 x Ctrl) |
+| C3 (Color disentanglement) | FAIL | Diff=0.0504 |
+| C4 (Identity probe) | FAIL | Diff=-0.0208 |
+| C5 (SFA effective) | FAIL | Arm C norm_dyn=0.017713 < norm_coord=0.000019 |
 
 **Overall (C1 AND C2 AND C4): HYPOTHESIS FALSIFIED**
 
