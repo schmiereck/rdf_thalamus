@@ -1,0 +1,1 @@
+Modify `src/run_phase0_sfa.py` to add the semantic disentanglement probes and the augmented C3 falsification criterion as specified in the Phase 0 instructions. Update the summary report, JSONs, and CSVs with these new semantic metrics. Run a dry run to verify correctness.
