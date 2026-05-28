@@ -1,0 +1,2404 @@
+
+[Tool Call: list_dir({'path': '.'})]
+[Tool Result: [DIR] -p
+[DIR] .antigravitycli
+[DIR] .git
+      .gitignore
+[DIR] .pytest_cache
+[DIR] .venv
+[DIR] __pycache__
+      apply_fix.py
+[DIR] archive
+[DIR] cache
+      config.toml
+      current_state.md
+      experiment.log
+      experiment_log.md
+      find_files.py
+      fix_theta.py
+      goal.md
+      hello.py
+      manager_log.md
+      patch_thalamus.py
+      patch_thalamus_sync.py
+[DIR] pictures
+      README.md
+      RESEARCH-RESULT-002.md
+      RESEARCH-RESULT-003.md
+      RESEARCH-RESULT-004.md
+      RESEARCH-RESULT-005.md
+      RESEARCH-RESULT-006.md
+      RESEARCH-RESULT-007.md
+      RESEARCH-RESULT-008.md
+      RESEARCH-RESULT-009.md
+      RESEARCH-RESULT-010.md
+      RESEARCH-RESULT-011.md
+      RESEARCH-RESULT-012.md
+      RESEARCH-RESULT-013.md
+      RESEARCH-RESULT-014.md
+      RESEARCH-RESULT-015.md
+      RESEARCH-RESULT-016.md
+      RESEARCH-RESULT-017.md
+      RESEARCH-RESULT-018.md
+      research_journal.md
+[DIR] src
+      test_models_spatial.py]
+
+[Tool Call: list_dir({'path': 'src'})]
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_sfa.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+      train_thalamus.py]
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: #!/usr/bin/env python3
+"""
+Phase 0: SFA (Slowness) as Primary Representation Objective.
+
+Evaluates three arms × 5 seeds:
+  Arm A (SFA+VICReg)     : sfa_weight=1.0, var=25, cov=25, pos_encoding='none'
+  Arm B (JEPA+VICReg)    : baseline, sim=25, var=25, cov=25, pos_encoding='none'
+  Arm C (SFA+pos_enc)    : sfa_weight=1.0, var=25, cov=25, pos_encoding='sinusoidal'
+
+Pre-registration: src/pre_registration.md (Iteration 020)
+"""
+
+import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+import warnings
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from scipy import stats as scipy_stats
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import (
+    NonParametricJEPASpatial,
+    calculate_centroid_and_variance,
+    add_positional_encoding,
+)
+
+# ---------------------------------------------------------------------------
+# Replay buffer (same as existing phases)
+# ---------------------------------------------------------------------------
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        x_hist_b, x_target_b = zip(*batch)
+        return np.stack(x_hist_b, axis=0), np.stack(x_target_b, axis=0)
+
+    def clear(self):
+        self.buffer = []
+        self.position = 0
+
+    def __len__(self):
+        return len(self.buffer)
+
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+# ---------------------------------------------------------------------------
+# Helpers: slowness, collapse check, linear probe, centroid MSE, VICReg health
+# ---------------------------------------------------------------------------
+def compute_slowness_metrics(z_dyn_log, z_coord_log):
+    """
+    Both: list of (T, d_t) arrays over N test frames.
+    Returns dict with mean temporal deltas and ratio.
+    """
+    dyn_deltas = []
+    coord_deltas = []
+    for z_dyn, z_coord in zip(z_dyn_log, z_coord_log):
+        # Temporal differences
+        dyn_diff = np.diff(z_dyn, axis=0)  # (T-1, d_t)
+        coord_diff = np.diff(z_coord, axis=0)
+        if len(dyn_diff) > 0:
+            dyn_deltas.append(np.mean(np.sum(dyn_diff ** 2, axis=1)))
+            coord_deltas.append(np.mean(np.sum(coord_diff ** 2, axis=1)))
+    mean_dyn_delta = float(np.mean(dyn_deltas)) if dyn_deltas else 0.0
+    mean_coord_delta = float(np.mean(coord_deltas)) if coord_deltas else 0.0
+    ratio = mean_dyn_delta / (mean_coord_delta + 1e-12)
+    return {
+        "mean_dyn_delta": mean_dyn_delta,
+        "mean_coord_delta": mean_coord_delta,
+        "ratio": ratio,
+    }
+
+
+def check_collapse(z_dyn, d_t, std_threshold=0.5):
+    """
+    Returns has_collapsed (bool) and per-dimension std array.
+    Uses z_dyn of shape (N, d_max) or (N, d_t).
+    """
+    z_active = z_dyn[:, :d_t]
+    per_dim_std = np.std(z_active, axis=0)  # (d_t,)
+    has_collapsed = np.any(per_dim_std < std_threshold)
+    return has_collapsed, per_dim_std
+
+
+def fit_linear_probe(z, y):
+    """Simple linear probe via least squares: y_pred = w * z + b."""
+    Z = np.stack([z, np.ones_like(z)], axis=1)
+    theta = np.linalg.pinv(Z.T @ Z) @ Z.T @ y
+    return theta[0], theta[1]
+
+
+def compute_centroid_mse(model, test_env, test_history, num_samples=200, device="cpu"):
+    """
+    Evaluates centroid-decoding MSE: linear probe on soft-argmax centroids
+    vs. true object positions for all 3 objects.
+    """
+    model.eval()
+    centroids_list = []
+    pos_list = []
+
+    # Collect centroids and positions from passive rollout
+    obs = test_env.reset()
+    test_history.clear()
+    test_history.append(obs)
+
+    for _ in range(4):  # warm up history for H=3
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+
+    collected = 0
+    while collected < num_samples:
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+        if len(test_history) == 4:
+            x_target_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad():
+                z_coord, _ = model.encoder(x_target_t)
+            centroids_list.append(z_coord[:, :model.d_t].cpu().numpy())  # (1, d_t)
+            # True positions (only first d_t objects, pad if fewer)
+            true_pos = np.array(info["positions"][:model.d_t])
+            if len(true_pos) < model.d_t:
+                true_pos = np.pad(true_pos, (0, model.d_t - len(true_pos)), constant_values=np.nan)
+            pos_list.append(true_pos)
+            collected += 1
+
+    centroids_arr = np.concatenate(centroids_list, axis=0)  # (N, d_t)
+    pos_arr = np.array(pos_list)  # (N, d_t)
+
+    mse_per_object = []
+    r_per_object = []
+    for obj_idx in range(model.d_t):
+        mask = ~np.isnan(pos_arr[:, obj_idx])
+        if mask.sum() < 10:
+            mse_per_object.append(float("nan"))
+            r_per_object.append(0.0)
+            continue
+        z_obj = centroids_arr[mask, obj_idx]
+        y_obj = pos_arr[mask, obj_idx]
+        w, b = fit_linear_probe(z_obj, y_obj)
+        y_pred = z_obj * w + b
+        mse = float(np.mean((y_obj - y_pred) ** 2))
+        r = float(np.corrcoef(z_obj, y_obj)[0, 1]) if len(z_obj) > 2 else 0.0
+        if np.isnan(r):
+            r = 0.0
+        mse_per_object.append(mse)
+        r_per_object.append(abs(r))
+
+    return {
+        "mse_per_object": mse_per_object,
+        "mse_mean": float(np.nanmean(mse_per_object)),
+        "r_per_object": r_per_object,
+        "r_mean": float(np.nanmean(r_per_object)),
+    }
+
+
+def compute_vicreg_health(z_dyn, d_t):
+    """
+    Returns per-dimension std and mean absolute correlation between active dimensions.
+    """
+    z_active = z_dyn[:, :d_t]
+    per_dim_std = np.std(z_active, axis=0)
+    if d_t > 1:
+        corr = np.corrcoef(z_active.T)
+        # upper triangle off-diagonal
+        triu = np.triu_indices(d_t, k=1)
+        mean_abs_corr = float(np.mean(np.abs(corr[triu])))
+    else:
+        mean_abs_corr = 0.0
+    return {
+        "per_dim_std": per_dim_std.tolist(),
+        "mean_abs_corr": mean_abs_corr,
+    }
+
+
+def compute_semantic_probes(model, test_env, test_history, num_samples=200,
+                             train_ratio=0.5, device="cpu"):
+    """
+    Semantic disentanglement probes.
+
+    Collects z_dyn, z_coord along with ground-truth positions and colors over
+    num_samples frames.  Matches each latent dimension to the nearest object
+    (by centroid position).  Fits linear probes on the first half and evaluates
+    R² on the second half for two tasks:
+
+      * color  regression  (3-D RGB target → 3 scalar R² values, then mean)
+      * position regression  (1-D scalar target → 1 R² value)
+
+    Probes are fit separately for z_dyn and z_coord, giving four R² scores:
+      R2_dyn_color,  R2_coord_color,  R2_dyn_pos,  R2_coord_pos
+
+    The key disentanglement metric is:
+      delta_R2_color = R2_dyn_color - R2_coord_color
+    If SFA separates identity from position, z_dyn should predict color well
+    and z_coord should predict color poorly, yielding a positive delta.
+    """
+    model.eval()
+
+    # Collect data
+    obs = test_env.reset()
+    test_history.clear()
+    test_history.append(obs)
+
+    # Warm up
+    for _ in range(4):
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+
+    z_dyn_list = []
+    z_coord_list = []
+    pos_list = []  # positions for all N objects
+    colors_list = []  # colors for all N objects
+
+    with torch.no_grad():
+        for _ in range(num_samples):
+            obs, info = test_env.step({"acc": 0.0, "push": False})
+            test_history.append(obs)
+            if len(test_history) == 4:
+                x_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
+                z_c, z_d = model.encoder(x_t)
+                z_dyn_list.append(z_d[0].cpu().numpy())       # (d_max,)
+                z_coord_list.append(z_c[0].cpu().numpy())      # (d_max,)
+                pos_list.append(info["positions"])              # (N,)
+                colors_list.append(info["colors"])              # (N, 3)
+
+    z_dyn_arr = np.array(z_dyn_list)   # (num_samples, d_max)
+    z_coord_arr = np.array(z_coord_list)
+    pos_arr = np.array(pos_list)       # (num_samples, N)
+    colors_arr = np.array(colors_list) # (num_samples, N, 3)
+
+    N = pos_arr.shape[1]  # number of objects
+    d_t = model.d_t
+
+    # Match each latent dimension d in [0, d_t) to the nearest object
+    # by average distance between centroid z_coord and true position.
+    dim_to_obj = {}  # dim_idx -> obj_idx
+    used_objs = set()
+    for d in range(d_t):
+        best_obj = None
+        best_dist = np.inf
+        for o in range(N):
+            if o in used_objs:
+                continue
+            # average absolute distance between centroid and position
+            dist = np.mean(np.abs(z_coord_arr[:, d] - pos_arr[:, o]))
+            if dist < best_dist:
+                best_dist = dist
+                best_obj = o
+        if best_obj is not None:
+            dim_to_obj[d] = best_obj
+            used_objs.add(best_obj)
+
+    # Split into train and test
+    n_train = int(num_samples * train_ratio)
+
+    def fit_probe_r2(z_feature, y_target):
+        """Fit linear probe: y = w*z + b. Return R² on test portion."""
+        z_train = z_feature[:n_train]
+        y_train = y_target[:n_train]
+        z_test = z_feature[n_train:]
+        y_test = y_target[n_train:]
+
+        if z_train.size < 5 or y_train.size < 5:
+            return 0.0
+
+        w, b = fit_linear_probe(z_train, y_train)
+        y_pred = z_test * w + b
+
+        ss_res = np.sum((y_test - y_pred) ** 2)
+        ss_tot = np.sum((y_test - np.mean(y_train)) ** 2)
+        if ss_tot < 1e-12:
+            return 0.0
+        return float(1.0 - ss_res / ss_tot)
+
+    probes = {}
+    r2_per_dim = []
+
+    for d in range(d_t):
+        if d not in dim_to_obj:
+            r2_per_dim.append({"dyn_color": 0.0, "coord_color": 0.0,
+                               "dyn_pos": 0.0, "coord_pos": 0.0})
+            continue
+
+        obj = dim_to_obj[d]
+        z_d = z_dyn_arr[:, d]
+        z_c = z_coord_arr[:, d]
+
+        # Position probe
+        r2_dyn_pos = fit_probe_r2(z_d, pos_arr[:, obj])
+        r2_coord_pos = fit_probe_r2(z_c, pos_arr[:, obj])
+
+        # Color probe (3 channels, average R²)
+        r2_dyn_ch = []
+        r2_coord_ch = []
+        for ch in range(3):
+            r2_dyn_ch.append(fit_probe_r2(z_d, colors_arr[:, obj, ch]))
+            r2_coord_ch.append(fit_probe_r2(z_c, colors_arr[:, obj, ch]))
+        r2_dyn_color = float(np.mean(r2_dyn_ch))
+        r2_coord_color = float(np.mean(r2_coord_ch))
+
+        r2_per_dim.append({
+            "dyn_color": r2_dyn_color,
+            "coord_color": r2_coord_color,
+            "dyn_pos": r2_dyn_pos,
+            "coord_pos": r2_coord_pos,
+        })
+
+    # Averages across matched dimensions
+    r2_dyn_color_all = np.mean([p["dyn_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_color_all = np.mean([p["coord_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_dyn_pos_all = np.mean([p["dyn_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_pos_all = np.mean([p["coord_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    delta_r2_color = float(r2_dyn_color_all - r2_coord_color_all)
+
+    return {
+        "dim_to_obj": dim_to_obj,
+        "r2_per_dim": r2_per_dim,
+        "r2_dyn_color": float(r2_dyn_color_all),
+        "r2_coord_color": float(r2_coord_color_all),
+        "r2_dyn_pos": float(r2_dyn_pos_all),
+        "r2_coord_pos": float(r2_coord_pos_all),
+        "delta_r2_color": delta_r2_color,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Single-run training + evaluation
+# ---------------------------------------------------------------------------
+def run_single(arm_config, seed, device, dry_run=False):
+    """
+    Run one arm × seed experiment.
+
+    Parameters
+    ----------
+    arm_config : dict
+        Keys: 'name', 'primary_objective', 'sfa_weight', 'sim_weight',
+              'var_weight', 'cov_weight', 'pos_encoding', 'd_t'
+    seed : int
+    device : torch.device
+    dry_run : bool  — if True, run only 5 training steps per seed for quick verification.
+
+    Returns
+    -------
+    results : dict  (metrics for this run)
+    """
+    name = arm_config["name"]
+    primary_obj = arm_config["primary_objective"]
+    sfa_weight = arm_config.get("sfa_weight", 1.0)
+    sim_weight = arm_config.get("sim_weight", 25.0)
+    var_weight = arm_config.get("var_weight", 25.0)
+    cov_weight = arm_config.get("cov_weight", 25.0)
+    pos_encoding = arm_config.get("pos_encoding", "none")
+    d_t = arm_config.get("d_t", 3)
+
+    set_seed(seed)
+
+    # Determine total training steps (5 for dry run, 3000 otherwise)
+    total_steps = 5 if dry_run else 3000
+    eval_steps = min(200, total_steps // 2) if dry_run else 200
+
+    # Create model
+    model = NonParametricJEPASpatial(
+        d_max=8,
+        h=3,
+        k=4,
+        cooldown=300,
+        stabilization_period=100,
+        pos_encoding=pos_encoding,
+        primary_objective=primary_obj,
+        sfa_weight=sfa_weight,
+        gdasr_log_only=True,  # log-only mode for Phase 0
+    )
+    model.d_t = d_t  # freeze at 3
+    model = model.to(device)
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    # Environment
+    env = PhysicsSandbox(N=3, seed=seed)
+    obs = env.reset()
+    history = collections.deque(maxlen=4)
+    history.append(obs)
+
+    replay_buffer = ReplayBuffer(capacity=2000)
+
+    # Prefill buffer
+    def _prefill(n):
+        while len(replay_buffer) < n:
+            obs, info = env.step({"acc": 0.0, "push": False})
+            history.append(obs)
+            if len(history) == 4:
+                replay_buffer.push(
+                    np.stack(list(history)[:3], axis=0),
+                    history[3],
+                )
+
+    _prefill(min(100, total_steps))
+
+    # Training loop
+    logs = []
+    gdasr_growth_points = []
+
+    for step in range(1, total_steps + 1):
+        obs, info = env.step({"acc": 0.0, "push": False})
+        history.append(obs)
+        if len(history) == 4:
+            replay_buffer.push(
+                np.stack(list(history)[:3], axis=0),
+                history[3],
+            )
+
+        # Sample batch
+        x_hist_b, x_target_b = replay_buffer.sample(min(32, len(replay_buffer)))
+        x_hist_t = torch.from_numpy(x_hist_b).float().to(device)
+        x_target_t = torch.from_numpy(x_target_b).float().to(device)
+
+        model.train()
+        optimizer.zero_grad()
+
+        loss_dict, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn) = model(
+            x_hist_t,
+            x_target_t,
+            sim_weight=sim_weight,
+            var_weight=var_weight,
+            cov_weight=cov_weight,
+            d_t_predict=d_t,  # predictor always sees d_t dimensions
+        )
+        loss_dict["loss"].backward()
+        optimizer.step()
+
+        # GDASR log-only update
+        sim_loss_val = loss_dict["sim_loss"].item()
+        model.update_recruitment_logic(sim_loss_val, target_dim=d_t, step=step)
+
+        # Log
+        log_entry = {
+            "step": step,
+            "loss": loss_dict["loss"].item(),
+            "sim_loss": sim_loss_val,
+            "sfa_loss": loss_dict.get("sfa_loss", torch.tensor(0.0)).item(),
+            "var_loss": loss_dict["var_loss"].item(),
+            "cov_loss": loss_dict["cov_loss"].item(),
+        }
+        logs.append(log_entry)
+
+        if step % 1000 == 0 or step == total_steps:
+            print(f"  [{name}] seed={seed} step={step:5d}/{total_steps}  "
+                  f"loss={log_entry['loss']:.4f}  sim={log_entry['sim_loss']:.4f}  "
+                  f"sfa={log_entry['sfa_loss']:.4f}")
+
+    # Collect GDASR growth points
+    gdasr_growth_points = list(model.gdasr_growth_points)
+
+    # ---------------------------------------------------------------
+    # Evaluation
+    # ---------------------------------------------------------------
+    model.eval()
+
+    # --- Collapse check ---
+    eval_env = PhysicsSandbox(N=3, seed=seed + 10000)
+    eval_history = collections.deque(maxlen=4)
+    obs = eval_env.reset()
+    eval_history.append(obs)
+    for _ in range(4):
+        obs, _ = eval_env.step({"acc": 0.0, "push": False})
+        eval_history.append(obs)
+
+    z_dyn_all = []
+    z_coord_all = []
+    for _ in range(eval_steps):
+        obs, _ = eval_env.step({"acc": 0.0, "push": False})
+        eval_history.append(obs)
+        if len(eval_history) == 4:
+            x_t = torch.from_numpy(eval_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad():
+                z_coord, z_dyn = model.encoder(x_t)
+            z_dyn_all.append(z_dyn[:, :d_t].cpu().numpy())
+            z_coord_all.append(z_coord[:, :d_t].cpu().numpy())
+
+    z_dyn_arr = np.concatenate(z_dyn_all, axis=0)   # (eval_steps, d_t)
+    z_coord_arr = np.concatenate(z_coord_all, axis=0)
+
+    has_collapsed, per_dim_std = check_collapse(z_dyn_arr, d_t)
+    vh = compute_vicreg_health(z_dyn_arr, d_t)
+
+    # --- Slowness metrics ---
+    # Use the collected z_dyn and z_coord arrays for temporal deltas
+    slowness = compute_slowness_metrics(
+        [z_dyn_arr], [z_coord_arr]
+    )
+
+    # --- Centroid decoding MSE on a separate fresh test set ---
+    test_env = PhysicsSandbox(N=3, seed=seed + 20000)
+    test_history = collections.deque(maxlen=4)
+    obs = test_env.reset()
+    test_history.append(obs)
+    centroid_mse = compute_centroid_mse(model, test_env, test_history,
+                                         num_samples=eval_steps, device=device)
+
+    # --- Semantic disentanglement probes ---
+    semantic = compute_semantic_probes(model, test_env, test_history,
+                                        num_samples=eval_steps, device=device)
+
+    # --- Summary results ---
+    results = {
+        "arm": name,
+        "seed": seed,
+
+        # Collapse
+        "has_collapsed": int(has_collapsed),
+        "per_dim_std": per_dim_std.tolist(),
+        "mean_abs_corr": vh["mean_abs_corr"],
+
+        # Slowness
+        "mean_dyn_delta": slowness["mean_dyn_delta"],
+        "mean_coord_delta": slowness["mean_coord_delta"],
+        "slowness_ratio": slowness["ratio"],
+
+        # Centroid MSE
+        "centroid_mse_mean": centroid_mse["mse_mean"],
+        "centroid_mse_per_object": centroid_mse["mse_per_object"],
+        "centroid_r_mean": centroid_mse["r_mean"],
+        "centroid_r_per_object": centroid_mse["r_per_object"],
+
+        # VICReg health
+        "vicreg_per_dim_std": per_dim_std.tolist(),
+        "vicreg_mean_abs_corr": vh["mean_abs_corr"],
+
+        # Semantic disentanglement probes
+        "r2_dyn_color": semantic["r2_dyn_color"],
+        "r2_coord_color": semantic["r2_coord_color"],
+        "r2_dyn_pos": semantic["r2_dyn_pos"],
+        "r2_coord_pos": semantic["r2_coord_pos"],
+        "delta_r2_color": semantic["delta_r2_color"],
+        "r2_per_dim": semantic["r2_per_dim"],
+        "dim_to_obj": semantic["dim_to_obj"],
+
+        # GDASR
+        "gdasr_growth_point_count": len(gdasr_growth_points),
+        "gdasr_growth_points": gdasr_growth_points,
+
+        # Final training loss
+        "final_train_loss": logs[-1]["loss"],
+        "final_train_sim_loss": logs[-1]["sim_loss"],
+        "final_train_sfa_loss": logs[-1]["sfa_loss"],
+    }
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Arms configuration
+# ---------------------------------------------------------------------------
+ARMS = [
+    {
+        "name": "Arm A (SFA+VICReg)",
+        "primary_objective": "sfa",
+        "sfa_weight": 1.0,
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "none",
+        "d_t": 3,
+    },
+    {
+        "name": "Arm B (JEPA+VICReg)",
+        "primary_objective": "jepa",
+        "sfa_weight": 1.0,  # unused in jepa mode
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "none",
+        "d_t": 3,
+    },
+    {
+        "name": "Arm C (SFA+pos_enc)",
+        "primary_objective": "sfa",
+        "sfa_weight": 1.0,
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "sinusoidal",
+        "d_t": 3,
+    },
+]
+
+SEEDS = [42, 123, 456, 789, 999]
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="Phase 0 SFA Experiment Runner"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run 5 training steps per seed for quick correctness check.",
+    )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Override seed list (default: [42, 123, 456, 789, 999]).",
+    )
+    args = parser.parse_args()
+
+    dry_run = args.dry_run
+    seeds = args.seeds if args.seeds is not None else SEEDS
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"Dry-run mode: {dry_run}")
+    print(f"Seeds: {seeds}")
+    print(f"Arms: {[a['name'] for a in ARMS]}")
+    print()
+
+    suffix = "_dryrun" if dry_run else ""
+    results_dir = "archive/iter_020"
+    runs_dir = os.path.join(results_dir, "runs")
+    figs_dir = os.path.join(results_dir, "figs")
+    os.makedirs(runs_dir, exist_ok=True)
+    os.makedirs(figs_dir, exist_ok=True)
+
+    all_results = []
+
+    for arm in ARMS:
+        name = arm["name"]
+        print(f"{'='*70}")
+        print(f"ARM: {name}")
+        print(f"{'='*70}")
+        for seed in seeds:
+            print(f"\n--- {name}, seed={seed} ---")
+            results = run_single(arm, seed, device, dry_run=dry_run)
+            all_results.append(results)
+
+            # Save per-run CSV with detailed logs
+            run_id = f"{name.lower().replace(' ', '_').replace('(', '').replace(')', '')}_seed{seed}{suffix}"
+            csv_path = os.path.join(runs_dir, f"{run_id}.csv")
+            json_path = os.path.join(runs_dir, f"{run_id}.json")
+
+            # Flatten per-object / per-dimension lists for CSV
+            flat = {k: v for k, v in results.items() if k not in (
+                "gdasr_growth_points", "centroid_mse_per_object",
+                "centroid_r_per_object", "r2_per_dim", "dim_to_obj",
+            )}
+            flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))
+            flat["centroid_mse_obj0"] = results.get("centroid_mse_per_object", [])[0] if len(results.get("centroid_mse_per_object", [])) > 0 else None
+            flat["centroid_mse_obj1"] = results.get("centroid_mse_per_object", [])[1] if len(results.get("centroid_mse_per_object", [])) > 1 else None
+            flat["centroid_mse_obj2"] = results.get("centroid_mse_per_object", [])[2] if len(results.get("centroid_mse_per_object", [])) > 2 else None
+            flat["centroid_r_obj0"] = results.get("centroid_r_per_object", [])[0] if len(results.get("centroid_r_per_object", [])) > 0 else None
+            flat["centroid_r_obj1"] = results.get("centroid_r_per_object", [])[1] if len(results.get("centroid_r_per_object", [])) > 1 else None
+            flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None
+            flat["per_dim_std"] = str(results.get("per_dim_std", []))
+
+            # Semantic probe per-dimension details
+            r2pd = results.get("r2_per_dim", [])
+            dim_map = results.get("dim_to_obj", {})
+            for d_idx, probe_d in enumerate(r2pd):
+                flat[f"r2_dim{d_idx}_dyn_color"] = probe_d.get("dyn_color", None)
+                flat[f"r2_dim{d_idx}_coord_color"] = probe_d.get("coord_color", None)
+                flat[f"r2_dim{d_idx}_dyn_pos"] = probe_d.get("dyn_pos", None)
+                flat[f"r2_dim{d_idx}_coord_pos"] = probe_d.get("coord_pos", None)
+                flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
+            flat["dim_to_obj"] = json.dumps(dim_map, default=str)
+
+            df_row = pd.DataFrame([flat])
+            df_row.to_csv(csv_path, index=False)
+
+            # Save full JSON (includes growth points)
+            with open(json_path, "w") as f:
+                json.dump(results, f, indent=2, default=str)
+
+            print(f"  -> Saved {csv_path}")
+
+    # ------------------------------------------------------------------ #
+    # Compile aggregate results
+    # ------------------------------------------------------------------ #
+    df_all = pd.DataFrame(all_results)
+
+    # Ensure numeric columns
+    for col in [
+        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",
+        "final_train_loss", "final_train_sim_loss", "final_train_sfa_loss",
+        "gdasr_growth_point_count",
+        "r2_dyn_color", "r2_coord_color", "r2_dyn_pos", "r2_coord_pos",
+        "delta_r2_color",
+    ]:
+        if col in df_all.columns:
+            df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+
+    summary_path = os.path.join(results_dir, f"summary_phase0{suffix}.csv")
+    df_all.to_csv(summary_path, index=False)
+    print(f"\nSaved full results to {summary_path}")
+
+    # ------------------------------------------------------------------ #
+    # Aggregated per-arm stats
+    # ------------------------------------------------------------------ #
+    agg_cols = [
+        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",
+        "final_train_loss", "final_train_sim_loss", "gdasr_growth_point_count",
+    ]
+    agg = df_all.groupby("arm")[agg_cols].agg(["mean", "std"]).reset_index()
+    agg_path = os.path.join(results_dir, f"aggregated_phase0{suffix}.csv")
+    agg.to_csv(agg_path)
+    print(f"\nAggregated stats saved to {agg_path}")
+    print("\n" + "=" * 70)
+    print("AGGREGATED RESULTS (mean ± std)")
+    print("=" * 70)
+    for _, row in agg.iterrows():
+        name = row["arm"]
+        print(f"\n--- {name} ---")
+        for col in agg_cols:
+            mean_val = row[(col, "mean")]
+            std_val = row[(col, "std")]
+            print(f"  {col:30s} = {mean_val:.4f} ± {std_val:.4f}")
+
+    # ------------------------------------------------------------------ #
+    # Falsification audit
+    # ------------------------------------------------------------------ #
+    print("\n" + "=" * 70)
+    print("FALSIFICATION AUDIT (per pre-registration)")
+    print("=" * 70)
+
+    # Separate arms
+    arm_a = df_all[df_all["arm"] == "Arm A (SFA+VICReg)"]
+    arm_b = df_all[df_all["arm"] == "Arm B (JEPA+VICReg)"]
+    arm_c = df_all[df_all["arm"] == "Arm C (SFA+pos_enc)"]
+
+    # --- C1: Collapse ---
+    if len(arm_a) > 0:
+        collapsed_a = int(arm_a["has_collapsed"].sum())
+        print(f"\nC1 (Collapse): Arm A collapsed seeds: {collapsed_a} / {len(arm_a)}")
+        c1_pass = collapsed_a < 2  # fail if >= 2 seeds collapsed
+        print(f"  -> {'PASS' if c1_pass else 'FAIL'} (threshold: < 2 collapsed seeds)")
+    else:
+        c1_pass = False
+        print("\nC1: Arm A data missing.")
+
+    # --- C2: Centroid MSE ---
+    if len(arm_a) > 0 and len(arm_b) > 0:
+        mse_a_mean = float(arm_a["centroid_mse_mean"].mean())
+        mse_b_mean = float(arm_b["centroid_mse_mean"].mean())
+        print(f"\nC2 (Centroid MSE):")
+        print(f"  Arm A (SFA)  MSE = {mse_a_mean:.4f}")
+        print(f"  Arm B (JEPA) MSE = {mse_b_mean:.4f}")
+        if np.isnan(mse_a_mean) or np.isnan(mse_b_mean):
+            print("  [WARNING] centroid_mse_mean contains NaN — possibly too few eval samples.")
+            threshold = None
+            c2_pass = False
+            print(f"  -> FAIL (NaN MSE values)")
+        else:
+            threshold = 1.10 * mse_b_mean
+            print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")
+            c2_pass = mse_a_mean <= threshold
+            print(f"  -> {'PASS' if c2_pass else 'FAIL'} (SFA MSE {'' if c2_pass else 'NOT '}<= 1.10 x JEPA MSE)")
+
+            # Welch's t-test
+            mse_a_vals = arm_a["centroid_mse_mean"].values.astype(float)
+            mse_b_vals = arm_b["centroid_mse_mean"].values.astype(float)
+            if len(mse_a_vals) > 1 and len(mse_b_vals) > 1:
+                t_stat, p_val = scipy_stats.ttest_ind(mse_a_vals, mse_b_vals, equal_var=False)
+                n1, n2 = len(mse_a_vals), len(mse_b_vals)
+                dof = (mse_a_vals.var() / n1 + mse_b_vals.var() / n2) ** 2 / \
+                      ((mse_a_vals.var() / n1) ** 2 / (n1 - 1) + (mse_b_vals.var() / n2) ** 2 / (n2 - 1))
+                cohens_d = (mse_a_mean - mse_b_mean) / np.sqrt(
+                    ((n1 - 1) * mse_a_vals.var() + (n2 - 1) * mse_b_vals.var()) / (n1 + n2 - 2)
+                )
+                print(f"  Welch's t({dof:.1f}) = {t_stat:.4f}, p = {p_val:.4f}")
+                print(f"  Cohen's d = {cohens_d:.4f}")
+    else:
+        c2_pass = False
+        mse_a_mean = float("nan")
+        mse_b_mean = float("nan")
+        threshold = None
+        print("\nC2: Arm A or Arm B data missing.")
+
+    # --- C3 (Slowness separation — sanity check) ---
+    if len(arm_a) > 0:
+        ratios_a = arm_a["slowness_ratio"].values.astype(float)
+        mean_ratio_a = float(np.mean(ratios_a))
+        print(f"\nC3_sanity (Slowness separation — sanity check):")
+        print(f"  Arm A mean slowness ratio = {mean_ratio_a:.4f}")
+        print(f"  Threshold: ratio < 0.6")
+        c3_sanity_pass = mean_ratio_a < 0.6
+        print(f"  -> {'PASS' if c3_sanity_pass else 'FAIL'} (ratio {'<' if c3_sanity_pass else '>='} 0.6)")
+
+        # One-sample t-test against 0.6
+        if len(ratios_a) > 1:
+            t_stat3, p_val3 = scipy_stats.ttest_1samp(ratios_a, 0.6, alternative="less")
+            print(f"  One-sample t({len(ratios_a)-1}) vs 0.6: t = {t_stat3:.4f}, p = {p_val3:.4f} (one-sided less)")
+    else:
+        c3_sanity_pass = False
+        mean_ratio_a = -1.0
+        print("\nC3_sanity: Arm A data missing.")
+
+    # --- C3 (Semantic disentanglement — delta_R2_color >= 0.10) ---
+    if len(arm_a) > 0:
+        deltas_a = arm_a["delta_r2_color"].values.astype(float)
+        mean_delta_a = float(np.mean(deltas_a))
+        print(f"\nC3_semantic (Semantic disentanglement — delta_R2_color):")
+        print(f"  Arm A mean delta_R2_color = {mean_delta_a:.4f}")
+        print(f"  Threshold: delta_R2_color >= 0.10")
+        c3_semantic_pass = mean_delta_a >= 0.10
+        print(f"  -> {'PASS' if c3_semantic_pass else 'FAIL'} (delta {'>= ' if c3_semantic_pass else '< '} 0.10)")
+
+        # One-sample t-test against 0.10
+        if len(deltas_a) > 1:
+            t_stat_sem, p_val_sem = scipy_stats.ttest_1samp(deltas_a, 0.10, alternative="greater")
+            print(f"  One-sample t({len(deltas_a)-1}) vs 0.10: t = {t_stat_sem:.4f}, p = {p_val_sem:.4f} (one-sided greater)")
+    else:
+        c3_semantic_pass = False
+        mean_delta_a = -1.0
+        print("\nC3_semantic: Arm A data missing.")
+
+    overall = c1_pass and c2_pass and c3_sanity_pass and c3_semantic_pass
+    print(f"\n{'=' * 70}")
+    print(f"OVERALL: {'VALIDATED' if overall else 'FALSIFIED'}")
+    print(f"{'=' * 70}")
+
+    # ------------------------------------------------------------------ #
+    # Save audit report
+    # ------------------------------------------------------------------ #
+    audit_data = {
+        "c1_collapse_pass": bool(c1_pass),
+        "c1_collapsed_seeds_a": int(collapsed_a) if len(arm_a) > 0 else -1,
+        "c2_mse_pass": bool(c2_pass),
+        "c2_mse_sfa_mean": float(mse_a_mean) if len(arm_a) > 0 else -1.0,
+        "c2_mse_jepa_mean": float(mse_b_mean) if len(arm_b) > 0 else -1.0,
+        "c2_mse_threshold": float(threshold) if threshold is not None else -1.0,
+        "c3_sanity_slowness_pass": bool(c3_sanity_pass),
+        "c3_sanity_slowness_ratio_mean": float(mean_ratio_a),
+        "c3_semantic_disentanglement_pass": bool(c3_semantic_pass),
+        "c3_semantic_delta_r2_color_mean": float(mean_delta_a),
+        "overall_validated": bool(overall),
+    }
+    audit_path = os.path.join(results_dir, f"audit_phase0{suffix}.json")
+    with open(audit_path, "w") as f:
+        json.dump(audit_data, f, indent=2)
+    print(f"\nAudit report saved to {audit_path}")
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()]
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_blur = sigma_blur
+        self.seed = seed
+        self.pixel_noise_std = pixel_noise_std
+        self.noisy_tv = noisy_tv
+        self.structured_distractor = structured_distractor
+        
+        # State variables for standard objects
+        self.positions = np.zeros(N)
+        self.velocities = np.zeros(N)
+        self.radii = np.zeros(N)
+        self.masses = np.zeros(N)
+        self.colors = np.zeros((N, 3))
+        
+        # State variables for Noisy-TV entity
+        self.noisy_tv_pos = 64.0
+        self.noisy_tv_radius = 5.0
+        self.noisy_tv_color = np.array([0.5, 0.5, 0.5])
+        
+        # State variables for Structured Distractor (Sinusoidal Oscillator)
+        self.sd_center = 64.0
+        self.sd_amplitude = 10.0
+        self.sd_omega = 0.03
+        self.sd_phase = 0.0
+        self.sd_color = np.array([0.5, 0.5, 0.5])
+        self.sd_radius = 5.0
+        self.sd_t = 0
+        self.sd_pos = 64.0
+        
+        # Pointer state variables
+        self.pointer_pos = 64.0
+        self.pointer_vel = 0.0
+        self.pointer_radius = 4.0
+        self.pointer_mass = 10.0
+        self.pointer_color = np.array([1.0, 1.0, 1.0])
+        
+        self.reset(seed=seed)
+        
+    def reset(self, seed=None):
+        """
+        Reset environment with randomized parameters (sizes, colors, masses, positions, velocities)
+        and reset pointer position & velocity, then resolve all overlaps.
+        """
+        if seed is not None:
+            np.random.seed(seed)
+            self.seed = seed
+
+        W = 128.0 / self.N
+        for i in range(self.N):
+            # Sample radius and mass
+            r = np.random.uniform(3.0, 8.0)
+            self.radii[i] = r
+            self.masses[i] = r  # Mass is proportional to radius/size
+            
+            # Sample color from [0.3, 1.0] for each channel
+            self.colors[i] = np.random.uniform(0.3, 1.0, size=(3,))
+            
+            # Position inside the segmented interval to prevent initial overlaps
+            low = i * W + r
+            high = (i + 1) * W - r
+            # Just in case the segment is too small (should not happen with N=2 or 3, but let's be safe)
+            if low >= high:
+                low = i * W + W / 2.0
+                high = low
+            self.positions[i] = np.random.uniform(low, high)
+            
+            # Velocity from [-2.0, 2.0], non-zero
+            v = np.random.uniform(0.5, 2.0)
+            if np.random.rand() < 0.5:
+                v = -v
+            self.velocities[i] = v
+            
+        # Reset pointer position and velocity
+        self.pointer_pos = 64.0
+        self.pointer_vel = 0.0
+        self.pointer_radius = 4.0
+        self.pointer_mass = 10.0
+        self.pointer_color = np.array([1.0, 1.0, 1.0])
+        
+        # Reset Noisy-TV entity if active
+        if self.noisy_tv:
+            self.noisy_tv_radius = np.random.uniform(3.0, 8.0)
+            self.noisy_tv_pos = np.random.uniform(self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+        
+        # Reset Structured Distractor if active
+        if self.structured_distractor:
+            self.sd_center = np.random.uniform(32.0, 96.0)
+            self.sd_amplitude = np.random.uniform(5.0, 15.0)
+            self.sd_omega = np.random.uniform(0.02, 0.05)
+            self.sd_phase = np.random.uniform(0.0, 2.0 * np.pi)
+            self.sd_color = np.random.uniform(0.3, 1.0, size=(3,))
+            self.sd_radius = np.random.uniform(3.0, 8.0)
+            self.sd_t = 0
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_phase)
+        
+        # Resolve initial overlaps of both the objects and the pointer in a loop
+        temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+        temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+        temp_masses = np.concatenate([self.masses, [self.pointer_mass]])
+        
+        for _ in range(50):
+            # Boundary correction
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+            
+            # Overlap resolution
+            sort_idx = np.argsort(temp_positions)
+            for idx_in_sort in range(len(temp_positions) - 1):
+                i = sort_idx[idx_in_sort]
+                j = sort_idx[idx_in_sort + 1]
+                
+                dist = temp_positions[j] - temp_positions[i]
+                min_dist = temp_radii[i] + temp_radii[j]
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    m_inv_i = 1.0 / temp_masses[i]
+                    m_inv_j = 1.0 / temp_masses[j]
+                    sum_inv_m = m_inv_i + m_inv_j
+                    
+                    temp_positions[i] -= overlap * (m_inv_i / sum_inv_m)
+                    temp_positions[j] += overlap * (m_inv_j / sum_inv_m)
+
+        # Assign positions back
+        self.positions = temp_positions[:-1]
+        self.pointer_pos = temp_positions[-1]
+            
+        return self.render()
+
+    def step(self, action=None):
+        """
+        Step the environment by 1.0 time unit using self.substeps, incorporating optional actions.
+        
+        Args:
+            action (dict, optional): containing continuous acceleration 'acc' (float) and boolean 'push'.
+        Returns:
+            observation (np.ndarray): Shape (3, 128)
+            info (dict): Useful diagnostic info
+        """
+        if action is not None:
+            acc = action.get('acc', 0.0)
+            push = action.get('push', False)
+        else:
+            acc = 0.0
+            push = False
+            
+        if push:
+            if len(self.positions) > 0:
+                dists = self.positions - self.pointer_pos
+                nearest_idx = np.argmin(np.abs(dists))
+                diff = dists[nearest_idx]
+                direction = 1.0 if diff >= 0 else -1.0
+                self.pointer_vel = direction * 5.0
+                
+        dt = 1.0 / self.substeps
+        
+        for _ in range(self.substeps):
+            # Apply acceleration
+            self.pointer_vel += acc * dt
+            
+            # Pack all N+1 objects
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_velocities = np.concatenate([self.velocities, [self.pointer_vel]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_masses = np.concatenate([self.masses, [self.pointer_mass]])
+            
+            # 1. Update positions
+            temp_positions += temp_velocities * dt
+            
+            # 2. Boundary bounces & position correction
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                    if temp_velocities[i] < 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+                    if temp_velocities[i] > 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+            
+            # 3. Resolve elastic collisions between adjacent objects
+            sort_idx = np.argsort(temp_positions)
+            for idx_in_sort in range(len(temp_positions) - 1):
+                i = sort_idx[idx_in_sort]
+                j = sort_idx[idx_in_sort + 1]
+                
+                dist = temp_positions[j] - temp_positions[i]
+                min_dist = temp_radii[i] + temp_radii[j]
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    m_inv_i = 1.0 / temp_masses[i]
+                    m_inv_j = 1.0 / temp_masses[j]
+                    sum_inv_m = m_inv_i + m_inv_j
+                    
+                    # Resolve overlap proportionally to inverse masses
+                    temp_positions[i] -= overlap * (m_inv_i / sum_inv_m)
+                    temp_positions[j] += overlap * (m_inv_j / sum_inv_m)
+                    
+                    # Conserve momentum and kinetic energy if moving towards each other
+                    if temp_velocities[i] > temp_velocities[j]:
+                        v1 = temp_velocities[i]
+                        v2 = temp_velocities[j]
+                        m1 = temp_masses[i]
+                        m2 = temp_masses[j]
+                        
+                        temp_velocities[i] = (v1 * (m1 - m2) + 2.0 * m2 * v2) / (m1 + m2)
+                        temp_velocities[j] = (v2 * (m2 - m1) + 2.0 * m1 * v1) / (m1 + m2)
+                        
+            # Additional boundary check after collision resolution to ensure no object is pushed out
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                    if temp_velocities[i] < 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+                    if temp_velocities[i] > 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                        
+            # Unpack back to state variables
+            self.positions = temp_positions[:-1]
+            self.velocities = temp_velocities[:-1]
+            self.pointer_pos = temp_positions[-1]
+            self.pointer_vel = temp_velocities[-1]
+
+        # Update Noisy-TV state if active
+        if self.noisy_tv:
+            # Random walk motion: Gaussian step with std 2.0
+            step_noise = np.random.normal(0.0, 2.0)
+            self.noisy_tv_pos += step_noise
+            # Keep inside environment boundaries [radius, 128 - radius]
+            self.noisy_tv_pos = np.clip(self.noisy_tv_pos, self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            # Flicker with maximum entropy: color randomly sampled from [0.3, 1.0]
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+
+        # Update Structured Distractor state if active
+        if self.structured_distractor:
+            self.sd_t += 1
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_omega * self.sd_t + self.sd_phase)
+
+        obs = self.render()
+        
+        info = {
+            "positions": self.positions.copy(),
+            "velocities": self.velocities.copy(),
+            "radii": self.radii.copy(),
+            "masses": self.masses.copy(),
+            "colors": self.colors.copy(),
+            "pointer_pos": self.pointer_pos,
+            "pointer_vel": self.pointer_vel,
+            "pointer_radius": self.pointer_radius,
+            "pointer_mass": self.pointer_mass,
+            "pointer_color": self.pointer_color.copy(),
+        }
+        
+        if self.noisy_tv:
+            info["noisy_tv_pos"] = self.noisy_tv_pos
+            info["noisy_tv_color"] = self.noisy_tv_color.copy()
+            info["noisy_tv_radius"] = self.noisy_tv_radius
+        
+        if self.structured_distractor:
+            info["sd_pos"] = self.sd_pos
+            info["sd_color"] = self.sd_color.copy()
+            info["sd_radius"] = self.sd_radius
+            
+        return obs, info
+
+    def render(self):
+        """
+        Render continuous 1D space to a (3, 128) array with soft continuous blending.
+        Includes original objects, the white physical pointer, and optionally the Noisy-TV entity.
+        """
+        pixel_centers = np.arange(128) + 0.5  # shape (128,)
+        canvas = np.zeros((3, 128))
+        
+        # Combine objects, pointer, and optional Noisy-TV for rendering depth sorting
+        if self.noisy_tv:
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos], [self.noisy_tv_pos]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius], [self.noisy_tv_radius]])
+            temp_colors = np.concatenate([self.colors, [self.pointer_color], [self.noisy_tv_color]], axis=0)
+        else:
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_colors = np.concatenate([self.colors, [self.pointer_color]], axis=0)
+        
+        # Sort objects and pointer by position to blend left-to-right (depth order)
+        sorted_indices = np.argsort(temp_positions)
+        for idx in sorted_indices:
+            pos = temp_positions[idx]
+            r = temp_radii[idx]
+            color = temp_colors[idx]  # shape (3,)
+            
+            # Distance from pixel centers to object center
+            d = np.abs(pixel_centers - pos)
+            
+            # Sigmoid continuous blending
+            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))  # shape (128,)
+            mask = mask[np.newaxis, :]  # shape (1, 128)
+            color_expanded = color[:, np.newaxis]  # shape (3, 1)
+            
+            # Alpha blend onto canvas
+            canvas = canvas * (1.0 - mask) + color_expanded * mask
+        
+        # Render structured distractor after all standard objects and pointer
+        if self.structured_distractor:
+            pos = self.sd_pos
+            r = self.sd_radius
+            color = self.sd_color
+            d = np.abs(pixel_centers - pos)
+            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))
+            mask = mask[np.newaxis, :]
+            color_expanded = color[:, np.newaxis]
+            canvas = canvas * (1.0 - mask) + color_expanded * mask
+            
+        # Apply global pixel noise if specified
+        if self.pixel_noise_std > 0.0:
+            noise = np.random.normal(0.0, self.pixel_noise_std, size=canvas.shape)
+            canvas = np.clip(canvas + noise, 0.0, 1.0)
+            
+        return canvas
+]
+Now I have a clear understanding of the code. The key issue is that `compute_semantic_probes` collects all samples from a single environment run, where colors are fixed (constant across all steps), making color regression probes meaningless due to zero variance. I need to:
+
+1. Create `collect_multitraj_eval_data` that samples across environments with different seeds (different colors)
+2. Update `compute_semantic_probes` to use it
+3. Add checkpoint saving
+
+Let me implement all changes:
+
+
+[Tool Call: multi_edit({'path': 'src/run_phase0_sfa.py', 'edits': [{'old_string': 'def compute_semantic_probes(model, test_env, test_history, num_samples=200,\n                             train_ratio=0.5, device="cpu"):\n    """\n    Semantic disentanglement probes.\n\n    Collects z_dyn, z_coord along with ground-truth positions and colors over\n    num_samples frames.  Matches each latent dimension to the nearest object\n    (by centroid position).  Fits linear probes on the first half and evaluates\n    R² on the second half for two tasks:\n\n      * color  regression  (3-D RGB target → 3 scalar R² values, then mean)\n      * position regression  (1-D scalar target → 1 R² value)\n\n    Probes are fit separately for z_dyn and z_coord, giving four R² scores:\n      R2_dyn_color,  R2_coord_color,  R2_dyn_pos,  R2_coord_pos\n\n    The key disentanglement metric is:\n      delta_R2_color = R2_dyn_color - R2_coord_color\n    If SFA separates identity from position, z_dyn should predict color well\n    and z_coord should predict color poorly, yielding a positive delta.\n    """\n    model.eval()\n\n    # Collect data\n    obs = test_env.reset()\n    test_history.clear()\n    test_history.append(obs)\n\n    # Warm up\n    for _ in range(4):\n        obs, info = test_env.step({"acc": 0.0, "push": False})\n        test_history.append(obs)\n\n    z_dyn_list = []\n    z_coord_list = []\n    pos_list = []  # positions for all N objects\n    colors_list = []  # colors for all N objects\n\n    with torch.no_grad():\n        for _ in range(num_samples):\n            obs, info = test_env.step({"acc": 0.0, "push": False})\n            test_history.append(obs)\n            if len(test_history) == 4:\n                x_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)\n                z_c, z_d = model.encoder(x_t)\n                z_dyn_list.append(z_d[0].cpu().numpy())       # (d_max,)\n                z_coord_list.append(z_c[0].cpu().numpy())      # (d_max,)\n                pos_list.append(info["positions"])              # (N,)\n                colors_list.append(info["colors"])              # (N, 3)', 'new_string': 'def collect_multitraj_eval_data(model, num_samples=200, base_seed=30000, device="cpu"):\n    """\n    Collect independent transitions from randomized environments across\n    different seeds.  Each environment reset yields fresh randomization of\n    object colors and positions, ensuring that target colors have non-zero\n    variance for the semantic probe.\n\n    Strategy:\n      - Compute how many distinct trajectories we need: max(1, num_samples // 20)\n      - For each trajectory, create a fresh PhysicsSandbox with a unique seed,\n        reset it, warm up (4 steps), then collect ~20 samples per trajectory.\n      - Concatenate all samples into flat arrays.\n\n    Returns\n    -------\n    z_dyn_arr      : (total, d_max)  float numpy array\n    z_coord_arr    : (total, d_max)  float numpy array\n    pos_arr        : (total, N)      float numpy array\n    colors_arr     : (total, N, 3)   float numpy array\n    """\n    model.eval()\n\n    num_trajectories = max(1, num_samples // 20)\n    samples_per_traj = max(1, num_samples // num_trajectories)\n\n    z_dyn_list = []\n    z_coord_list = []\n    pos_list = []\n    colors_list = []\n\n    with torch.no_grad():\n        for t_idx in range(num_trajectories):\n            env_seed = base_seed + t_idx * 100\n            env = PhysicsSandbox(N=3, seed=env_seed)\n            history = collections.deque(maxlen=4)\n\n            obs = env.reset()\n            history.append(obs)\n\n            # Warm up history so we have a valid H=3 lookahead\n            for _ in range(3):\n                obs, info = env.step({"acc": 0.0, "push": False})\n                history.append(obs)\n\n            collected = 0\n            while collected < samples_per_traj:\n                obs, info = env.step({"acc": 0.0, "push": False})\n                history.append(obs)\n                if len(history) == 4:\n                    x_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)\n                    z_c, z_d = model.encoder(x_t)\n                    z_dyn_list.append(z_d[0].cpu().numpy())\n                    z_coord_list.append(z_c[0].cpu().numpy())\n                    pos_list.append(info["positions"])\n                    colors_list.append(info["colors"])\n                    collected += 1\n\n    z_dyn_arr = np.array(z_dyn_list)       # (total, d_max)\n    z_coord_arr = np.array(z_coord_list)     # (total, d_max)\n    pos_arr = np.array(pos_list)             # (total, N)\n    colors_arr = np.array(colors_list)       # (total, N, 3)\n\n    return z_dyn_arr, z_coord_arr, pos_arr, colors_arr\n\n\ndef compute_semantic_probes(model, num_samples=200, train_ratio=0.5,\n                            base_seed=30000, device="cpu"):\n    """\n    Semantic disentanglement probes.\n\n    Uses collect_multitraj_eval_data to gather z_dyn, z_coord along with\n    ground-truth positions and colors from multiple randomized environments.\n    The multi-seed sampling ensures target colors have non-zero variance.\n\n    Matches each latent dimension to the nearest object (by centroid position).\n    Fits linear probes on the first half and evaluates R² on the second half\n    for two tasks:\n\n      * color  regression  (3-D RGB target → 3 scalar R² values, then mean)\n      * position regression  (1-D scalar target → 1 R² value)\n\n    Probes are fit separately for z_dyn and z_coord, giving four R² scores:\n      R2_dyn_color,  R2_coord_color,  R2_dyn_pos,  R2_coord_pos\n\n    The key disentanglement metric is:\n      delta_R2_color = R2_dyn_color - R2_coord_color\n    If SFA separates identity from position, z_dyn should predict color well\n    and z_coord should predict color poorly, yielding a positive delta.\n    """\n    model.eval()\n\n    # Collect data across multiple randomized environments\n    z_dyn_arr, z_coord_arr, pos_arr, colors_arr = \\\n        collect_multitraj_eval_data(model, num_samples=num_samples,\n                                     base_seed=base_seed, device=device)'}, {'old_string': '    # --- Semantic disentanglement probes ---\n    semantic = compute_semantic_probes(model, test_env, test_history,\n                                        num_samples=eval_steps, device=device)', 'new_string': '    # --- Semantic disentanglement probes ---\n    semantic = compute_semantic_probes(model, num_samples=eval_steps,\n                                        base_seed=seed + 30000, device=device)'}, {'old_string': '            # Save full JSON (includes growth points)\n            with open(json_path, "w") as f:\n                json.dump(results, f, indent=2, default=str)\n\n            print(f"  -> Saved {csv_path}")', 'new_string': '            # Save full JSON (includes growth points)\n            with open(json_path, "w") as f:\n                json.dump(results, f, indent=2, default=str)\n\n            # Save model checkpoint\n            checkpoints_dir = os.path.join(results_dir, "checkpoints")\n            os.makedirs(checkpoints_dir, exist_ok=True)\n            ckpt_path = os.path.join(checkpoints_dir, f"{run_id}.pt")\n            torch.save(model.state_dict(), ckpt_path)\n            print(f"  -> Saved checkpoint {ckpt_path}")\n\n            print(f"  -> Saved {csv_path}")'}]})]
+[Tool Result: Applied 3 edits to src/run_phase0_sfa.py (#1x1, #2x1, #3x1)]
+Now let me run the dry-run to verify correctness:
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python src/run_phase0_sfa.py --dry-run', 'timeout_sec': 300})]
+[Tool Result: exit_code: 1
+stdout: Using device: cpu
+CUDA available: False
+Dry-run mode: True
+Seeds: [42, 123, 456, 789, 999]
+Arms: ['Arm A (SFA+VICReg)', 'Arm B (JEPA+VICReg)', 'Arm C (SFA+pos_enc)']
+
+======================================================================
+ARM: Arm A (SFA+VICReg)
+======================================================================
+
+--- Arm A (SFA+VICReg), seed=42 ---
+  [Arm A (SFA+VICReg)] seed=42 step=    5/5  loss=69310.4062  sim=2771.4263  sfa=0.0000
+
+stderr: C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+Traceback (most recent call last):
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 937, in <module>
+    main()
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 717, in main
+    results = run_single(arm, seed, device, dry_run=dry_run)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 581, in run_single
+    semantic = compute_semantic_probes(model, num_samples=eval_steps,
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 306, in compute_semantic_probes
+    z_dyn_arr = np.array(z_dyn_list)   # (num_samples, d_max)
+                         ^^^^^^^^^^
+NameError: name 'z_dyn_list' is not defined
+]
+
+[Tool Call: read_file({'end_line': 380, 'path': 'src/run_phase0_sfa.py', 'start_line': 230})]
+[Tool Result: --- lines 230 to 380 of 937 ---
+    model.eval()
+
+    num_trajectories = max(1, num_samples // 20)
+    samples_per_traj = max(1, num_samples // num_trajectories)
+
+    z_dyn_list = []
+    z_coord_list = []
+    pos_list = []
+    colors_list = []
+
+    with torch.no_grad():
+        for t_idx in range(num_trajectories):
+            env_seed = base_seed + t_idx * 100
+            env = PhysicsSandbox(N=3, seed=env_seed)
+            history = collections.deque(maxlen=4)
+
+            obs = env.reset()
+            history.append(obs)
+
+            # Warm up history so we have a valid H=3 lookahead
+            for _ in range(3):
+                obs, info = env.step({"acc": 0.0, "push": False})
+                history.append(obs)
+
+            collected = 0
+            while collected < samples_per_traj:
+                obs, info = env.step({"acc": 0.0, "push": False})
+                history.append(obs)
+                if len(history) == 4:
+                    x_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+                    z_c, z_d = model.encoder(x_t)
+                    z_dyn_list.append(z_d[0].cpu().numpy())
+                    z_coord_list.append(z_c[0].cpu().numpy())
+                    pos_list.append(info["positions"])
+                    colors_list.append(info["colors"])
+                    collected += 1
+
+    z_dyn_arr = np.array(z_dyn_list)       # (total, d_max)
+    z_coord_arr = np.array(z_coord_list)     # (total, d_max)
+    pos_arr = np.array(pos_list)             # (total, N)
+    colors_arr = np.array(colors_list)       # (total, N, 3)
+
+    return z_dyn_arr, z_coord_arr, pos_arr, colors_arr
+
+
+def compute_semantic_probes(model, num_samples=200, train_ratio=0.5,
+                            base_seed=30000, device="cpu"):
+    """
+    Semantic disentanglement probes.
+
+    Uses collect_multitraj_eval_data to gather z_dyn, z_coord along with
+    ground-truth positions and colors from multiple randomized environments.
+    The multi-seed sampling ensures target colors have non-zero variance.
+
+    Matches each latent dimension to the nearest object (by centroid position).
+    Fits linear probes on the first half and evaluates R² on the second half
+    for two tasks:
+
+      * color  regression  (3-D RGB target → 3 scalar R² values, then mean)
+      * position regression  (1-D scalar target → 1 R² value)
+
+    Probes are fit separately for z_dyn and z_coord, giving four R² scores:
+      R2_dyn_color,  R2_coord_color,  R2_dyn_pos,  R2_coord_pos
+
+    The key disentanglement metric is:
+      delta_R2_color = R2_dyn_color - R2_coord_color
+    If SFA separates identity from position, z_dyn should predict color well
+    and z_coord should predict color poorly, yielding a positive delta.
+    """
+    model.eval()
+
+    # Collect data across multiple randomized environments
+    z_dyn_arr, z_coord_arr, pos_arr, colors_arr = \
+        collect_multitraj_eval_data(model, num_samples=num_samples,
+                                     base_seed=base_seed, device=device)
+
+    z_dyn_arr = np.array(z_dyn_list)   # (num_samples, d_max)
+    z_coord_arr = np.array(z_coord_list)
+    pos_arr = np.array(pos_list)       # (num_samples, N)
+    colors_arr = np.array(colors_list) # (num_samples, N, 3)
+
+    N = pos_arr.shape[1]  # number of objects
+    d_t = model.d_t
+
+    # Match each latent dimension d in [0, d_t) to the nearest object
+    # by average distance between centroid z_coord and true position.
+    dim_to_obj = {}  # dim_idx -> obj_idx
+    used_objs = set()
+    for d in range(d_t):
+        best_obj = None
+        best_dist = np.inf
+        for o in range(N):
+            if o in used_objs:
+                continue
+            # average absolute distance between centroid and position
+            dist = np.mean(np.abs(z_coord_arr[:, d] - pos_arr[:, o]))
+            if dist < best_dist:
+                best_dist = dist
+                best_obj = o
+        if best_obj is not None:
+            dim_to_obj[d] = best_obj
+            used_objs.add(best_obj)
+
+    # Split into train and test
+    n_train = int(num_samples * train_ratio)
+
+    def fit_probe_r2(z_feature, y_target):
+        """Fit linear probe: y = w*z + b. Return R² on test portion."""
+        z_train = z_feature[:n_train]
+        y_train = y_target[:n_train]
+        z_test = z_feature[n_train:]
+        y_test = y_target[n_train:]
+
+        if z_train.size < 5 or y_train.size < 5:
+            return 0.0
+
+        w, b = fit_linear_probe(z_train, y_train)
+        y_pred = z_test * w + b
+
+        ss_res = np.sum((y_test - y_pred) ** 2)
+        ss_tot = np.sum((y_test - np.mean(y_train)) ** 2)
+        if ss_tot < 1e-12:
+            return 0.0
+        return float(1.0 - ss_res / ss_tot)
+
+    probes = {}
+    r2_per_dim = []
+
+    for d in range(d_t):
+        if d not in dim_to_obj:
+            r2_per_dim.append({"dyn_color": 0.0, "coord_color": 0.0,
+                               "dyn_pos": 0.0, "coord_pos": 0.0})
+            continue
+
+        obj = dim_to_obj[d]
+        z_d = z_dyn_arr[:, d]
+        z_c = z_coord_arr[:, d]
+
+        # Position probe
+        r2_dyn_pos = fit_probe_r2(z_d, pos_arr[:, obj])
+        r2_coord_pos = fit_probe_r2(z_c, pos_arr[:, obj])
+
+        # Color probe (3 channels, average R²)
+        r2_dyn_ch = []
+        r2_coord_ch = []
+        for ch in range(3):
+            r2_dyn_ch.append(fit_probe_r2(z_d, colors_arr[:, obj, ch]))
+            r2_coord_ch.append(fit_probe_r2(z_c, colors_arr[:, obj, ch]))
+        r2_dyn_color = float(np.mean(r2_dyn_ch))
+        r2_coord_color = float(np.mean(r2_coord_ch))
+]
+I see the leftover duplicate lines. Let me fix this:
+
+
+[Tool Call: edit_file({'old_string': '    z_dyn_arr = np.array(z_dyn_list)   # (num_samples, d_max)\n    z_coord_arr = np.array(z_coord_list)\n    pos_arr = np.array(pos_list)       # (num_samples, N)\n    colors_arr = np.array(colors_list) # (num_samples, N, 3)\n\n    N = pos_arr.shape[1]  # number of objects', 'new_string': '    N = pos_arr.shape[1]  # number of objects', 'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python src/run_phase0_sfa.py --dry-run', 'timeout_sec': 300})]
+[Tool Result: exit_code: 1
+stdout: Using device: cpu
+CUDA available: False
+Dry-run mode: True
+Seeds: [42, 123, 456, 789, 999]
+Arms: ['Arm A (SFA+VICReg)', 'Arm B (JEPA+VICReg)', 'Arm C (SFA+pos_enc)']
+
+======================================================================
+ARM: Arm A (SFA+VICReg)
+======================================================================
+
+--- Arm A (SFA+VICReg), seed=42 ---
+  [Arm A (SFA+VICReg)] seed=42 step=    5/5  loss=69310.4062  sim=2771.4263  sfa=0.0000
+
+stderr: C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+Traceback (most recent call last):
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 932, in <module>
+    main()
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 756, in main
+    torch.save(model.state_dict(), ckpt_path)
+               ^^^^^
+NameError: name 'model' is not defined
+]
+
+[Tool Call: read_file({'end_line': 770, 'path': 'src/run_phase0_sfa.py', 'start_line': 720})]
+[Tool Result: --- lines 720 to 770 of 932 ---
+            # Flatten per-object / per-dimension lists for CSV
+            flat = {k: v for k, v in results.items() if k not in (
+                "gdasr_growth_points", "centroid_mse_per_object",
+                "centroid_r_per_object", "r2_per_dim", "dim_to_obj",
+            )}
+            flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))
+            flat["centroid_mse_obj0"] = results.get("centroid_mse_per_object", [])[0] if len(results.get("centroid_mse_per_object", [])) > 0 else None
+            flat["centroid_mse_obj1"] = results.get("centroid_mse_per_object", [])[1] if len(results.get("centroid_mse_per_object", [])) > 1 else None
+            flat["centroid_mse_obj2"] = results.get("centroid_mse_per_object", [])[2] if len(results.get("centroid_mse_per_object", [])) > 2 else None
+            flat["centroid_r_obj0"] = results.get("centroid_r_per_object", [])[0] if len(results.get("centroid_r_per_object", [])) > 0 else None
+            flat["centroid_r_obj1"] = results.get("centroid_r_per_object", [])[1] if len(results.get("centroid_r_per_object", [])) > 1 else None
+            flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None
+            flat["per_dim_std"] = str(results.get("per_dim_std", []))
+
+            # Semantic probe per-dimension details
+            r2pd = results.get("r2_per_dim", [])
+            dim_map = results.get("dim_to_obj", {})
+            for d_idx, probe_d in enumerate(r2pd):
+                flat[f"r2_dim{d_idx}_dyn_color"] = probe_d.get("dyn_color", None)
+                flat[f"r2_dim{d_idx}_coord_color"] = probe_d.get("coord_color", None)
+                flat[f"r2_dim{d_idx}_dyn_pos"] = probe_d.get("dyn_pos", None)
+                flat[f"r2_dim{d_idx}_coord_pos"] = probe_d.get("coord_pos", None)
+                flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
+            flat["dim_to_obj"] = json.dumps(dim_map, default=str)
+
+            df_row = pd.DataFrame([flat])
+            df_row.to_csv(csv_path, index=False)
+
+            # Save full JSON (includes growth points)
+            with open(json_path, "w") as f:
+                json.dump(results, f, indent=2, default=str)
+
+            # Save model checkpoint
+            checkpoints_dir = os.path.join(results_dir, "checkpoints")
+            os.makedirs(checkpoints_dir, exist_ok=True)
+            ckpt_path = os.path.join(checkpoints_dir, f"{run_id}.pt")
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"  -> Saved checkpoint {ckpt_path}")
+
+            print(f"  -> Saved {csv_path}")
+
+    # ------------------------------------------------------------------ #
+    # Compile aggregate results
+    # ------------------------------------------------------------------ #
+    df_all = pd.DataFrame(all_results)
+
+    # Ensure numeric columns
+    for col in [
+        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",
+        "final_train_loss", "final_train_sim_loss", "final_train_sfa_loss",]
+
+[Tool Call: read_file({'end_line': 600, 'path': 'src/run_phase0_sfa.py', 'start_line': 570})]
+[Tool Result: --- lines 570 to 600 of 932 ---
+    obs = test_env.reset()
+    test_history.append(obs)
+    centroid_mse = compute_centroid_mse(model, test_env, test_history,
+                                         num_samples=eval_steps, device=device)
+
+    # --- Semantic disentanglement probes ---
+    semantic = compute_semantic_probes(model, num_samples=eval_steps,
+                                        base_seed=seed + 30000, device=device)
+
+    # --- Summary results ---
+    results = {
+        "arm": name,
+        "seed": seed,
+
+        # Collapse
+        "has_collapsed": int(has_collapsed),
+        "per_dim_std": per_dim_std.tolist(),
+        "mean_abs_corr": vh["mean_abs_corr"],
+
+        # Slowness
+        "mean_dyn_delta": slowness["mean_dyn_delta"],
+        "mean_coord_delta": slowness["mean_coord_delta"],
+        "slowness_ratio": slowness["ratio"],
+
+        # Centroid MSE
+        "centroid_mse_mean": centroid_mse["mse_mean"],
+        "centroid_mse_per_object": centroid_mse["mse_per_object"],
+        "centroid_r_mean": centroid_mse["r_mean"],
+        "centroid_r_per_object": centroid_mse["r_per_object"],
+
+        # VICReg health]
+I need to fix the checkpoint saving — it's in `main()` where `model` doesn't exist. I should save the checkpoint inside `run_single()` and return the path. Let me restructure this properly:
+
+
+[Tool Call: read_file({'end_line': 640, 'path': 'src/run_phase0_sfa.py', 'start_line': 590})]
+[Tool Result: --- lines 590 to 640 of 932 ---
+        "mean_dyn_delta": slowness["mean_dyn_delta"],
+        "mean_coord_delta": slowness["mean_coord_delta"],
+        "slowness_ratio": slowness["ratio"],
+
+        # Centroid MSE
+        "centroid_mse_mean": centroid_mse["mse_mean"],
+        "centroid_mse_per_object": centroid_mse["mse_per_object"],
+        "centroid_r_mean": centroid_mse["r_mean"],
+        "centroid_r_per_object": centroid_mse["r_per_object"],
+
+        # VICReg health
+        "vicreg_per_dim_std": per_dim_std.tolist(),
+        "vicreg_mean_abs_corr": vh["mean_abs_corr"],
+
+        # Semantic disentanglement probes
+        "r2_dyn_color": semantic["r2_dyn_color"],
+        "r2_coord_color": semantic["r2_coord_color"],
+        "r2_dyn_pos": semantic["r2_dyn_pos"],
+        "r2_coord_pos": semantic["r2_coord_pos"],
+        "delta_r2_color": semantic["delta_r2_color"],
+        "r2_per_dim": semantic["r2_per_dim"],
+        "dim_to_obj": semantic["dim_to_obj"],
+
+        # GDASR
+        "gdasr_growth_point_count": len(gdasr_growth_points),
+        "gdasr_growth_points": gdasr_growth_points,
+
+        # Final training loss
+        "final_train_loss": logs[-1]["loss"],
+        "final_train_sim_loss": logs[-1]["sim_loss"],
+        "final_train_sfa_loss": logs[-1]["sfa_loss"],
+    }
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Arms configuration
+# ---------------------------------------------------------------------------
+ARMS = [
+    {
+        "name": "Arm A (SFA+VICReg)",
+        "primary_objective": "sfa",
+        "sfa_weight": 1.0,
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "none",
+        "d_t": 3,
+    },
+    {
+        "name": "Arm B (JEPA+VICReg)",]
+Now let me update `run_single` to accept and return a checkpoint path, and update its usage in main:
+
+
+[Tool Call: edit_file({'new_string': '        # Final training loss\n        "final_train_loss": logs[-1]["loss"],\n        "final_train_sim_loss": logs[-1]["sim_loss"],\n        "final_train_sfa_loss": logs[-1]["sfa_loss"],\n    }\n\n    return results, model', 'old_string': '        # Final training loss\n        "final_train_loss": logs[-1]["loss"],\n        "final_train_sim_loss": logs[-1]["sim_loss"],\n        "final_train_sfa_loss": logs[-1]["sfa_loss"],\n    }\n    return results', 'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+
+[Tool Call: edit_file({'new_string': '            print(f"\\n--- {name}, seed={seed} ---")\n            results, model = run_single(arm, seed, device, dry_run=dry_run)', 'old_string': '            print(f"\\n--- {name}, seed={seed} ---")\n            results = run_single(arm, seed, device, dry_run=dry_run)', 'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+Now let me add the `run_id` as a return value or compute it inside `run_single` for the checkpoint. Actually, the checkpoint path logic uses `run_id` which is defined in `main`. Let me compute the same run_id there and pass it to checkpoint, or just move the checkpoint save into `main` properly since we now have `model` returned:
+
+The current code in `main` already has the right pattern for `run_id`. Since we now return `model`, the existing checkpoint block should work. Let me re-read that section:
+
+
+[Tool Call: read_file({'end_line': 770, 'path': 'src/run_phase0_sfa.py', 'start_line': 700})]
+[Tool Result: --- lines 700 to 770 of 933 ---
+    figs_dir = os.path.join(results_dir, "figs")
+    os.makedirs(runs_dir, exist_ok=True)
+    os.makedirs(figs_dir, exist_ok=True)
+
+    all_results = []
+
+    for arm in ARMS:
+        name = arm["name"]
+        print(f"{'='*70}")
+        print(f"ARM: {name}")
+        print(f"{'='*70}")
+        for seed in seeds:
+            print(f"\n--- {name}, seed={seed} ---")
+            results, model = run_single(arm, seed, device, dry_run=dry_run)
+            all_results.append(results)
+
+            # Save per-run CSV with detailed logs
+            run_id = f"{name.lower().replace(' ', '_').replace('(', '').replace(')', '')}_seed{seed}{suffix}"
+            csv_path = os.path.join(runs_dir, f"{run_id}.csv")
+            json_path = os.path.join(runs_dir, f"{run_id}.json")
+
+            # Flatten per-object / per-dimension lists for CSV
+            flat = {k: v for k, v in results.items() if k not in (
+                "gdasr_growth_points", "centroid_mse_per_object",
+                "centroid_r_per_object", "r2_per_dim", "dim_to_obj",
+            )}
+            flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))
+            flat["centroid_mse_obj0"] = results.get("centroid_mse_per_object", [])[0] if len(results.get("centroid_mse_per_object", [])) > 0 else None
+            flat["centroid_mse_obj1"] = results.get("centroid_mse_per_object", [])[1] if len(results.get("centroid_mse_per_object", [])) > 1 else None
+            flat["centroid_mse_obj2"] = results.get("centroid_mse_per_object", [])[2] if len(results.get("centroid_mse_per_object", [])) > 2 else None
+            flat["centroid_r_obj0"] = results.get("centroid_r_per_object", [])[0] if len(results.get("centroid_r_per_object", [])) > 0 else None
+            flat["centroid_r_obj1"] = results.get("centroid_r_per_object", [])[1] if len(results.get("centroid_r_per_object", [])) > 1 else None
+            flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None
+            flat["per_dim_std"] = str(results.get("per_dim_std", []))
+
+            # Semantic probe per-dimension details
+            r2pd = results.get("r2_per_dim", [])
+            dim_map = results.get("dim_to_obj", {})
+            for d_idx, probe_d in enumerate(r2pd):
+                flat[f"r2_dim{d_idx}_dyn_color"] = probe_d.get("dyn_color", None)
+                flat[f"r2_dim{d_idx}_coord_color"] = probe_d.get("coord_color", None)
+                flat[f"r2_dim{d_idx}_dyn_pos"] = probe_d.get("dyn_pos", None)
+                flat[f"r2_dim{d_idx}_coord_pos"] = probe_d.get("coord_pos", None)
+                flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
+            flat["dim_to_obj"] = json.dumps(dim_map, default=str)
+
+            df_row = pd.DataFrame([flat])
+            df_row.to_csv(csv_path, index=False)
+
+            # Save full JSON (includes growth points)
+            with open(json_path, "w") as f:
+                json.dump(results, f, indent=2, default=str)
+
+            # Save model checkpoint
+            checkpoints_dir = os.path.join(results_dir, "checkpoints")
+            os.makedirs(checkpoints_dir, exist_ok=True)
+            ckpt_path = os.path.join(checkpoints_dir, f"{run_id}.pt")
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"  -> Saved checkpoint {ckpt_path}")
+
+            print(f"  -> Saved {csv_path}")
+
+    # ------------------------------------------------------------------ #
+    # Compile aggregate results
+    # ------------------------------------------------------------------ #
+    df_all = pd.DataFrame(all_results)
+
+    # Ensure numeric columns
+    for col in [
+        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python src/run_phase0_sfa.py --dry-run', 'timeout_sec': 300})]
+[Tool Result: exit_code: 0
+stdout: Using device: cpu
+CUDA available: False
+Dry-run mode: True
+Seeds: [42, 123, 456, 789, 999]
+Arms: ['Arm A (SFA+VICReg)', 'Arm B (JEPA+VICReg)', 'Arm C (SFA+pos_enc)']
+
+======================================================================
+ARM: Arm A (SFA+VICReg)
+======================================================================
+
+--- Arm A (SFA+VICReg), seed=42 ---
+  [Arm A (SFA+VICReg)] seed=42 step=    5/5  loss=69310.4062  sim=2771.4263  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed42_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed42_dryrun.csv
+
+--- Arm A (SFA+VICReg), seed=123 ---
+  [Arm A (SFA+VICReg)] seed=123 step=    5/5  loss=87233.3047  sim=3488.3438  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed123_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed123_dryrun.csv
+
+--- Arm A (SFA+VICReg), seed=456 ---
+  [Arm A (SFA+VICReg)] seed=456 step=    5/5  loss=87268.3906  sim=3489.7456  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed456_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed456_dryrun.csv
+
+--- Arm A (SFA+VICReg), seed=789 ---
+  [Arm A (SFA+VICReg)] seed=789 step=    5/5  loss=69166.1719  sim=2765.6570  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed789_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed789_dryrun.csv
+
+--- Arm A (SFA+VICReg), seed=999 ---
+  [Arm A (SFA+VICReg)] seed=999 step=    5/5  loss=77538.3984  sim=3100.5459  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed999_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed999_dryrun.csv
+======================================================================
+ARM: Arm B (JEPA+VICReg)
+======================================================================
+
+--- Arm B (JEPA+VICReg), seed=42 ---
+  [Arm B (JEPA+VICReg)] seed=42 step=    5/5  loss=69324.0859  sim=2770.9990  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed42_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed42_dryrun.csv
+
+--- Arm B (JEPA+VICReg), seed=123 ---
+  [Arm B (JEPA+VICReg)] seed=123 step=    5/5  loss=87230.8516  sim=3487.3157  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed123_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed123_dryrun.csv
+
+--- Arm B (JEPA+VICReg), seed=456 ---
+  [Arm B (JEPA+VICReg)] seed=456 step=    5/5  loss=87297.0469  sim=3489.9160  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed456_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed456_dryrun.csv
+
+--- Arm B (JEPA+VICReg), seed=789 ---
+  [Arm B (JEPA+VICReg)] seed=789 step=    5/5  loss=69186.5312  sim=2765.5056  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed789_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed789_dryrun.csv
+
+--- Arm B (JEPA+VICReg), seed=999 ---
+  [Arm B (JEPA+VICReg)] seed=999 step=    5/5  loss=77539.3438  sim=3099.6184  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed999_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed999_dryrun.csv
+======================================================================
+ARM: Arm C (SFA+pos_enc)
+======================================================================
+
+--- Arm C (SFA+pos_enc), seed=42 ---
+  [Arm C (SFA+pos_enc)] seed=42 step=    5/5  loss=81459.6328  sim=3257.3953  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed42_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed42_dryrun.csv
+
+--- Arm C (SFA+pos_enc), seed=123 ---
+  [Arm C (SFA+pos_enc)] seed=123 step=    5/5  loss=83048.0312  sim=3320.9314  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed123_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed123_dryrun.csv
+
+--- Arm C (SFA+pos_enc), seed=456 ---
+  [Arm C (SFA+pos_enc)] seed=456 step=    5/5  loss=69050.3047  sim=2761.0222  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed456_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed456_dryrun.csv
+
+--- Arm C (SFA+pos_enc), seed=789 ---
+  [Arm C (SFA+pos_enc)] seed=789 step=    5/5  loss=76568.7109  sim=3061.7583  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed789_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed789_dryrun.csv
+
+--- Arm C (SFA+pos_enc), seed=999 ---
+  [Arm C (SFA+pos_enc)] seed=999 step=    5/5  loss=77678.2656  sim=3106.1406  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed999_dryrun.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed999_dryrun.csv
+
+Saved full results to archive/iter_020\summary_phase0_dryrun.csv
+
+Aggregated stats saved to archive/iter_020\aggregated_phase0_dryrun.csv
+
+======================================================================
+AGGREGATED RESULTS (mean � std)
+======================================================================
+
+---     Arm A (SFA+VICReg)
+Name: 0, dtype: str ---
+  has_collapsed                  = 1.0000 � 0.0000
+  mean_dyn_delta                 = 0.0000 � 0.0000
+  mean_coord_delta               = 0.0058 � 0.0078
+  slowness_ratio                 = 0.0007 � 0.0006
+  centroid_mse_mean              = nan � nan
+  centroid_r_mean                = 0.0000 � 0.0000
+  mean_abs_corr                  = 1.0000 � 0.0000
+  final_train_loss               = 78103.3344 � 9011.9674
+  final_train_sim_loss           = 3123.1437 � 360.4791
+  gdasr_growth_point_count       = 0.0000 � 0.0000
+
+---     Arm B (JEPA+VICReg)
+Name: 1, dtype: str ---
+  has_collapsed                  = 1.0000 � 0.0000
+  mean_dyn_delta                 = 0.0000 � 0.0000
+  mean_coord_delta               = 0.0062 � 0.0088
+  slowness_ratio                 = 0.0005 � 0.0005
+  centroid_mse_mean              = nan � nan
+  centroid_r_mean                = 0.0000 � 0.0000
+  mean_abs_corr                  = 1.0000 � 0.0000
+  final_train_loss               = 78115.5719 � 9010.2419
+  final_train_sim_loss           = 3122.6709 � 360.4186
+  gdasr_growth_point_count       = 0.0000 � 0.0000
+
+---     Arm C (SFA+pos_enc)
+Name: 2, dtype: str ---
+  has_collapsed                  = 1.0000 � 0.0000
+  mean_dyn_delta                 = 0.0000 � 0.0000
+  mean_coord_delta               = 0.0011 � 0.0005
+  slowness_ratio                 = 0.0005 � 0.0004
+  centroid_mse_mean              = nan � nan
+  centroid_r_mean                = 0.0000 � 0.0000
+  mean_abs_corr                  = 1.0000 � 0.0000
+  final_train_loss               = 77560.9891 � 5448.3294
+  final_train_sim_loss           = 3101.4496 � 217.9332
+  gdasr_growth_point_count       = 0.0000 � 0.0000
+
+======================================================================
+FALSIFICATION AUDIT (per pre-registration)
+======================================================================
+
+C1 (Collapse): Arm A collapsed seeds: 5 / 5
+  -> FAIL (threshold: < 2 collapsed seeds)
+
+C2 (Centroid MSE):
+  Arm A (SFA)  MSE = nan
+  Arm B (JEPA) MSE = nan
+  [WARNING] centroid_mse_mean contains NaN � possibly too few eval samples.
+  -> FAIL (NaN MSE values)
+
+C3_sanity (Slowness separation � sanity check):
+  Arm A mean slowness ratio = 0.0007
+  Threshold: ratio < 0.6
+  -> PASS (ratio < 0.6)
+  One-sample t(4) vs 0.6: t = -2082.7315, p = 0.0000 (one-sided less)
+
+C3_semantic (Semantic disentanglement � delta_R2_color):
+  Arm A mean delta_R2_color = 0.0000
+  Threshold: delta_R2_color >= 0.10
+  -> FAIL (delta <  0.10)
+  One-sample t(4) vs 0.10: t = -inf, p = 1.0000 (one-sided greater)
+
+======================================================================
+OVERALL: FALSIFIED
+======================================================================
+
+Audit report saved to archive/iter_020\audit_phase0_dryrun.json
+
+Done.
+
+stderr: C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+]
+Dry-run completed successfully with exit code 0. The NaN values and audit failures are expected with only 5 training steps (too few eval samples). Now let's run the full sweep with all 15 runs:
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python src/run_phase0_sfa.py', 'timeout_sec': 7200})]
+[Tool Result: exit_code: 0
+stdout: Using device: cpu
+CUDA available: False
+Dry-run mode: False
+Seeds: [42, 123, 456, 789, 999]
+Arms: ['Arm A (SFA+VICReg)', 'Arm B (JEPA+VICReg)', 'Arm C (SFA+pos_enc)']
+
+======================================================================
+ARM: Arm A (SFA+VICReg)
+======================================================================
+
+--- Arm A (SFA+VICReg), seed=42 ---
+  [Arm A (SFA+VICReg)] seed=42 step= 1000/3000  loss=25.0299  sim=0.0124  sfa=0.0000
+  [Arm A (SFA+VICReg)] seed=42 step= 2000/3000  loss=24.8069  sim=0.0041  sfa=0.0000
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.0050 (baseline mean=0.0041, std=0.0002)
+  [Arm A (SFA+VICReg)] seed=42 step= 3000/3000  loss=24.7234  sim=0.0025  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed42.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed42.csv
+
+--- Arm A (SFA+VICReg), seed=123 ---
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.1317 (baseline mean=0.0478, std=0.0201)
+  [Arm A (SFA+VICReg)] seed=123 step= 1000/3000  loss=16.3732  sim=0.2366  sfa=0.0139
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.2166 (baseline mean=0.1377, std=0.0191)
+  [Arm A (SFA+VICReg)] seed=123 step= 2000/3000  loss=14.0064  sim=0.4883  sfa=0.0712
+  [Arm A (SFA+VICReg)] seed=123 step= 3000/3000  loss=5.2400  sim=0.1584  sfa=0.0531
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed123.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed123.csv
+
+--- Arm A (SFA+VICReg), seed=456 ---
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.3365 (baseline mean=0.1983, std=0.0340)
+  [Arm A (SFA+VICReg)] seed=456 step= 1000/3000  loss=13.0983  sim=0.4711  sfa=0.0728
+  [Arm A (SFA+VICReg)] seed=456 step= 2000/3000  loss=10.1836  sim=0.3256  sfa=0.1067
+  [Arm A (SFA+VICReg)] seed=456 step= 3000/3000  loss=9.0784  sim=0.1866  sfa=0.1045
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed456.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed456.csv
+
+--- Arm A (SFA+VICReg), seed=789 ---
+  [Arm A (SFA+VICReg)] seed=789 step= 1000/3000  loss=24.9320  sim=0.0241  sfa=0.0000
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.0503 (baseline mean=0.0333, std=0.0041)
+  [Arm A (SFA+VICReg)] seed=789 step= 2000/3000  loss=25.3719  sim=0.0599  sfa=0.0001
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.2396 (baseline mean=0.1183, std=0.0303)
+  [Arm A (SFA+VICReg)] seed=789 step= 3000/3000  loss=26.6817  sim=0.4012  sfa=0.0030
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed789.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed789.csv
+
+--- Arm A (SFA+VICReg), seed=999 ---
+  [Arm A (SFA+VICReg)] seed=999 step= 1000/3000  loss=16.2211  sim=0.0213  sfa=0.0070
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.0327 (baseline mean=0.0247, std=0.0020)
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.4230 (baseline mean=0.1890, std=0.0570)
+  [Arm A (SFA+VICReg)] seed=999 step= 2000/3000  loss=6.8328  sim=0.1864  sfa=0.1804
+  [Arm A (SFA+VICReg)] seed=999 step= 3000/3000  loss=4.0824  sim=0.1248  sfa=0.1300
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_a_sfa+vicreg_seed999.pt
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed999.csv
+======================================================================
+ARM: Arm B (JEPA+VICReg)
+======================================================================
+
+--- Arm B (JEPA+VICReg), seed=42 ---
+  [Arm B (JEPA+VICReg)] seed=42 step= 1000/3000  loss=39.7968  sim=0.0586  sfa=0.0000
+  [Arm B (JEPA+VICReg)] seed=42 step= 2000/3000  loss=40.4737  sim=0.0595  sfa=0.0000
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.0790 (baseline mean=0.0696, std=0.0022)
+  [Arm B (JEPA+VICReg)] seed=42 step= 3000/3000  loss=32.2534  sim=0.0162  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed42.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed42.csv
+
+--- Arm B (JEPA+VICReg), seed=123 ---
+  [Arm B (JEPA+VICReg)] seed=123 step= 1000/3000  loss=39.2982  sim=0.0635  sfa=0.0000
+  [Arm B (JEPA+VICReg)] seed=123 step= 2000/3000  loss=39.2588  sim=0.0528  sfa=0.0000
+  [Arm B (JEPA+VICReg)] seed=123 step= 3000/3000  loss=32.6327  sim=0.0139  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed123.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed123.csv
+
+--- Arm B (JEPA+VICReg), seed=456 ---
+  [Arm B (JEPA+VICReg)] seed=456 step= 1000/3000  loss=32.2095  sim=0.0240  sfa=0.0000
+  [Arm B (JEPA+VICReg)] seed=456 step= 2000/3000  loss=26.6230  sim=0.0450  sfa=0.0000
+  [Arm B (JEPA+VICReg)] seed=456 step= 3000/3000  loss=13.1498  sim=0.1419  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed456.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed456.csv
+
+--- Arm B (JEPA+VICReg), seed=789 ---
+  [Arm B (JEPA+VICReg)] seed=789 step= 1000/3000  loss=39.1092  sim=0.0618  sfa=0.0000
+  [Arm B (JEPA+VICReg)] seed=789 step= 2000/3000  loss=32.5401  sim=0.0326  sfa=0.0000
+  [Arm B (JEPA+VICReg)] seed=789 step= 3000/3000  loss=32.0358  sim=0.0160  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed789.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed789.csv
+
+--- Arm B (JEPA+VICReg), seed=999 ---
+  [Arm B (JEPA+VICReg)] seed=999 step= 1000/3000  loss=37.7624  sim=0.0790  sfa=0.0000
+  [Arm B (JEPA+VICReg)] seed=999 step= 2000/3000  loss=32.1874  sim=0.0214  sfa=0.0000
+  [Arm B (JEPA+VICReg)] seed=999 step= 3000/3000  loss=31.8859  sim=0.0231  sfa=0.0000
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_b_jepa+vicreg_seed999.pt
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed999.csv
+======================================================================
+ARM: Arm C (SFA+pos_enc)
+======================================================================
+
+--- Arm C (SFA+pos_enc), seed=42 ---
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.0452 (baseline mean=0.0250, std=0.0050)
+  [Arm C (SFA+pos_enc)] seed=42 step= 1000/3000  loss=14.2691  sim=0.3592  sfa=0.0331
+  [Arm C (SFA+pos_enc)] seed=42 step= 2000/3000  loss=8.5276  sim=0.2065  sfa=0.0721
+  [Arm C (SFA+pos_enc)] seed=42 step= 3000/3000  loss=6.1396  sim=0.1171  sfa=0.0606
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed42.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed42.csv
+
+--- Arm C (SFA+pos_enc), seed=123 ---
+  [Arm C (SFA+pos_enc)] seed=123 step= 1000/3000  loss=16.2034  sim=0.0327  sfa=0.0060
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.0646 (baseline mean=0.0337, std=0.0075)
+  [Arm C (SFA+pos_enc)] seed=123 step= 2000/3000  loss=6.4302  sim=0.0967  sfa=0.0323
+  [Arm C (SFA+pos_enc)] seed=123 step= 3000/3000  loss=2.5117  sim=0.0708  sfa=0.0296
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed123.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed123.csv
+
+--- Arm C (SFA+pos_enc), seed=456 ---
+  [Arm C (SFA+pos_enc)] seed=456 step= 1000/3000  loss=20.5283  sim=0.1843  sfa=0.0055
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.1376 (baseline mean=0.1185, std=0.0047)
+  [Arm C (SFA+pos_enc)] seed=456 step= 2000/3000  loss=18.5150  sim=0.0992  sfa=0.0037
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.1727 (baseline mean=0.1358, std=0.0072)
+  [Arm C (SFA+pos_enc)] seed=456 step= 3000/3000  loss=18.3458  sim=0.0954  sfa=0.0060
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed456.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed456.csv
+
+--- Arm C (SFA+pos_enc), seed=789 ---
+  [Arm C (SFA+pos_enc)] seed=789 step= 1000/3000  loss=24.3811  sim=0.0398  sfa=0.0001
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.1164 (baseline mean=0.0564, std=0.0148)
+  [Arm C (SFA+pos_enc)] seed=789 step= 2000/3000  loss=21.9879  sim=0.2252  sfa=0.0051
+  [Arm C (SFA+pos_enc)] seed=789 step= 3000/3000  loss=17.9336  sim=0.0783  sfa=0.0058
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed789.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed789.csv
+
+--- Arm C (SFA+pos_enc), seed=999 ---
+  [Arm C (SFA+pos_enc)] seed=999 step= 1000/3000  loss=16.2704  sim=0.0142  sfa=0.0043
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.0297 (baseline mean=0.0206, std=0.0023)
+  [Arm C (SFA+pos_enc)] seed=999 step= 2000/3000  loss=16.6804  sim=0.0290  sfa=0.0052
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.0732 (baseline mean=0.0361, std=0.0093)
+  [Arm C (SFA+pos_enc)] seed=999 step= 3000/3000  loss=9.6552  sim=0.2569  sfa=0.0423
+  -> Saved checkpoint archive/iter_020\checkpoints\arm_c_sfa+pos_enc_seed999.pt
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed999.csv
+
+Saved full results to archive/iter_020\summary_phase0.csv
+
+Aggregated stats saved to archive/iter_020\aggregated_phase0.csv
+
+======================================================================
+AGGREGATED RESULTS (mean � std)
+======================================================================
+
+---     Arm A (SFA+VICReg)
+Name: 0, dtype: str ---
+  has_collapsed                  = 0.4000 � 0.5477
+  mean_dyn_delta                 = 0.1884 � 0.2463
+  mean_coord_delta               = 0.0373 � 0.0787
+  slowness_ratio                 = 805.2062 � 1296.8418
+  centroid_mse_mean              = 121.3747 � 59.3547
+  centroid_r_mean                = 0.4299 � 0.1955
+  mean_abs_corr                  = 0.5242 � 0.4343
+  final_train_loss               = 13.9612 � 10.8987
+  final_train_sim_loss           = 0.1747 � 0.1448
+  gdasr_growth_point_count       = 1.6000 � 0.5477
+
+---     Arm B (JEPA+VICReg)
+Name: 1, dtype: str ---
+  has_collapsed                  = 0.8000 � 0.4472
+  mean_dyn_delta                 = 0.0190 � 0.0274
+  mean_coord_delta               = 0.0299 � 0.0386
+  slowness_ratio                 = 0.9103 � 0.8395
+  centroid_mse_mean              = 111.6971 � 37.7639
+  centroid_r_mean                = 0.4534 � 0.1920
+  mean_abs_corr                  = 0.8451 � 0.2986
+  final_train_loss               = 28.3915 � 8.5250
+  final_train_sim_loss           = 0.0422 � 0.0558
+  gdasr_growth_point_count       = 0.2000 � 0.4472
+
+---     Arm C (SFA+pos_enc)
+Name: 2, dtype: str ---
+  has_collapsed                  = 0.2000 � 0.4472
+  mean_dyn_delta                 = 0.0440 � 0.0402
+  mean_coord_delta               = 0.0159 � 0.0258
+  slowness_ratio                 = 1244.8229 � 2306.6101
+  centroid_mse_mean              = 124.5785 � 52.3394
+  centroid_r_mean                = 0.3805 � 0.1362
+  mean_abs_corr                  = 0.6026 � 0.3625
+  final_train_loss               = 10.9172 � 7.0619
+  final_train_sim_loss           = 0.1237 � 0.0766
+  gdasr_growth_point_count       = 1.4000 � 0.5477
+
+======================================================================
+FALSIFICATION AUDIT (per pre-registration)
+======================================================================
+
+C1 (Collapse): Arm A collapsed seeds: 2 / 5
+  -> FAIL (threshold: < 2 collapsed seeds)
+
+C2 (Centroid MSE):
+  Arm A (SFA)  MSE = 121.3747
+  Arm B (JEPA) MSE = 111.6971
+  Threshold (1.10 x JEPA) = 122.8668
+  -> PASS (SFA MSE <= 1.10 x JEPA MSE)
+  Welch's t(6.8) = 0.3076, p = 0.7676
+  Cohen's d = 0.2175
+
+C3_sanity (Slowness separation � sanity check):
+  Arm A mean slowness ratio = 805.2062
+  Threshold: ratio < 0.6
+  -> FAIL (ratio >= 0.6)
+  One-sample t(4) vs 0.6: t = 1.3873, p = 0.8812 (one-sided less)
+
+C3_semantic (Semantic disentanglement � delta_R2_color):
+  Arm A mean delta_R2_color = -0.0870
+  Threshold: delta_R2_color >= 0.10
+  -> FAIL (delta <  0.10)
+  One-sample t(4) vs 0.10: t = -1.4326, p = 0.8874 (one-sided greater)
+
+======================================================================
+OVERALL: FALSIFIED
+======================================================================
+
+Audit report saved to archive/iter_020\audit_phase0.json
+
+Done.
+
+stderr: ]
+
+[Tool Call: bash({'command': 'dir /s /b archive\\iter_020\\runs\\*.csv archive\\iter_020\\runs\\*.json archive\\iter_020\\checkpoints\\*.pt archive\\iter_020\\summary_phase0.csv archive\\iter_020\\aggregated_phase0.csv archive\\iter_020\\audit_phase0.json'})]
+[Tool Result: exit_code: 0
+stdout: C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed123.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed123_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed42.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed42_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed456.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed456_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed789.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed789_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed999.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed999_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed123.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed123_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed42.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed42_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed456.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed456_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed789.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed789_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed999.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed999_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed123.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed123_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed42.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed42_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed456.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed456_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed789.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed789_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed999.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed999_dryrun.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed123.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed123_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed42.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed42_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed456.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed456_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed789.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed789_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed999.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_a_sfa+vicreg_seed999_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed123.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed123_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed42.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed42_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed456.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed456_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed789.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed789_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed999.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_b_jepa+vicreg_seed999_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed123.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed123_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed42.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed42_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed456.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed456_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed789.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed789_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed999.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\runs\arm_c_sfa+pos_enc_seed999_dryrun.json
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed123.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed123_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed42.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed42_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed456.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed456_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed789.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed789_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed999.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_a_sfa+vicreg_seed999_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed123.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed123_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed42.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed42_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed456.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed456_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed789.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed789_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed999.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_b_jepa+vicreg_seed999_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed123.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed123_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed42.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed42_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed456.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed456_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed789.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed789_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed999.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\checkpoints\arm_c_sfa+pos_enc_seed999_dryrun.pt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\summary_phase0.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\aggregated_phase0.csv
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_020\audit_phase0.json
+
+stderr: ]
+Let me verify the non-dryrun files are all there (15 CSV + 15 JSON + 15 checkpoints):
+
+
+[Tool Call: bash({'command': 'echo "CSV files (non-dryrun):" && dir /b archive\\iter_020\\runs\\*.csv | find /c /v "_dryrun" && echo "JSON files (non-dryrun):" && dir /b archive\\iter_020\\runs\\*.json | find /c /v "_dryrun" && echo "Checkpoint files (non-dryrun):" && dir /b archive\\iter_020\\checkpoints\\*.pt | find /c /v "_dryrun" && echo "Summary:" && dir /b archive\\iter_020\\summary_phase0.csv archive\\iter_020\\aggregated_phase0.csv archive\\iter_020\\audit_phase0.json'})]
+[Tool Result: exit_code: 0
+stdout: "CSV files (non-dryrun):" 
+15
+"JSON files (non-dryrun):" 
+15
+"Checkpoint files (non-dryrun):" 
+15
+"Summary:" 
+summary_phase0.csv
+aggregated_phase0.csv
+audit_phase0.json
+
+stderr: ]
+Everything is complete and working. Let me clean up the dry-run files to keep the archive tidy:
+
+
+[Tool Call: bash({'command': 'del /q archive\\iter_020\\runs\\*_dryrun.csv archive\\iter_020\\runs\\*_dryrun.json archive\\iter_020\\checkpoints\\*_dryrun.pt archive\\iter_020\\summary_phase0_dryrun.csv archive\\iter_020\\aggregated_phase0_dryrun.csv archive\\iter_020\\audit_phase0_dryrun.json 2>nul && echo "Dry-run files cleaned"'})]
+[Tool Result: exit_code: 0
+stdout: "Dry-run files cleaned"
+
+stderr: ]
+The Phase 0 sweep completed successfully — all 15 runs (3 arms × 5 seeds) executed, and every output file was saved in the correct locations.
+
+Here's a summary of the results:
+
+---
+
+## Phase 0 Results: **FALSIFIED**
+
+| Criterion | Metric | Arm A (SFA+VICReg) | Threshold | Result |
+|-----------|--------|---------------------|-----------|--------|
+| **C1: Collapse** | Collapsed seeds | 2 / 5 | < 2 | ❌ FAIL |
+| **C2: Centroid MSE** | SFA MSE | 121.37 | ≤ 122.87 (1.10× JEPA) | ✅ PASS |
+| **C3_sanity: Slowness** | Slowness ratio | 805.2 | < 0.6 | ❌ FAIL |
+| **C3_semantic: ∆R²_color** | delta_R2_color | −0.087 | ≥ 0.10 | ❌ FAIL |
+
+### Key Findings
+
+1. **C2 passed** — SFA maintains spatial decode quality comparable to JEPA (Cohen's d = 0.22, p = 0.77). The VICReg terms are doing their job at preventing representational collapse in terms of spatial fidelity.
+
+2. **Slowness ratio inverted** — `mean_dyn_delta / mean_coord_delta = 805` means the "dynamical" stream is actually changing **800× faster** than the coordinate stream. This is the exact opposite of the SFA hypothesis. The coordinate encoder is learning to be slow while the dynamical encoder is not.
+
+3. **Negative delta_R2_color** (−0.087) — `z_coord` predicts color *better* than `z_dyn`, which means SFA is not separating identity (color) from position. If anything, the coordinate stream is accidentally capturing some identity information.
+
+4. **Collapse borderline** — 2/5 Arm A seeds collapsed (std of per-dim std < 0.5), which is just at the failure boundary. Arm C (SFA+pos_enc) had only 0.2 collapses on average, suggesting sinusoidal encoding helps stability.
+
+### Output Files Verified
+
+```
+archive/iter_020/
+├── summary_phase0.csv          (15 rows, all metrics)
+├── aggregated_phase0.csv       (per-arm mean±std)
+├── audit_phase0.json           (falsification report)
+├── checkpoints/                (15 .pt files, one per run)
+│   ├── arm_a_sfa+vicreg_seed42.pt
+│   ├── arm_a_sfa+vicreg_seed123.pt
+│   └── ... (13 more)
+├── runs/                        (15 CSV + 15 JSON)
+│   ├── arm_a_sfa+vicreg_seed42.csv
+│   ├── arm_a_sfa+vicreg_seed42.json
+│   └── ... (28 more)
+└── figs/                        (empty, for future plots)
+```
+
+The pre-registration hypotheses are falsified for the current formulation. Next steps could include investigating why the slowness objective isn't pulling `z_dyn` toward slower features — possibilities include the SFA loss not being properly weighted relative to VICReg, the temporal horizon being too short, or the SFA loss computation itself not enforcing slowness as intended.
+
+
+[NUDGE RESPONSE]
+```yaml
+status: ok
+artifacts:
+  - src/run_phase0_sfa.py
+  - archive/iter_020/summary_phase0.csv
+  - archive/iter_020/aggregated_phase0.csv
+  - archive/iter_020/audit_phase0.json
+  - archive/iter_020/checkpoints/
+  - archive/iter_020/runs/
+metrics:
+  c1_collapsed_seeds: 2
+  c2_mse_sfa_mean: 121.3747
+  c2_mse_jepa_mean: 111.6971
+  c3_slowness_ratio_mean: 805.2062
+  c3_delta_r2_color_mean: -0.0870
+  runs_completed: 15
+experimenter_view: |
+  Successfully implemented collect_multitraj_eval_data to ensure color variance
+  in semantic probes by sampling across environments with different seeds.
+  Added checkpoint saving to archive/iter_020/checkpoints/ at the end of training.
+  Completed full 15-run sweep (3 arms x 5 seeds) with exit code 0.
+  Output files (CSV, JSON, checkpoints) saved correctly in the designated directories.
+  
+  Scientific audit falsified pre-registration: 
+  - C2 (centroid MSE) passed: SFA (121.37) <= JEPA * 1.10 (122.87)
+  - C1 (collapse) failed: 2/5 Arm A seeds collapsed
+  - C3 sanity (slowness) failed: Arm A slowness ratio ~805 (threshold < 0.6)
+  - C3 semantic (disentanglement) failed: delta R2 color = -0.087 (threshold >= 0.10)
+  SFA did not separate identity from position or achieve temporal slowness
+  under current VICReg weight settings.
+notes: "Phase 0 sweep complete (15/15); code OK, SFA hypotheses falsified on slowness/disentanglement."
+```

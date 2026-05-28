@@ -207,15 +207,83 @@ def compute_vicreg_health(z_dyn, d_t):
     }
 
 
-def compute_semantic_probes(model, test_env, test_history, num_samples=200,
-                             train_ratio=0.5, device="cpu"):
+def collect_multitraj_eval_data(model, num_samples=200, base_seed=30000, device="cpu"):
+    """
+    Collect independent transitions from randomized environments across
+    different seeds.  Each environment reset yields fresh randomization of
+    object colors and positions, ensuring that target colors have non-zero
+    variance for the semantic probe.
+
+    Strategy:
+      - Compute how many distinct trajectories we need: max(1, num_samples // 20)
+      - For each trajectory, create a fresh PhysicsSandbox with a unique seed,
+        reset it, warm up (4 steps), then collect ~20 samples per trajectory.
+      - Concatenate all samples into flat arrays.
+
+    Returns
+    -------
+    z_dyn_arr      : (total, d_max)  float numpy array
+    z_coord_arr    : (total, d_max)  float numpy array
+    pos_arr        : (total, N)      float numpy array
+    colors_arr     : (total, N, 3)   float numpy array
+    """
+    model.eval()
+
+    num_trajectories = max(1, num_samples // 20)
+    samples_per_traj = max(1, num_samples // num_trajectories)
+
+    z_dyn_list = []
+    z_coord_list = []
+    pos_list = []
+    colors_list = []
+
+    with torch.no_grad():
+        for t_idx in range(num_trajectories):
+            env_seed = base_seed + t_idx * 100
+            env = PhysicsSandbox(N=3, seed=env_seed)
+            history = collections.deque(maxlen=4)
+
+            obs = env.reset()
+            history.append(obs)
+
+            # Warm up history so we have a valid H=3 lookahead
+            for _ in range(3):
+                obs, info = env.step({"acc": 0.0, "push": False})
+                history.append(obs)
+
+            collected = 0
+            while collected < samples_per_traj:
+                obs, info = env.step({"acc": 0.0, "push": False})
+                history.append(obs)
+                if len(history) == 4:
+                    x_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+                    z_c, z_d = model.encoder(x_t)
+                    z_dyn_list.append(z_d[0].cpu().numpy())
+                    z_coord_list.append(z_c[0].cpu().numpy())
+                    pos_list.append(info["positions"])
+                    colors_list.append(info["colors"])
+                    collected += 1
+
+    z_dyn_arr = np.array(z_dyn_list)       # (total, d_max)
+    z_coord_arr = np.array(z_coord_list)     # (total, d_max)
+    pos_arr = np.array(pos_list)             # (total, N)
+    colors_arr = np.array(colors_list)       # (total, N, 3)
+
+    return z_dyn_arr, z_coord_arr, pos_arr, colors_arr
+
+
+def compute_semantic_probes(model, num_samples=200, train_ratio=0.5,
+                            base_seed=30000, device="cpu"):
     """
     Semantic disentanglement probes.
 
-    Collects z_dyn, z_coord along with ground-truth positions and colors over
-    num_samples frames.  Matches each latent dimension to the nearest object
-    (by centroid position).  Fits linear probes on the first half and evaluates
-    R² on the second half for two tasks:
+    Uses collect_multitraj_eval_data to gather z_dyn, z_coord along with
+    ground-truth positions and colors from multiple randomized environments.
+    The multi-seed sampling ensures target colors have non-zero variance.
+
+    Matches each latent dimension to the nearest object (by centroid position).
+    Fits linear probes on the first half and evaluates R² on the second half
+    for two tasks:
 
       * color  regression  (3-D RGB target → 3 scalar R² values, then mean)
       * position regression  (1-D scalar target → 1 R² value)
@@ -230,37 +298,10 @@ def compute_semantic_probes(model, test_env, test_history, num_samples=200,
     """
     model.eval()
 
-    # Collect data
-    obs = test_env.reset()
-    test_history.clear()
-    test_history.append(obs)
-
-    # Warm up
-    for _ in range(4):
-        obs, info = test_env.step({"acc": 0.0, "push": False})
-        test_history.append(obs)
-
-    z_dyn_list = []
-    z_coord_list = []
-    pos_list = []  # positions for all N objects
-    colors_list = []  # colors for all N objects
-
-    with torch.no_grad():
-        for _ in range(num_samples):
-            obs, info = test_env.step({"acc": 0.0, "push": False})
-            test_history.append(obs)
-            if len(test_history) == 4:
-                x_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
-                z_c, z_d = model.encoder(x_t)
-                z_dyn_list.append(z_d[0].cpu().numpy())       # (d_max,)
-                z_coord_list.append(z_c[0].cpu().numpy())      # (d_max,)
-                pos_list.append(info["positions"])              # (N,)
-                colors_list.append(info["colors"])              # (N, 3)
-
-    z_dyn_arr = np.array(z_dyn_list)   # (num_samples, d_max)
-    z_coord_arr = np.array(z_coord_list)
-    pos_arr = np.array(pos_list)       # (num_samples, N)
-    colors_arr = np.array(colors_list) # (num_samples, N, 3)
+    # Collect data across multiple randomized environments
+    z_dyn_arr, z_coord_arr, pos_arr, colors_arr = \
+        collect_multitraj_eval_data(model, num_samples=num_samples,
+                                     base_seed=base_seed, device=device)
 
     N = pos_arr.shape[1]  # number of objects
     d_t = model.d_t
@@ -532,8 +573,8 @@ def run_single(arm_config, seed, device, dry_run=False):
                                          num_samples=eval_steps, device=device)
 
     # --- Semantic disentanglement probes ---
-    semantic = compute_semantic_probes(model, test_env, test_history,
-                                        num_samples=eval_steps, device=device)
+    semantic = compute_semantic_probes(model, num_samples=eval_steps,
+                                        base_seed=seed + 30000, device=device)
 
     # --- Summary results ---
     results = {
@@ -578,7 +619,8 @@ def run_single(arm_config, seed, device, dry_run=False):
         "final_train_sim_loss": logs[-1]["sim_loss"],
         "final_train_sfa_loss": logs[-1]["sfa_loss"],
     }
-    return results
+
+    return results, model
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +710,7 @@ def main():
         print(f"{'='*70}")
         for seed in seeds:
             print(f"\n--- {name}, seed={seed} ---")
-            results = run_single(arm, seed, device, dry_run=dry_run)
+            results, model = run_single(arm, seed, device, dry_run=dry_run)
             all_results.append(results)
 
             # Save per-run CSV with detailed logs
@@ -707,6 +749,13 @@ def main():
             # Save full JSON (includes growth points)
             with open(json_path, "w") as f:
                 json.dump(results, f, indent=2, default=str)
+
+            # Save model checkpoint
+            checkpoints_dir = os.path.join(results_dir, "checkpoints")
+            os.makedirs(checkpoints_dir, exist_ok=True)
+            ckpt_path = os.path.join(checkpoints_dir, f"{run_id}.pt")
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"  -> Saved checkpoint {ckpt_path}")
 
             print(f"  -> Saved {csv_path}")
 
