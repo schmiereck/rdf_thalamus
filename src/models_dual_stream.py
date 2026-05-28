@@ -642,7 +642,8 @@ class NonParametricEncoder(nn.Module):
 
 
 class NonParametricJEPASpatial(nn.Module):
-    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none"):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
+                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True):
         super().__init__()
         self.d_max = d_max
         self.h = h
@@ -650,6 +651,9 @@ class NonParametricJEPASpatial(nn.Module):
         self.cooldown = cooldown
         self.stabilization_period = stabilization_period
         self.pos_encoding = pos_encoding
+        self.primary_objective = primary_objective
+        self.sfa_weight = sfa_weight
+        self.gdasr_log_only = gdasr_log_only
         
         self.encoder = NonParametricEncoder(d_max=d_max, pos_encoding=pos_encoding)
         self.predictor = DualStreamPredictor(d_max=d_max, h=h)
@@ -668,7 +672,7 @@ class NonParametricJEPASpatial(nn.Module):
     def calculate_centroid_and_variance(self, a_spatial):
         return calculate_centroid_and_variance(a_spatial)
 
-    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None):
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None):
         """
         Args:
             x_hist (Tensor): shape (B, H, 3, 128)
@@ -686,146 +690,285 @@ class NonParametricJEPASpatial(nn.Module):
                 If None, defaults to self.d_t (standard behavior). If set to a value
                 less than self.d_t, the predictor only receives/outputs d_t_predict
                 active dimensions, keeping its higher-index dimensions untrained.
-                This is used by the ESUG evaluation protocol to isolate the encoder's
-                new-dimension signal from predictor confounds.
+            sfa_weight (float or None): SFA slowness loss weight. If None, uses self.sfa_weight.
+                Only relevant when primary_objective='sfa'.
         """
         # Determine effective prediction dimension
         dt_pred = d_t_predict if d_t_predict is not None else self.d_t
         
+        # Use instance sfa_weight unless overridden at call time
+        _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight
+
         B, H, C, W = x_hist.shape
         x_hist_flat = x_hist.reshape(B * H, C, W)
-        
+
         # Encode history
         z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
         z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
         z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
-        
+
         # Encode target
         z_target_coord, z_target_dyn = self.encoder(x_target)
-        
-        # In NonParametricJEPASpatial, there are no stop-gradients/detaches on the coordinate stream
-        z_hist_coord_pred = z_hist_coord
-        z_target_coord_pred = z_target_coord
-        
-        # Predict target representations using dt_pred for the predictor's active dim mask
-        z_pred_coord, z_pred_dyn = self.predictor(
-            z_hist_coord_pred, 
-            z_hist_dyn, 
-            dt_pred,  # <-- use dt_pred instead of self.d_t
-            mask_coord=mask_coord
-        )
-        
-        # Compute coordinate/dynamics prediction over dt_pred dimensions
-        z_pred_coord_pred = z_pred_coord[:, :dt_pred]
-        z_target_coord_pred_dt = z_target_coord_pred[:, :dt_pred]
-        
-        z_pred_dyn_pred = z_pred_dyn[:, :dt_pred]
-        z_target_dyn_pred = z_target_dyn[:, :dt_pred]
-        
-        # Select all self.d_t active dimensions for variance and covariance losses
-        z_pred_coord_active = z_pred_coord[:, :self.d_t]
-        z_target_coord_active = z_target_coord[:, :self.d_t]
-        
-        z_pred_dyn_active = z_pred_dyn[:, :self.d_t]
-        z_target_dyn_active = z_target_dyn[:, :self.d_t]
-        
-        # 1. Similarity (Invariance) Loss — computed only over dt_pred dimensions
-        sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
-        sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
-        sim_loss = sim_loss_coord + sim_loss_dyn
-        
-        # 2. Variance Loss — computed over all self.d_t dimensions
-        def calc_var_loss(x, gamma=1.0, eps=1e-4):
-            mean = x.mean(dim=0)
-            var = torch.mean((x - mean)**2, dim=0)
-            std = torch.sqrt(var + eps)
-            return torch.mean(F.relu(gamma - std))
-            
-        var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
-        var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
-        var_loss = var_loss_coord + var_loss_dyn
-        
-        # 3. Covariance Loss — computed over all self.d_t dimensions
-        def calc_cov_loss(x):
-            B, d = x.shape
-            if B <= 1 or d <= 1:
-                return torch.tensor(0.0, device=x.device, dtype=x.dtype)
-            mean = x.mean(dim=0, keepdim=True)
-            x_centered = x - mean
-            cov = (x_centered.T @ x_centered) / (B - 1)
-            diag = torch.diagonal(cov)
-            off_diag = cov - torch.diag(diag)
-            return (off_diag ** 2).sum() / d
-            
-        cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
-        cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
-        cov_loss = cov_loss_coord + cov_loss_dyn
-        
-        base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
-        
-        # 4. Spatial Bottleneck Loss
-        if lambda_spatial > 0:
-            z_target_spatial = self.encoder.forward_spatial(x_target)
-            _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
-            if k_chan is None:
-                k_chan = self.d_t - 1
-            var_k = var_all[:, k_chan]
-            loss_spatial = lambda_spatial * var_k.mean()
-            loss = base_loss + loss_spatial
+
+        if self.primary_objective == "sfa":
+            # === SFA MODE: SFA on z_dyn + VICReg as primary representation objective ===
+            # Per M2: SFA shapes z_dyn (identity/appearance stream). z_coord is NOT slowed.
+
+            # SFA loss: slowness on z_dyn across timesteps
+            # z_hist_dyn is (B, H, d_max); take last timestep vs target
+            # H=3, so z_hist_dyn[:, -1] is the previous frame's z_dyn
+            z_prev_dyn = z_hist_dyn[:, -1]  # (B, d_max)
+
+            # SFA computed over active dimensions
+            z_target_dyn_active = z_target_dyn[:, :self.d_t]
+            z_prev_dyn_active = z_prev_dyn[:, :self.d_t]
+            sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active)
+
+            # VICReg on z_dyn to prevent collapse (variance + covariance)
+            def calc_var_loss(x, gamma=1.0, eps=1e-4):
+                mean = x.mean(dim=0)
+                var = torch.mean((x - mean)**2, dim=0)
+                std = torch.sqrt(var + eps)
+                return torch.mean(F.relu(gamma - std))
+
+            def calc_cov_loss(x):
+                Bc, d = x.shape
+                if Bc <= 1 or d <= 1:
+                    return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+                mean = x.mean(dim=0, keepdim=True)
+                x_centered = x - mean
+                cov = (x_centered.T @ x_centered) / (Bc - 1)
+                diag = torch.diagonal(cov)
+                off_diag = cov - torch.diag(diag)
+                return (off_diag ** 2).sum() / d
+
+            var_loss_dyn = calc_var_loss(z_target_dyn_active)
+            var_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            var_loss = var_loss_dyn
+
+            cov_loss_dyn = calc_cov_loss(z_target_dyn_active)
+            cov_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            cov_loss = cov_loss_dyn
+
+            # JEPA as readout with stop-gradient: prediction error trains predictor only
+            z_target_sfa_dyn = z_target_dyn_active.detach()
+            z_hist_sfa_dyn = z_hist_dyn.detach()
+            z_hist_sfa_coord = z_hist_coord.detach()
+
+            z_pred_coord, z_pred_dyn = self.predictor(
+                z_hist_sfa_coord,
+                z_hist_sfa_dyn,
+                dt_pred,
+                mask_coord=mask_coord
+            )
+
+            z_pred_coord_pred = z_pred_coord[:, :dt_pred]
+            z_target_coord_pred_dt = z_target_coord[:, :dt_pred]
+            z_pred_dyn_pred = z_pred_dyn[:, :dt_pred]
+            z_target_dyn_pred = z_target_dyn_active.detach()  # stop-gradient for readout
+
+            # Prediction losses (train predictor, not encoder)
+            sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
+            sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
+            sim_loss = sim_loss_coord + sim_loss_dyn
+
+            # Prediction loss does NOT shape encoder representation
+            base_loss = self.sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+
+            # Active dims for reporting (full d_t)
+            z_pred_coord_active = z_pred_coord[:, :self.d_t]
+            z_target_coord_active = z_target_coord[:, :self.d_t]
+            z_pred_dyn_active = z_pred_dyn[:, :self.d_t]
+
+            # Spatial bottleneck
+            if lambda_spatial > 0:
+                z_target_spatial = self.encoder.forward_spatial(x_target)
+                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+                if k_chan is None:
+                    k_chan = self.d_t - 1
+                var_k = var_all[:, k_chan]
+                loss_spatial = lambda_spatial * var_k.mean()
+                loss = base_loss + loss_spatial
+            else:
+                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+                loss = base_loss
+
+            # CCR (unchanged)
+            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            if ccr_mode != 'none':
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)
+                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0
+                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1]
+                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
+
+                if ccr_mode == 'hinge':
+                    hinge_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        if self.d_t > 1:
+                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
+                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
+                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
+                            hinge = F.relu(0.15 - diff_pairs)
+                            hinge_losses.append(hinge.mean())
+                        else:
+                            hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
+                    ccr_spatial_loss = torch.stack(hinge_losses).mean()
+                elif ccr_mode == 'covariance':
+                    cov_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        cov_losses.append(calc_cov_loss(z_f))
+                    ccr_spatial_loss = torch.stack(cov_losses).mean()
+
+                ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss
+                loss = loss + ccr_total
+
+            return {
+                "loss": loss,
+                "sim_loss": sim_loss,
+                "sim_loss_coord": sim_loss_coord,
+                "sim_loss_dyn": sim_loss_dyn,
+                "var_loss": var_loss,
+                "var_loss_coord": var_loss_coord,
+                "var_loss_dyn": var_loss_dyn,
+                "cov_loss": cov_loss,
+                "cov_loss_coord": cov_loss_coord,
+                "cov_loss_dyn": cov_loss_dyn,
+                "loss_spatial": loss_spatial,
+                "sfa_loss": sfa_loss,
+                "ccr_smooth_loss": ccr_smooth_loss,
+                "ccr_spatial_loss": ccr_spatial_loss
+            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
         else:
-            loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
-            loss = base_loss
-            
-        # 5. Contrastive Coordinate Regularization (CCR)
-        ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
-        ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
-        
-        if ccr_mode != 'none':
-            z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1) # (B, 4, d_max)
-            z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0 # (B, 4, d_t)
-            
-            diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1] # (B, 3, d_t)
-            ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
-            
-            if ccr_mode == 'hinge':
-                hinge_losses = []
-                for f in range(4):
-                    z_f = z_all_norm[:, f]
-                    if self.d_t > 1:
-                        diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
-                        triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
-                        diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
-                        hinge = F.relu(0.15 - diff_pairs)
-                        hinge_losses.append(hinge.mean())
-                    else:
-                        hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
-                ccr_spatial_loss = torch.stack(hinge_losses).mean()
-                
-            elif ccr_mode == 'covariance':
-                cov_losses = []
-                for f in range(4):
-                    z_f = z_all_norm[:, f]
-                    cov_losses.append(calc_cov_loss(z_f))
-                ccr_spatial_loss = torch.stack(cov_losses).mean()
-                
-            ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss
-            loss = loss + ccr_total
-            
-        return {
-            "loss": loss,
-            "sim_loss": sim_loss,
-            "sim_loss_coord": sim_loss_coord,
-            "sim_loss_dyn": sim_loss_dyn,
-            "var_loss": var_loss,
-            "var_loss_coord": var_loss_coord,
-            "var_loss_dyn": var_loss_dyn,
-            "cov_loss": cov_loss,
-            "cov_loss_coord": cov_loss_coord,
-            "cov_loss_dyn": cov_loss_dyn,
-            "loss_spatial": loss_spatial,
-            "ccr_smooth_loss": ccr_smooth_loss,
-            "ccr_spatial_loss": ccr_spatial_loss
-        }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+            # === JEPA MODE (default, backward compatible) ===
+
+            # In NonParametricJEPASpatial, there are no stop-gradients/detaches on the coordinate stream
+            z_hist_coord_pred = z_hist_coord
+            z_target_coord_pred = z_target_coord
+
+            # Predict target representations using dt_pred for the predictor's active dim mask
+            z_pred_coord, z_pred_dyn = self.predictor(
+                z_hist_coord_pred,
+                z_hist_dyn,
+                dt_pred,  # <-- use dt_pred instead of self.d_t
+                mask_coord=mask_coord
+            )
+
+            # Compute coordinate/dynamics prediction over dt_pred dimensions
+            z_pred_coord_pred = z_pred_coord[:, :dt_pred]
+            z_target_coord_pred_dt = z_target_coord_pred[:, :dt_pred]
+
+            z_pred_dyn_pred = z_pred_dyn[:, :dt_pred]
+            z_target_dyn_pred = z_target_dyn[:, :dt_pred]
+
+            # Select all self.d_t active dimensions for variance and covariance losses
+            z_pred_coord_active = z_pred_coord[:, :self.d_t]
+            z_target_coord_active = z_target_coord[:, :self.d_t]
+
+            z_pred_dyn_active = z_pred_dyn[:, :self.d_t]
+            z_target_dyn_active = z_target_dyn[:, :self.d_t]
+
+            # 1. Similarity (Invariance) Loss — computed only over dt_pred dimensions
+            sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
+            sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
+            sim_loss = sim_loss_coord + sim_loss_dyn
+
+            # 2. Variance Loss — computed over all self.d_t dimensions
+            def calc_var_loss(x, gamma=1.0, eps=1e-4):
+                mean = x.mean(dim=0)
+                var = torch.mean((x - mean)**2, dim=0)
+                std = torch.sqrt(var + eps)
+                return torch.mean(F.relu(gamma - std))
+
+            var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+            var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+            var_loss = var_loss_coord + var_loss_dyn
+
+            # 3. Covariance Loss — computed over all self.d_t dimensions
+            def calc_cov_loss(x):
+                Bc, d = x.shape
+                if Bc <= 1 or d <= 1:
+                    return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+                mean = x.mean(dim=0, keepdim=True)
+                x_centered = x - mean
+                cov = (x_centered.T @ x_centered) / (Bc - 1)
+                diag = torch.diagonal(cov)
+                off_diag = cov - torch.diag(diag)
+                return (off_diag ** 2).sum() / d
+
+            cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
+            cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+            cov_loss = cov_loss_coord + cov_loss_dyn
+
+            base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+
+            # 4. Spatial Bottleneck Loss
+            if lambda_spatial > 0:
+                z_target_spatial = self.encoder.forward_spatial(x_target)
+                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+                if k_chan is None:
+                    k_chan = self.d_t - 1
+                var_k = var_all[:, k_chan]
+                loss_spatial = lambda_spatial * var_k.mean()
+                loss = base_loss + loss_spatial
+            else:
+                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+                loss = base_loss
+
+            # 5. Contrastive Coordinate Regularization (CCR)
+            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            if ccr_mode != 'none':
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1) # (B, 4, d_max)
+                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0 # (B, 4, d_t)
+
+                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1] # (B, 3, d_t)
+                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
+
+                if ccr_mode == 'hinge':
+                    hinge_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        if self.d_t > 1:
+                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
+                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
+                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
+                            hinge = F.relu(0.15 - diff_pairs)
+                            hinge_losses.append(hinge.mean())
+                        else:
+                            hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
+                    ccr_spatial_loss = torch.stack(hinge_losses).mean()
+
+                elif ccr_mode == 'covariance':
+                    cov_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        cov_losses.append(calc_cov_loss(z_f))
+                    ccr_spatial_loss = torch.stack(cov_losses).mean()
+
+                ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss
+                loss = loss + ccr_total
+
+            return {
+                "loss": loss,
+                "sim_loss": sim_loss,
+                "sim_loss_coord": sim_loss_coord,
+                "sim_loss_dyn": sim_loss_dyn,
+                "var_loss": var_loss,
+                "var_loss_coord": var_loss_coord,
+                "var_loss_dyn": var_loss_dyn,
+                "cov_loss": cov_loss,
+                "cov_loss_coord": cov_loss_coord,
+                "cov_loss_dyn": cov_loss_dyn,
+                "loss_spatial": loss_spatial,
+                "ccr_smooth_loss": ccr_smooth_loss,
+                "ccr_spatial_loss": ccr_spatial_loss
+            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
 
     def update_recruitment_logic(self, error_val, target_dim=None):
         if target_dim is None:
@@ -840,15 +983,26 @@ class NonParametricJEPASpatial(nn.Module):
         
         if self.d_t == target_dim:
             self.error_buffer.append(self.ema_error)
-            
-        if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
-            if len(self.error_buffer) >= 200:
-                mean = np.mean(self.error_buffer)
-                std = np.std(self.error_buffer)
-                if self.ema_error > mean + self.k * std:
-                    self.d_t = target_dim + 1
-                    self.steps_since_recruitment = 0
-                    print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+
+        # Log-only mode (M3): detect growth points without changing d_t
+        if self.gdasr_log_only:
+            if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+                if len(self.error_buffer) >= 200:
+                    mean = np.mean(self.error_buffer)
+                    std = np.std(self.error_buffer)
+                    if self.ema_error > mean + self.k * std:
+                        print(f"[GDASR LOG-ONLY] Growth point detected at d_t={self.d_t}, "
+                              f"error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+        else:
+            # Active recruitment mode (backward compatible)
+            if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+                if len(self.error_buffer) >= 200:
+                    mean = np.mean(self.error_buffer)
+                    std = np.std(self.error_buffer)
+                    if self.ema_error > mean + self.k * std:
+                        self.d_t = target_dim + 1
+                        self.steps_since_recruitment = 0
+                        print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
 
     def clone(self):
         import copy
@@ -858,7 +1012,10 @@ class NonParametricJEPASpatial(nn.Module):
             k=self.k,
             cooldown=self.cooldown,
             stabilization_period=self.stabilization_period,
-            pos_encoding=self.pos_encoding
+            pos_encoding=self.pos_encoding,
+            primary_objective=self.primary_objective,
+            sfa_weight=self.sfa_weight,
+            gdasr_log_only=self.gdasr_log_only
         )
         cloned.d_t = self.d_t
         cloned.load_state_dict(self.state_dict())
