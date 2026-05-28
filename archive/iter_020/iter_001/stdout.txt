@@ -1,4 +1,131 @@
-import numpy as np
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 020
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+The spatial-mean z_dyn computation (z_dyn = a_spatial.mean(dim=-1)) in
+NonParametricEncoder is the primary structural cause of the semantic
+disentanglement failure (delta_R2_color = -0.074, target ≥ 0.10) observed
+across all arms in iter_020. Replacing it with a Centroid-Gated Identity
+Readout (CGIR) — a separate 1x1 convolution (conv_identity) producing an
+identity feature map, pooled at the soft-argmax-attended spatial positions
+with stop-gradient on the spatial attention — will enable SFA+VICReg to
+produce z_dyn representations that encode object identity (color) while
+z_coord encodes object position. Specifically:
+
+(1) CGIR+SFA will train without collapse (per-dim std ≥ 0.5 in ≥ 4/5 seeds).
+(2) CGIR+SFA centroid MSE will be within 10% of the mean-pooling SFA baseline
+    (MSE_CGIR ≤ 1.10 × MSE_mean, where MSE_mean ≈ 121.9 from iter_020 Arm A1).
+(3) CGIR+SFA will achieve semantic disentanglement: delta_R2_color ≥ 0.10,
+    where delta_R2_color = R²_dyn_color - R²_coord_color. This is the metric
+    that persistently failed in iter_020 (all arms had negative delta_R2_color).
+
+The CGIR mechanism works because: (a) the soft-argmax attention naturally
+localizes each channel d to a specific object, (b) pooling identity features
+at the attended position reads out the object's local appearance (color),
+(c) SFA on z_dyn then correctly encourages this readout to be slow (color
+IS slow across frames), and (d) VICReg prevents the trivial constant solution.
+The stop-gradient on the spatial attention prevents SFA from distorting
+position tracking. This is structurally different from the mean-pooling
+z_dyn, which averages over ALL spatial positions and cannot isolate per-object
+identity information.
+
+## 2. Falsification Criterion
+The hypothesis is falsified if ANY of the following hold across the 5-seed
+sweep for the CGIR+SFA arm:
+
+C1 (Collapse): Per-dimension std < 0.5 in ≥ 2 out of 5 seeds (i.e., the
+    CGIR architecture causes representation collapse no better than the
+    mean-pooling baseline).
+
+C2 (Centroid MSE degradation): Mean centroid-decoding MSE of the CGIR+SFA
+    arm exceeds 1.10 × mean MSE of the mean-pooling SFA baseline (i.e.,
+    CGIR degrades spatial readout by more than 10% relative to iter_020
+    Arm A1 result of MSE ≈ 121.9).
+
+C3 (Semantic disentanglement failure): delta_R2_color < 0.10 for the
+    CGIR+SFA arm, where delta_R2_color = R²_dyn_color - R²_coord_color.
+    This is the same criterion that failed in iter_020. If CGIR does not
+    fix it, the root cause is NOT the spatial-mean computation and the
+    hypothesis is falsified. A delta_R2_color ≥ 0.10 would mean z_dyn
+    predicts object color meaningfully better than z_coord, confirming
+    identity-position separation.
+
+## 3. Proposed Method
+Step 1: Modify NonParametricEncoder (src/models_dual_stream.py).
+- Add conv_identity = nn.Conv1d(128, d_max, kernel_size=1) as a separate
+  identity head alongside the existing conv_spatial.
+- Add a dyn_readout parameter ("mean" or "centroid_gated") to control
+  z_dyn computation (default "mean" for backward compatibility).
+- In "centroid_gated" mode:
+  a) Compute backbone features via existing conv1-4 → (B, 128, 8).
+  b) Compute position spatial map: conv_spatial(features) → (B, d_max, 8)
+     → interpolate → (B, d_max, 128) → soft-argmax → z_coord.
+  c) Compute identity spatial map: conv_identity(features) → (B, d_max, 8)
+     → interpolate → (B, d_max, 128) → a_identity.
+  d) Compute z_dyn via centroid-gated readout:
+     p_c = softmax(a_spatial, dim=-1)  # spatial attention, shape (B, d_max, 128)
+     z_dyn = sum(a_identity * p_c.detach(), dim=-1)  # (B, d_max)
+     The p_c.detach() prevents SFA gradient from distorting position tracking.
+- Keep forward_spatial() unchanged for backward compatibility.
+- Parameter increase: conv_identity adds 128×8 + 8 = 1,032 params (< 0.5% of total).
+
+Step 2: Update NonParametricJEPASpatial.forward() SFA mode.
+- The existing SFA mode computes sfa_loss on z_dyn_target vs z_dyn_prev.
+  With CGIR, z_dyn is now computed differently but has the same shape (B, d_max).
+  No changes to the loss computation are needed — only the z_dyn values change.
+- The VICReg var/cov losses on z_dyn remain unchanged.
+- The predictor (surprise readout) remains unchanged (takes detached z_dyn and z_coord).
+- The CCR losses on z_coord remain unchanged.
+
+Step 3: Create src/run_phase0_sfa_cgir.py.
+Three arms × 5 seeds:
+
+Arm A (CGIR+SFA w=0.1): Centroid-gated identity readout, sfa_weight=0.1,
+  var_weight=25.0, cov_weight=25.0, pos_encoding="none", CCR=none,
+  d_t=3, gdasr_log_only=True. This is the primary test of the hypothesis.
+
+Arm B (Mean+SFA w=0.1+CCR): Original mean-pooling z_dyn, sfa_weight=0.1,
+  var_weight=25.0, cov_weight=25.0, pos_encoding="none", CCR=covariance
+  (ccr_smooth=10, ccr_spatial=10), d_t=3, gdasr_log_only=True.
+  Direct replication of iter_020 Arm A1 for comparison — confirms that
+  the only difference is the CGIR architecture change.
+
+Arm C (CGIR+SFA w=0.1+pos): Centroid-gated identity readout, sfa_weight=0.1,
+  var_weight=25.0, cov_weight=25.0, pos_encoding="sinusoidal", CCR=none,
+  d_t=3, gdasr_log_only=True. Tests whether positional encoding further
+  improves CGIR (it helped collapse in iter_020 Arm C).
+
+Seeds: [42, 123, 456, 789, 999].
+Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000.
+Evaluation: same protocol as iter_020 (collapse check, centroid MSE via
+  linear probe, slowness metrics, VICReg health, semantic disentanglement
+  probes with delta_R2_color, GDASR growth-point logging).
+Checkpoint evaluation at step 2500 and final evaluation at step 5000.
+
+Step 4: Falsification audit.
+Compare CGIR+SFA arm vs Mean+SFA baseline on all three criteria.
+The primary claim is that CGIR enables delta_R2_color ≥ 0.10 (C3).
+If CGIR achieves C3 but degrades C1 or C2, report the trade-off honestly.
+If CGIR fails C3, the root cause is NOT the spatial-mean computation and
+the hypothesis is falsified — future work would need to explore other
+architectural changes (slot attention, explicit color bottlenecks, etc.).
+
+Files to create/modify:
+- MODIFY: src/models_dual_stream.py (add CGIR to NonParametricEncoder,
+  add dyn_readout parameter, implement centroid-gated readout)
+- CREATE: src/run_phase0_sfa_cgir.py (experiment runner, 3 arms × 5 seeds)
+- UPDATE: src/pre_registration.md (with Phase 0 CGIR pre-registration)
+
+---
+*Created automatically by the RDF Orchestrator prior to iteration execution.*
+]
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+[Tool Result: import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -613,11 +740,10 @@ class PDRCJEPASpatial(DualStreamJEPASpatial):
 
 
 class NonParametricEncoder(nn.Module):
-    def __init__(self, d_max=8, pos_encoding="none", dyn_readout="mean"):
+    def __init__(self, d_max=8, pos_encoding="none"):
         super().__init__()
         self.d_max = d_max
         self.pos_encoding = pos_encoding
-        self.dyn_readout = dyn_readout
         if pos_encoding == "none":
             in_channels = 3
         elif pos_encoding == "linear":
@@ -631,54 +757,35 @@ class NonParametricEncoder(nn.Module):
         self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
         self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
         self.conv_spatial = nn.Conv1d(128, d_max, kernel_size=1)
-        if dyn_readout == "centroid_gated":
-            self.conv_identity = nn.Conv1d(128, d_max, kernel_size=1)
-
-    def _forward_backbone(self, x):
-        """Returns backbone features (B, 128, 8)"""
-        x = add_positional_encoding(x, self.pos_encoding)
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
-        return x
 
     def forward_spatial(self, x):
         """
         Returns spatial feature map of shape (B, d_max, 128) for the encoder.
         """
-        features = self._forward_backbone(x)
-        x = self.conv_spatial(features)
-        x = F.interpolate(x, size=128, mode='linear', align_corners=False)
+        x = add_positional_encoding(x, self.pos_encoding)
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        x = self.conv_spatial(x) # (B, d_max, 8)
+        x = F.interpolate(x, size=128, mode='linear', align_corners=False) # (B, d_max, 128)
         return x
 
     def forward(self, x):
         """
         Returns both streams:
         z_coord: soft centroids, shape (B, d_max)
-        z_dyn: dynamics representations, shape (B, d_max)
+        z_dyn: dynamics representations computed as mean of a_spatial over spatial dim, shape (B, d_max)
         """
-        features = self._forward_backbone(x)
-        a_spatial = self.conv_spatial(features)
-        a_spatial = F.interpolate(a_spatial, size=128, mode='linear', align_corners=False)
+        a_spatial = self.forward_spatial(x)
         z_coord, _ = calculate_centroid_and_variance(a_spatial)
-        
-        if self.dyn_readout == "mean":
-            z_dyn = a_spatial.mean(dim=-1)
-        elif self.dyn_readout == "centroid_gated":
-            a_identity = self.conv_identity(features)
-            a_identity = F.interpolate(a_identity, size=128, mode='linear', align_corners=False)
-            p_c = F.softmax(a_spatial, dim=-1)  # spatial attention
-            z_dyn = torch.sum(a_identity * p_c.detach(), dim=-1)  # stop-gradient on attention
-        else:
-            raise ValueError(f"Unknown dyn_readout: {self.dyn_readout}")
-        
+        z_dyn = a_spatial.mean(dim=-1)
         return z_coord, z_dyn
 
 
 class NonParametricJEPASpatial(nn.Module):
     def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
-                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean"):
+                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True):
         super().__init__()
         self.d_max = d_max
         self.h = h
@@ -689,9 +796,8 @@ class NonParametricJEPASpatial(nn.Module):
         self.primary_objective = primary_objective
         self.sfa_weight = sfa_weight
         self.gdasr_log_only = gdasr_log_only
-        self.dyn_readout = dyn_readout
         
-        self.encoder = NonParametricEncoder(d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout)
+        self.encoder = NonParametricEncoder(d_max=d_max, pos_encoding=pos_encoding)
         self.predictor = DualStreamPredictor(d_max=d_max, h=h)
         
         # Dynamic state tracking
@@ -1059,8 +1165,7 @@ class NonParametricJEPASpatial(nn.Module):
             pos_encoding=self.pos_encoding,
             primary_objective=self.primary_objective,
             sfa_weight=self.sfa_weight,
-            gdasr_log_only=self.gdasr_log_only,
-            dyn_readout=self.dyn_readout
+            gdasr_log_only=self.gdasr_log_only
         )
         cloned.d_t = self.d_t
         cloned.load_state_dict(self.state_dict())
@@ -1069,3 +1174,63 @@ class NonParametricJEPASpatial(nn.Module):
         cloned.ema_error = self.ema_error
         cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
         return cloned
+]
+Now I have a clear picture of both files. Let me implement all the changes systematically.
+
+**Step 1: Refactor NonParametricEncoder**
+
+
+[Tool Call: edit_file({'path': 'src/models_dual_stream.py', 'old_string': 'class NonParametricEncoder(nn.Module):\n    def __init__(self, d_max=8, pos_encoding="none"):\n        super().__init__()\n        self.d_max = d_max\n        self.pos_encoding = pos_encoding\n        if pos_encoding == "none":\n            in_channels = 3\n        elif pos_encoding == "linear":\n            in_channels = 4\n        elif pos_encoding == "sinusoidal":\n            in_channels = 7\n        else:\n            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")\n        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)\n        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)\n        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)\n        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)\n        self.conv_spatial = nn.Conv1d(128, d_max, kernel_size=1)', 'new_string': 'class NonParametricEncoder(nn.Module):\n    def __init__(self, d_max=8, pos_encoding="none", dyn_readout="mean"):\n        super().__init__()\n        self.d_max = d_max\n        self.pos_encoding = pos_encoding\n        self.dyn_readout = dyn_readout\n        if pos_encoding == "none":\n            in_channels = 3\n        elif pos_encoding == "linear":\n            in_channels = 4\n        elif pos_encoding == "sinusoidal":\n            in_channels = 7\n        else:\n            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")\n        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)\n        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)\n        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)\n        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)\n        self.conv_spatial = nn.Conv1d(128, d_max, kernel_size=1)\n        if dyn_readout == "centroid_gated":\n            self.conv_identity = nn.Conv1d(128, d_max, kernel_size=1)'})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+
+[Tool Call: edit_file({'old_string': '    def forward_spatial(self, x):\n        """\n        Returns spatial feature map of shape (B, d_max, 128) for the encoder.\n        """\n        x = add_positional_encoding(x, self.pos_encoding)\n        x = F.relu(self.conv1(x))\n        x = F.relu(self.conv2(x))\n        x = F.relu(self.conv3(x))\n        x = F.relu(self.conv4(x)) # (B, 128, 8)\n        x = self.conv_spatial(x) # (B, d_max, 8)\n        x = F.interpolate(x, size=128, mode=\'linear\', align_corners=False) # (B, d_max, 128)\n        return x\n\n    def forward(self, x):\n        """\n        Returns both streams:\n        z_coord: soft centroids, shape (B, d_max)\n        z_dyn: dynamics representations computed as mean of a_spatial over spatial dim, shape (B, d_max)\n        """\n        a_spatial = self.forward_spatial(x)\n        z_coord, _ = calculate_centroid_and_variance(a_spatial)\n        z_dyn = a_spatial.mean(dim=-1)\n        return z_coord, z_dyn', 'new_string': '    def _forward_backbone(self, x):\n        """Returns backbone features (B, 128, 8)"""\n        x = add_positional_encoding(x, self.pos_encoding)\n        x = F.relu(self.conv1(x))\n        x = F.relu(self.conv2(x))\n        x = F.relu(self.conv3(x))\n        x = F.relu(self.conv4(x))\n        return x\n\n    def forward_spatial(self, x):\n        """\n        Returns spatial feature map of shape (B, d_max, 128) for the encoder.\n        """\n        features = self._forward_backbone(x)\n        x = self.conv_spatial(features)\n        x = F.interpolate(x, size=128, mode=\'linear\', align_corners=False)\n        return x\n\n    def forward(self, x):\n        """\n        Returns both streams:\n        z_coord: soft centroids, shape (B, d_max)\n        z_dyn: dynamics representations, shape (B, d_max)\n        """\n        features = self._forward_backbone(x)\n        a_spatial = self.conv_spatial(features)\n        a_spatial = F.interpolate(a_spatial, size=128, mode=\'linear\', align_corners=False)\n        z_coord, _ = calculate_centroid_and_variance(a_spatial)\n        \n        if self.dyn_readout == "mean":\n            z_dyn = a_spatial.mean(dim=-1)\n        elif self.dyn_readout == "centroid_gated":\n            a_identity = self.conv_identity(features)\n            a_identity = F.interpolate(a_identity, size=128, mode=\'linear\', align_corners=False)\n            p_c = F.softmax(a_spatial, dim=-1)  # spatial attention\n            z_dyn = torch.sum(a_identity * p_c.detach(), dim=-1)  # stop-gradient on attention\n        else:\n            raise ValueError(f"Unknown dyn_readout: {self.dyn_readout}")\n        \n        return z_coord, z_dyn', 'path': 'src/models_dual_stream.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+**Step 2: Update NonParametricJEPASpatial `__init__` and `clone()`**
+
+
+[Tool Call: edit_file({'old_string': '    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",\n                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True):\n        super().__init__()\n        self.d_max = d_max\n        self.h = h\n        self.k = k\n        self.cooldown = cooldown\n        self.stabilization_period = stabilization_period\n        self.pos_encoding = pos_encoding\n        self.primary_objective = primary_objective\n        self.sfa_weight = sfa_weight\n        self.gdasr_log_only = gdasr_log_only\n        \n        self.encoder = NonParametricEncoder(d_max=d_max, pos_encoding=pos_encoding)', 'new_string': '    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",\n                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean"):\n        super().__init__()\n        self.d_max = d_max\n        self.h = h\n        self.k = k\n        self.cooldown = cooldown\n        self.stabilization_period = stabilization_period\n        self.pos_encoding = pos_encoding\n        self.primary_objective = primary_objective\n        self.sfa_weight = sfa_weight\n        self.gdasr_log_only = gdasr_log_only\n        self.dyn_readout = dyn_readout\n        \n        self.encoder = NonParametricEncoder(d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout)', 'path': 'src/models_dual_stream.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+
+[Tool Call: edit_file({'new_string': '    def clone(self):\n        import copy\n        cloned = NonParametricJEPASpatial(\n            d_max=self.d_max,\n            h=self.h,\n            k=self.k,\n            cooldown=self.cooldown,\n            stabilization_period=self.stabilization_period,\n            pos_encoding=self.pos_encoding,\n            primary_objective=self.primary_objective,\n            sfa_weight=self.sfa_weight,\n            gdasr_log_only=self.gdasr_log_only,\n            dyn_readout=self.dyn_readout\n        )\n        cloned.d_t = self.d_t\n        cloned.load_state_dict(self.state_dict())\n        cloned.steps_since_recruitment = self.steps_since_recruitment\n        cloned.error_buffer = copy.deepcopy(self.error_buffer)\n        cloned.ema_error = self.ema_error\n        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)\n        return cloned', 'old_string': '    def clone(self):\n        import copy\n        cloned = NonParametricJEPASpatial(\n            d_max=self.d_max,\n            h=self.h,\n            k=self.k,\n            cooldown=self.cooldown,\n            stabilization_period=self.stabilization_period,\n            pos_encoding=self.pos_encoding,\n            primary_objective=self.primary_objective,\n            sfa_weight=self.sfa_weight,\n            gdasr_log_only=self.gdasr_log_only\n        )\n        cloned.d_t = self.d_t\n        cloned.load_state_dict(self.state_dict())\n        cloned.steps_since_recruitment = self.steps_since_recruitment\n        cloned.error_buffer = copy.deepcopy(self.error_buffer)\n        cloned.ema_error = self.ema_error\n        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)\n        return cloned', 'path': 'src/models_dual_stream.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+
+[Tool Call: write_file({'content': '# RDF Scientific Pre-Registration\n\n*   **Iteration:** 021\n*   **Pre-Registration File:** src/pre_registration.md\n\n## 1. Hypothesis\n\nThe spatial-mean z_dyn computation (z_dyn = a_spatial.mean(dim=-1)) in\nNonParametricEncoder is the primary structural cause of the semantic\ndisentanglement failure (delta_R2_color = -0.074, target ≥ 0.10) observed\nacross all arms in iter_020. This was a measured null result: all arms had\nnegative delta_R2_color, meaning z_coord predicted color at least as well as\nz_dyn. This iteration tests whether a specific architectural change (CGIR)\nchanges that outcome — the prior outcome was not "wrong" but motivates this\narchitectural intervention.\n\nReplacing the spatial-mean with a Centroid-Gated Identity Readout (CGIR) — a\nseparate 1x1 convolution (conv_identity) producing an identity feature map,\npooled at the soft-argmax-attended spatial positions with stop-gradient on the\nspatial attention — will structurally route per-object appearance information\ninto z_dyn. This is a structural routing change, NOT an emergent disentanglement\nclaim: the architecture wires z_dyn to read from object positions (via\nsoft-argmax attention) rather than averaging over all positions.\n\nSpecifically:\n\n(1) CGIR+SFA+CCR will train without collapse (per-dim std ≥ 0.5 in ≥ 4/5 seeds).\n(2) CGIR+SFA+CCR centroid MSE will be within 10% of the mean-pooling SFA baseline\n    (MSE_CGIR ≤ 1.10 × MSE_mean, where MSE_mean ≈ 121.9 from iter_020 Arm A1).\n(3) CGIR+SFA+CCR will achieve semantic disentanglement: delta_R2_color ≥ 0.10,\n    where delta_R2_color = R²_dyn_color - R²_coord_color.\n(4) [Optional but recommended] CGIR+SFA+CCR will predict object identity\n    (color+size compound) better than position: delta_R2_identity ≥ 0.10,\n    where delta_R2_identity = R²_dyn_identity - R²_coord_identity. If C3 passes\n    but C4 fails, the "identity" label is misleading and should be "color readout."\n\nThe CGIR mechanism works because: (a) the soft-argmax attention naturally\nlocalizes each channel d to a specific object, (b) pooling identity features\nat the attended position reads out the object\'s local appearance, (c) SFA on\nz_dyn then correctly encourages this readout to be slow (appearance IS slow\nacross frames), and (d) VICReg prevents the trivial constant solution.\nThe stop-gradient on the spatial attention prevents SFA from distorting\nposition tracking.\n\n## 2. Falsification Criteria\n\nThe hypothesis is falsified if ANY of the following hold across the 5-seed\nsweep for the primary CGIR+SFA+CCR arm (Arm A):\n\nC1 (Collapse): Per-dimension std < 0.5 in ≥ 2 out of 5 seeds.\n\nC2 (Centroid MSE degradation): Mean centroid-decoding MSE of Arm A exceeds\n    1.10 × mean MSE of the mean-pooling SFA baseline (Arm B, MSE ≈ 121.9\n    from iter_020). If CCR is needed for z_coord tracking, Arm D (CGIR+SFA\n    no CCR) may fail C2 while Arm A passes — this would confirm CCR\'s role.\n\nC3 (Semantic disentanglement failure): delta_R2_color < 0.10 for Arm A.\n    This is the same criterion that failed in iter_020. If CGIR does not fix\n    it, the root cause is NOT the spatial-mean computation and the hypothesis\n    is falsified.\n\nC4 (Identity vs color-only): delta_R2_identity < 0.10 for Arm A, where\n    delta_R2_identity = R²_dyn_identity - R²_coord_identity and "identity"\n    is a compound label encoding both color and size. This is advisory\n    (optional) — failure here would narrow the interpretation of C3 from\n    "identity-position separation" to "color-position separation."\n\n## 3. Proposed Method\n\nStep 1: Modify NonParametricEncoder (src/models_dual_stream.py).\n  - Added conv_identity, dyn_readout parameter, CGIR readout with stop-gradient.\n  - Parameter increase: conv_identity adds 128×8 + 8 = 1,032 params (< 0.5% of total).\n\nStep 2: Create src/run_phase0_sfa_cgir.py.\nFour arms × 5 seeds:\n\nArm A (CGIR+SFA+CCR): Centroid-gated identity readout, sfa_weight=0.1,\n  var_weight=25.0, cov_weight=25.0, pos_encoding="none", CCR=covariance\n  (ccr_smooth=10, ccr_spatial=10), d_t=3, gdasr_log_only=True.\n  This is the primary test of the hypothesis. CCR is included because without\n  it, nothing directly shapes z_coord (M2 demotes JEPA to readout with\n  stop-gradient), and tracking degradation would confound the CGIR evaluation.\n\nArm B (Mean+SFA+CCR): Original mean-pooling z_dyn, sfa_weight=0.1,\n  var_weight=25.0, cov_weight=25.0, pos_encoding="none", CCR=covariance\n  (ccr_smooth=10, ccr_spatial=10), d_t=3, gdasr_log_only=True.\n  Direct replication of iter_020 Arm A1 for comparison — the only difference\n  from Arm A is dyn_readout (mean vs centroid_gated). This isolates the CGIR\n  architectural change.\n\nArm C (CGIR+SFA+CCR+pos): Centroid-gated identity readout, sfa_weight=0.1,\n  var_weight=25.0, cov_weight=25.0, pos_encoding="sinusoidal", CCR=covariance\n  (ccr_smooth=10, ccr_spatial=10), d_t=3, gdasr_log_only=True.\n  Tests whether positional encoding further improves CGIR (it helped collapse\n  in iter_020 Arm C).\n\nArm D (CGIR+SFA no CCR): Centroid-gated identity readout, sfa_weight=0.1,\n  var_weight=25.0, cov_weight=25.0, pos_encoding="none", CCR=none, d_t=3,\n  gdasr_log_only=True. Tests whether CGIR alone is sufficient or CCR is\n  needed for z_coord tracking. If Arm D fails C2 but Arm A passes, this\n  confirms CCR\'s role in maintaining centroid tracking.\n\nSeeds: [42, 123, 456, 789, 999].\nTraining: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000.\nEvaluation: same protocol as iter_020 (collapse check, centroid MSE via\n  linear probe, slowness metrics, VICReg health, semantic disentanglement\n  probes with delta_R2_color, GDASR growth-point logging).\nAdditional: C4 identity probe — linear probe on compound identity (color+size).\nCheckpoint evaluation at step 2500 and final evaluation at step 5000.\n\nStep 3: Falsification audit.\nCompare all arms against all criteria. The primary comparison is Arm A vs B\n(CGIR vs mean-pooling, all else equal). If Arm A achieves C3 but Arm B\ndoes not, the CGIR architectural change is confirmed as causally responsible.\n\nFiles modified:\n- src/models_dual_stream.py (CGIR implementation)\n- src/pre_registration.md (this file)\n- src/run_phase0_sfa_cgir.py (to be created)\n\n---\n*Created automatically by the RDF Orchestrator prior to iteration execution.*\n', 'path': 'src/pre_registration.md'})]
+[Tool Result: Successfully wrote to src/pre_registration.md]
+All changes have been applied successfully:
+
+### 1. NonParametricEncoder refactored:
+- Added `dyn_readout="mean"` parameter to `__init__` with backward compatibility default
+- Stored `self.dyn_readout = dyn_readout`
+- Add `conv_identity = nn.Conv1d(128, d_max, kernel_size=1)` when `dyn_readout == "centroid_gated"`
+- Extracted `_forward_backbone()` method (includes `add_positional_encoding` as first step, then conv1-4 with ReLU)
+- Refactored `forward_spatial()` to use `_forward_backbone()` — maintains identical behavior
+- Updated `forward()` to implement CGIR: softmax attention on `a_spatial`, stop-gradient via `p_c.detach()`, gated readout of identity features
+
+### 2. NonParametricJEPASpatial updated:
+- Added `dyn_readout="mean"` to `__init__`, stored as instance attribute
+- Passed `dyn_readout` through to `NonParametricEncoder` constructor
+- Updated `clone()` to pass `dyn_readout=self.dyn_readout` in the constructor
+
+### 3. Pre-registration overwritten:
+- `src/pre_registration.md` updated to iteration 021 with all 4 falsification criteria (C1-C4), 4-arm design, and complete methodology
+
+
+[NUDGE RESPONSE]
+```yaml
+status: ok
+artifacts:
+  - src/models_dual_stream.py
+  - src/pre_registration.md
+metrics: {}
+log_excerpt: |
+  Successfully applied all requested modifications to src/models_dual_stream.py and src/pre_registration.md.
+  NonParametricEncoder refactored with _forward_backbone(), dyn_readout parameter, and CGIR readout logic.
+  NonParametricJEPASpatial updated to pass dyn_readout to encoder and clone method.
+  Pre-registration overwritten with iter_021 content.
+experimenter_view: |
+  All code changes for iteration 021 (CGIR implementation) have been successfully applied.
+  The NonParametricEncoder now supports both mean-pooling and centroid-gated identity readout
+  via the dyn_readout parameter. The pre-registration reflects the 4-arm experimental design
+  and falsification criteria for iter_021.
+notes: "CGIR mechanism implemented and pre-registration updated for iter_021."
+```
