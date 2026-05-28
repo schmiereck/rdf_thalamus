@@ -1,0 +1,1 @@
+Check if CUDA is available, then write `src/run_phase0_sfa.py` to implement the full experiment runner with the 3 arms × 5 seeds sweep. Add a quick dry-run option (e.g., --dry-run) to the script that runs 5 steps per seed so we can easily verify its correctness first.
