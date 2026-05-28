@@ -773,7 +773,7 @@ class NonParametricJEPASpatial(nn.Module):
             sim_loss = sim_loss_coord + sim_loss_dyn
 
             # Prediction loss does NOT shape encoder representation
-            base_loss = self.sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+            base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
 
             # Active dims for reporting (full d_t)
             z_pred_coord_active = z_pred_coord[:, :self.d_t]
