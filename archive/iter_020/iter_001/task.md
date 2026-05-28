@@ -1,144 +1,216 @@
+## Task: Implement CGIR in NonParametricEncoder and update pre-registration
 
-# Phase 0 — Objective Migration: SFA on z_dyn + VICReg
+You are modifying the Thalamus project's encoder to implement a Centroid-Gated Identity Readout (CGIR) mechanism. Read src/pre_registration.md first, then implement the changes.
 
-## Pre-Registration File
-You MUST read `src/pre_registration.md` first and adhere to its hypotheses and falsification criteria. Also read the Manager's notes below carefully — there are CRITICAL modifications to the pre-registration that you must implement.
+### Context
+In iter_020, all SFA+VICReg arms failed the semantic disentanglement criterion (delta_R2_color ≥ 0.10). The root cause is hypothesized to be the spatial-mean computation: `z_dyn = a_spatial.mean(dim=-1)` averages over ALL 128 spatial positions and cannot isolate per-object identity information.
 
-## Manager's Critical Modifications (MUST IMPLEMENT)
+### Required Code Changes to src/models_dual_stream.py
 
-1. **Reframe claim (3) as a sanity check**: The slowness ratio (||Δz_dyn||² / ||Δz_coord||²) merely verifies that the SFA objective is active and VICReg prevents collapse. It does NOT constitute evidence of semantic disentanglement. State this explicitly in the pre-registration update.
+**1. Refactor NonParametricEncoder to add CGIR support:**
 
-2. **Add semantic disentanglement probes**: Linear probes predicting object identity (color as a 3D regression target) from z_dyn vs z_coord, and object centroid position from z_coord vs z_dyn. If SFA creates semantic separation, z_dyn should predict color well and position poorly, and vice versa for z_coord.
+a) Add `dyn_readout` parameter to `__init__` (default "mean" for backward compatibility):
+```python
+def __init__(self, d_max=8, pos_encoding="none", dyn_readout="mean"):
+```
 
-3. **Augment C3 with semantic probe criterion**: "C3 is falsified if the linear-probe R² for object color from z_dyn does not exceed that from z_coord by at least 0.10 (10 percentage points in R²)." The original slowness-ratio C3 becomes a sanity check, not the main falsification criterion.
+b) Add `conv_identity` layer when dyn_readout == "centroid_gated":
+```python
+if dyn_readout == "centroid_gated":
+    self.conv_identity = nn.Conv1d(128, d_max, kernel_size=1)
+```
 
-## CRITICAL: Architecture Context
+c) Store it: `self.dyn_readout = dyn_readout`
 
-Read `src/models_dual_stream.py` carefully. The `NonParametricEncoder` computes BOTH z_coord and z_dyn from a single shared `a_spatial = self.forward_spatial(x)`:
-- `z_coord = soft_argmax(a_spatial)` — centroids (position)
-- `z_dyn = a_spatial.mean(dim=-1)` — mean activation (identity)
+d) Extract backbone forward into `_forward_backbone()` method:
+```python
+def _forward_backbone(self, x):
+    """Returns backbone features (B, 128, 8)"""
+    x = add_positional_encoding(x, self.pos_encoding)
+    x = F.relu(self.conv1(x))
+    x = F.relu(self.conv2(x))
+    x = F.relu(self.conv3(x))
+    x = F.relu(self.conv4(x))
+    return x
+```
 
-Since both streams share the same spatial feature map, SFA gradients on z_dyn flow through a_spatial → conv_spatial → conv1-4, indirectly shaping z_coord too. This is the structural basis for testing whether SFA on z_dyn produces good z_coord readouts.
+e) Refactor `forward_spatial()` to use `_forward_backbone()`:
+```python
+def forward_spatial(self, x):
+    features = self._forward_backbone(x)
+    x = self.conv_spatial(features)
+    x = F.interpolate(x, size=128, mode='linear', align_corners=False)
+    return x
+```
 
-## Step 1: Modify src/models_dual_stream.py
+f) Update `forward()` to implement CGIR:
+```python
+def forward(self, x):
+    features = self._forward_backbone(x)
+    a_spatial = self.conv_spatial(features)
+    a_spatial = F.interpolate(a_spatial, size=128, mode='linear', align_corners=False)
+    z_coord, _ = calculate_centroid_and_variance(a_spatial)
+    
+    if self.dyn_readout == "mean":
+        z_dyn = a_spatial.mean(dim=-1)
+    elif self.dyn_readout == "centroid_gated":
+        a_identity = self.conv_identity(features)
+        a_identity = F.interpolate(a_identity, size=128, mode='linear', align_corners=False)
+        p_c = F.softmax(a_spatial, dim=-1)  # spatial attention
+        z_dyn = torch.sum(a_identity * p_c.detach(), dim=-1)  # stop-gradient on attention
+    else:
+        raise ValueError(f"Unknown dyn_readout: {self.dyn_readout}")
+    
+    return z_coord, z_dyn
+```
 
-Add SFA mode to `NonParametricJEPASpatial`:
+**2. Update NonParametricJEPASpatial to pass dyn_readout:**
 
-1. Add `primary_objective` parameter to `__init__()` (default "jepa" for backward compat). Valid values: "jepa", "sfa".
+a) Add `dyn_readout="mean"` parameter to `__init__`:
+```python
+def __init__(self, ..., dyn_readout="mean"):
+```
 
-2. Add `sfa_weight` parameter to `__init__()` (default 1.0).
+b) Pass it to encoder constructor:
+```python
+self.encoder = NonParametricEncoder(d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout)
+```
 
-3. Add `gdasr_log_only` parameter to `__init__()` (default False). When True, `update_recruitment_logic()` computes and logs growth-point signals but NEVER modifies `d_t`.
+c) Store it: `self.dyn_readout = dyn_readout`
 
-4. In `forward()`, when `primary_objective == "sfa"`:
-   a. **SFA loss**: `L_sfa = F.mse_loss(z_target_dyn[:, :self.d_t], z_hist_dyn[:, -1, :self.d_t].detach())`
-      - `z_hist_dyn[:, -1, :]` is the most recent history frame (z at time t)
-      - `z_target_dyn` is z at time t+1
-      - `.detach()` on z_hist_dyn[:, -1, :] ensures SFA pushes z(t+1) toward z(t) without also pulling z(t) — cleaner gradient
-   b. **VICReg on z_dyn ONLY** (not z_coord): compute var_loss and cov_loss on `z_target_dyn[:, :self.d_t]` only
-   c. **Predictor for surprise readout**: Use detached encoder outputs:
-      - `z_hist_coord.detach()`, `z_hist_dyn.detach()` as predictor inputs
-      - sim_loss computed as: `F.mse_loss(z_pred_coord[:, :dt_pred], z_target_coord[:, :dt_pred].detach()) + F.mse_loss(z_pred_dyn[:, :dt_pred], z_target_dyn[:, :dt_pred].detach())`
-      - This trains the predictor ONLY, not the encoder
-   d. **Total loss**: `sfa_weight * L_sfa + var_weight * var_loss_dyn + cov_weight * cov_loss_dyn + sim_weight * sim_loss`
-      - SFA + VICReg terms have gradients to encoder only
-      - sim_loss has gradients to predictor only (encoder outputs are detached)
-   e. Return the same dict structure but add `sfa_loss` key. Set `sim_loss_coord`, `sim_loss_dyn` from the detached computation.
-   f. Do NOT apply var_loss or cov_loss to z_coord under SFA mode.
+d) Update `clone()` method to pass `dyn_readout=self.dyn_readout` in the constructor and copy the attribute.
 
-5. When `primary_objective == "jepa"`: keep existing behavior exactly as-is (backward compatible).
+**3. Update pre_registration.md** — overwrite src/pre_registration.md with:
 
-6. Modify `update_recruitment_logic()` to respect `gdasr_log_only`: when True, compute and print growth-point detection signals but never change `d_t`. Log the would-have-recruited events.
+```markdown
+# RDF Scientific Pre-Registration
 
-## Step 2: Create src/run_phase0_sfa.py
+*   **Iteration:** 021
+*   **Pre-Registration File:** src/pre_registration.md
 
-Full experiment runner with 3 arms × 5 seeds:
+## 1. Hypothesis
 
-### Arms:
-- **Arm A (SFA+VICReg)**: `NonParametricJEPASpatial(primary_objective="sfa", pos_encoding="none", sfa_weight=1.0, gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.
-- **Arm B (JEPA+VICReg Baseline, B1)**: `NonParametricJEPASpatial(primary_objective="jepa", pos_encoding="none", gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.
-- **Arm C (SFA+VICReg+pos_encoding)**: Same as Arm A but `pos_encoding="sinusoidal"`. Tests whether explicit position channels help under SFA.
+The spatial-mean z_dyn computation (z_dyn = a_spatial.mean(dim=-1)) in
+NonParametricEncoder is the primary structural cause of the semantic
+disentanglement failure (delta_R2_color = -0.074, target ≥ 0.10) observed
+across all arms in iter_020. This was a measured null result: all arms had
+negative delta_R2_color, meaning z_coord predicted color at least as well as
+z_dyn. This iteration tests whether a specific architectural change (CGIR)
+changes that outcome — the prior outcome was not "wrong" but motivates this
+architectural intervention.
 
-### Training Protocol (shared):
-- Seeds: [42, 123, 456, 789, 999]
-- Environment: PhysicsSandbox(N=3, seed=seed) for 3000 steps
-- Passive observation only (no motor, action={"acc": 0.0, "push": False})
-- History: deque(maxlen=4) for H=3 history + 1 target
-- Replay buffer: capacity 2000, prefill 100 transitions
-- Optimizer: Adam, lr=1e-3
-- d_t = 3 frozen from start
-- GDASR in log-only mode
-- Batch size: 32
-- CCR mode: 'none' for this phase (clean SFA vs JEPA comparison without confounds)
+Replacing the spatial-mean with a Centroid-Gated Identity Readout (CGIR) — a
+separate 1x1 convolution (conv_identity) producing an identity feature map,
+pooled at the soft-argmax-attended spatial positions with stop-gradient on the
+spatial attention — will structurally route per-object appearance information
+into z_dyn. This is a structural routing change, NOT an emergent disentanglement
+claim: the architecture wires z_dyn to read from object positions (via
+soft-argmax attention) rather than averaging over all positions.
 
-### Evaluation Protocol (at step 3000, checkpoint at 1500):
+Specifically:
 
-1. **Non-collapse check** (C1):
-   - `has_collapsed` criterion: `e_a_dim >= 0.1 * e_a_all` AND `std_x_mean > 5.0`
-   - Per-dimension std: `torch.std(z_dyn, dim=0)` — all active dims must have std >= 0.5
-   - Report: collapsed (bool), per-dim stds
+(1) CGIR+SFA+CCR will train without collapse (per-dim std ≥ 0.5 in ≥ 4/5 seeds).
+(2) CGIR+SFA+CCR centroid MSE will be within 10% of the mean-pooling SFA baseline
+    (MSE_CGIR ≤ 1.10 × MSE_mean, where MSE_mean ≈ 121.9 from iter_020 Arm A1).
+(3) CGIR+SFA+CCR will achieve semantic disentanglement: delta_R2_color ≥ 0.10,
+    where delta_R2_color = R²_dyn_color - R²_coord_color.
+(4) [Optional but recommended] CGIR+SFA+CCR will predict object identity
+    (color+size compound) better than position: delta_R2_identity ≥ 0.10,
+    where delta_R2_identity = R²_dyn_identity - R²_coord_identity. If C3 passes
+    but C4 fails, the "identity" label is misleading and should be "color readout."
 
-2. **Centroid decoding MSE** (C2):
-   - Use 200 test frames from a separate test environment (seed+10000)
-   - For each of 3 objects: linear probe on soft-argmax centroids vs true object positions
-   - Report mean MSE across objects, and per-object MSE
-   - Also compute for the last dimension (target_dim_idx = 2) specifically
+The CGIR mechanism works because: (a) the soft-argmax attention naturally
+localizes each channel d to a specific object, (b) pooling identity features
+at the attended position reads out the object's local appearance, (c) SFA on
+z_dyn then correctly encourages this readout to be slow (appearance IS slow
+across frames), and (d) VICReg prevents the trivial constant solution.
+The stop-gradient on the spatial attention prevents SFA from distorting
+position tracking.
 
-3. **Slowness metrics** (sanity check, NOT primary falsification):
-   - Over 200 test frames, compute:
-     - `slow_dyn = mean(||z_dyn(t) - z_dyn(t-1)||^2)`
-     - `slow_coord = mean(||z_coord(t) - z_coord(t-1)||^2)`
-     - `slowness_ratio = slow_dyn / slow_coord`
-   - Report for each arm
+## 2. Falsification Criteria
 
-4. **Semantic disentanglement probes** (primary C3):
-   - Over 200 test frames, for each frame:
-     a. Get z_coord (1, d_t) and z_dyn (1, d_t) from the encoder
-     b. Get ground-truth positions (3,) and colors (3, 3) for each object
-   - For each dimension d in [0, d_t):
-     a. Match dimension d to the nearest object by centroid position (z_coord[d] vs true positions)
-     b. This establishes a dimension-object pairing
-   - Linear regression probes (train on first 100 frames, test on last 100):
-     a. **z_dyn → color**: R² for predicting matched object's color (3 channels, separate R² per channel, report mean)
-     b. **z_coord → color**: Same prediction from z_coord
-     c. **z_coord → position**: R² for predicting matched object's position from z_coord[d]
-     d. **z_dyn → position**: Same prediction from z_dyn
-   - **Key metric**: `delta_R2_color = R2(z_dyn → color) - R2(z_coord → color)`. C3 fails if delta_R2_color < 0.10
+The hypothesis is falsified if ANY of the following hold across the 5-seed
+sweep for the primary CGIR+SFA+CCR arm (Arm A):
 
-5. **VICReg health**:
-   - Per-dimension std of z_dyn across the batch
-   - Mean absolute off-diagonal correlation between active z_dyn dimensions
+C1 (Collapse): Per-dimension std < 0.5 in ≥ 2 out of 5 seeds.
 
-6. **GDASR growth-point log**:
-   - Count and timing of would-have-recruited events during training
-   - Final EMA error value
+C2 (Centroid MSE degradation): Mean centroid-decoding MSE of Arm A exceeds
+    1.10 × mean MSE of the mean-pooling SFA baseline (Arm B, MSE ≈ 121.9
+    from iter_020). If CCR is needed for z_coord tracking, Arm D (CGIR+SFA
+    no CCR) may fail C2 while Arm A passes — this would confirm CCR's role.
 
-7. **Prediction error (surprise)**:
-   - sim_loss on test frames (predictor quality)
-   - Per-dimension prediction error breakdown
+C3 (Semantic disentanglement failure): delta_R2_color < 0.10 for Arm A.
+    This is the same criterion that failed in iter_020. If CGIR does not fix
+    it, the root cause is NOT the spatial-mean computation and the hypothesis
+    is falsified.
 
-### Output:
-Save results to `archive/iter_020/results/`:
-- `phase0_raw_results.json`: Full results for each arm × seed combination
-- `phase0_summary.csv`: Summary table with key metrics
-- `phase0_training_curves.csv`: Training loss curves (sampled every 100 steps)
+C4 (Identity vs color-only): delta_R2_identity < 0.10 for Arm A, where
+    delta_R2_identity = R²_dyn_identity - R²_coord_identity and "identity"
+    is a compound label encoding both color and size. This is advisory
+    (optional) — failure here would narrow the interpretation of C3 from
+    "identity-position separation" to "color-position separation."
 
-## Step 3: Update src/pre_registration.md
+## 3. Proposed Method
 
-Update the pre-registration with:
-- Modified hypothesis (claim 3 reframed as sanity check)
-- New C3 with semantic probe criterion (delta_R2_color >= 0.10)
-- Keep C1 and C2 as originally specified
-- All other details from the approved plan
+Step 1: Modify NonParametricEncoder (src/models_dual_stream.py).
+  - Added conv_identity, dyn_readout parameter, CGIR readout with stop-gradient.
+  - Parameter increase: conv_identity adds 128×8 + 8 = 1,032 params (< 0.5% of total).
 
-## Step 4: Execute and Save Results
+Step 2: Create src/run_phase0_sfa_cgir.py.
+Four arms × 5 seeds:
 
-Run the full sweep. Save all results to the archive directory.
+Arm A (CGIR+SFA+CCR): Centroid-gated identity readout, sfa_weight=0.1,
+  var_weight=25.0, cov_weight=25.0, pos_encoding="none", CCR=covariance
+  (ccr_smooth=10, ccr_spatial=10), d_t=3, gdasr_log_only=True.
+  This is the primary test of the hypothesis. CCR is included because without
+  it, nothing directly shapes z_coord (M2 demotes JEPA to readout with
+  stop-gradient), and tracking degradation would confound the CGIR evaluation.
 
-## Important Notes:
-- The sfa_weight=1.0 is a starting point. If the first run shows SFA is too weak or too strong, adjusting it is legitimate but MUST be documented with rationale in the output.
-- Do NOT silently tune after viewing results.
-- Report both directions honestly: if MSE_SFA < MSE_JEPA, note it; if MSE_SFA > MSE_JEPA but within 10%, that's a successful bridge.
-- Use CPU (torch device "cpu") unless CUDA is available.
-- Set torch.set_num_threads(2) to prevent CPU thrashing.
-- Each training run (3000 steps) should take ~2-5 minutes on CPU.
+Arm B (Mean+SFA+CCR): Original mean-pooling z_dyn, sfa_weight=0.1,
+  var_weight=25.0, cov_weight=25.0, pos_encoding="none", CCR=covariance
+  (ccr_smooth=10, ccr_spatial=10), d_t=3, gdasr_log_only=True.
+  Direct replication of iter_020 Arm A1 for comparison — the only difference
+  from Arm A is dyn_readout (mean vs centroid_gated). This isolates the CGIR
+  architectural change.
+
+Arm C (CGIR+SFA+CCR+pos): Centroid-gated identity readout, sfa_weight=0.1,
+  var_weight=25.0, cov_weight=25.0, pos_encoding="sinusoidal", CCR=covariance
+  (ccr_smooth=10, ccr_spatial=10), d_t=3, gdasr_log_only=True.
+  Tests whether positional encoding further improves CGIR (it helped collapse
+  in iter_020 Arm C).
+
+Arm D (CGIR+SFA no CCR): Centroid-gated identity readout, sfa_weight=0.1,
+  var_weight=25.0, cov_weight=25.0, pos_encoding="none", CCR=none, d_t=3,
+  gdasr_log_only=True. Tests whether CGIR alone is sufficient or CCR is
+  needed for z_coord tracking. If Arm D fails C2 but Arm A passes, this
+  confirms CCR's role in maintaining centroid tracking.
+
+Seeds: [42, 123, 456, 789, 999].
+Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000.
+Evaluation: same protocol as iter_020 (collapse check, centroid MSE via
+  linear probe, slowness metrics, VICReg health, semantic disentanglement
+  probes with delta_R2_color, GDASR growth-point logging).
+Additional: C4 identity probe — linear probe on compound identity (color+size).
+Checkpoint evaluation at step 2500 and final evaluation at step 5000.
+
+Step 3: Falsification audit.
+Compare all arms against all criteria. The primary comparison is Arm A vs B
+(CGIR vs mean-pooling, all else equal). If Arm A achieves C3 but Arm B
+does not, the CGIR architectural change is confirmed as causally responsible.
+
+Files modified:
+- src/models_dual_stream.py (CGIR implementation)
+- src/pre_registration.md (this file)
+- src/run_phase0_sfa_cgir.py (to be created)
+
+---
+*Created automatically by the RDF Orchestrator prior to iteration execution.*
+```
+
+### CRITICAL NOTES:
+1. Do NOT change any other classes (DualStreamEncoder, DualStreamJEPASpatial, PDRCJEPASpatial, etc.) — only modify NonParametricEncoder and NonParametricJEPASpatial.
+2. Make sure the refactored `forward_spatial()` still works identically for existing code paths.
+3. The `_forward_backbone()` method should include `add_positional_encoding()` as the first step.
+4. Store `self.dyn_readout = dyn_readout` in NonParametricEncoder.__init__().
+5. The clone() method of NonParametricJEPASpatial must include dyn_readout.
+6. Write the pre-registration file to src/pre_registration.md, overwriting the existing content.
