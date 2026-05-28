@@ -1,0 +1,62 @@
+falsification_criterion: "The hypothesis is falsified if ANY of the following hold\
+  \ across the 5-seed sweep:\nC1 (Collapse): SFA+VICReg arm collapses (has_collapsed=True\
+  \ OR any active dimension std < 0.5)\n    in >= 2 out of 5 seeds.\nC2 (Centroid\
+  \ MSE): Mean centroid-decoding MSE of the SFA arm exceeds 1.10 * mean MSE of the\n\
+  \    JEPA baseline arm (i.e., SFA degrades spatial readout by more than 10%).\n\
+  C3 (Slowness separation): The ratio mean(||z_dyn(t)-z_dyn(t-1)||^2) / mean(||z_coord(t)-z_coord(t-1)||^2)\n\
+  \    is >= 0.6 for the SFA arm (i.e., z_dyn is not substantially slower than z_coord,\n\
+  \    failing the identity-position separation hypothesis).\n"
+hypothesis: "On the existing NonParametricJEPASpatial CNN encoder with frozen d_t=3\
+  \ and no dynamic\nrecruitment, replacing the JEPA prediction objective with SFA\
+  \ (slowness) on z_dyn as the\nprimary representation objective, combined with batch\
+  \ VICReg on z_dyn, will:\n(1) Train without representation collapse (all per-dimension\
+  \ std >= 0.5, no has_collapsed trigger),\n(2) Achieve centroid-decoding MSE via\
+  \ Arm F (soft-argmax on z_coord) at most 10% higher\n    than the JEPA+VICReg baseline\
+  \ (i.e., MSE_SFA <= 1.10 * MSE_JEPA, where MSE_JEPA ~ 55.6),\n(3) Produce z_dyn\
+  \ representations that are significantly slower (mean ||z_dyn(t) - z_dyn(t-1)||^2\n\
+  \    at least 40% lower) than z_coord temporal variation, indicating that SFA separates\
+  \ slow\n    identity from fast position by construction.\n"
+pre_registration_file: src/pre_registration.md
+proposed_method: "Step 1: Create SFA training infrastructure.\n- MODIFY src/models_dual_stream.py:\
+  \ Add an SFA loss computation to NonParametricJEPASpatial.forward()\n  that computes\
+  \ L_sfa = ||z_dyn_target - z_dyn_prev||^2 over the batch, where z_dyn_prev is\n\
+  \  z_dyn from the previous frame in the history. Also add batch VICReg on z_dyn_target\
+  \ (the \n  target frame's dynamics representation). The total representation loss\
+  \ becomes:\n  L_repr = sfa_weight * L_sfa + var_weight * VICReg_var(z_dyn) + cov_weight\
+  \ * VICReg_cov(z_dyn)\n  The JEPA sim_loss is retained ONLY as a readout/surprise\
+  \ signal (stop-gradient detached from\n  the representation), not as a training\
+  \ objective for the encoder.\n- Keep the predictor's forward pass for surprise computation,\
+  \ but detach its output from the\n  encoder's gradient path when SFA is the primary\
+  \ objective.\n\nStep 2: Create the Phase 0 experiment runner.\n- CREATE src/run_phase0_sfa.py:\
+  \ A 5-seed sweep comparing three arms:\n  Arm A (SFA+VICReg): Primary objective\
+  \ = SFA on z_dyn + batch VICReg on z_dyn.\n    - sfa_weight=1.0, var_weight=25.0,\
+  \ cov_weight=25.0\n    - Predictor is retained for surprise readout but gradients\
+  \ do NOT flow to encoder from sim_loss.\n    - z_coord is NOT slowed (M2 mandate).\n\
+  \    - d_t frozen at 3, no recruitment.\n  Arm B (JEPA+VICReg Baseline, B1): Same\
+  \ as current NonParametricJEPASpatial with\n    sim_weight=25.0, var_weight=25.0,\
+  \ cov_weight=25.0. d_t frozen at 3, no recruitment.\n    This is the direct comparison\
+  \ baseline.\n  Arm C (SFA+VICReg with pos_encoding=\"sinusoidal\"): Same as Arm\
+  \ A but with sinusoidal\n    position encoding added to the input. Tests whether\
+  \ explicit position channels\n    narrow the Spatial Specialization Gap under SFA.\n\
+  \nStep 3: Training protocol (shared across arms).\n- Environment: PhysicsSandbox(N=3,\
+  \ seed=seed) for 3000 training steps, batch_size=32.\n- History buffer: deque(maxlen=4)\
+  \ for H=3 history + 1 target.\n- Replay buffer: capacity 2000, prefill 100 transitions.\n\
+  - Optimizer: Adam, lr=1e-3.\n- d_t = 3 frozen from start (no recruitment logic).\n\
+  - GDASR runs in log-only mode (computes and logs growth-point signals without modifying\
+  \ d_t).\n- Seeds: [42, 123, 456, 789, 999].\n\nStep 4: Evaluation protocol (at step\
+  \ 3000 and checkpoint at 1500).\n- Non-collapse check: has_collapsed criterion +\
+  \ per-dimension std >= 0.5.\n- Centroid decoding MSE: linear probe on soft-argmax\
+  \ centroids vs. true object positions\n  (all 3 objects, report mean and per-object).\n\
+  - Slowness metrics: mean ||z_dyn(t) - z_dyn(t-1)||^2 and mean ||z_coord(t) - z_coord(t-1)||^2\n\
+  \  over 200 test frames, and their ratio.\n- VICReg health: per-dimension std, mean\
+  \ absolute correlation between active dimensions.\n- GDASR growth-point log: count\
+  \ and timing of would-have-recruited events.\n\nStep 5: Statistical analysis.\n\
+  - Welch's t-test comparing SFA arm vs JEPA arm on centroid MSE.\n- Welch's t-test\
+  \ comparing SFA arm z_dyn slowness ratio vs 0.6 threshold.\n- Cohen's d for effect\
+  \ sizes.\n- Report with confidence intervals per reporting standards (Section 9).\n\
+  \nStep 6: Falsification audit against C1, C2, C3.\n- C1: Count collapsed seeds per\
+  \ arm.\n- C2: Compare mean MSE_SFA vs 1.10 * mean MSE_JEPA.\n- C3: Compute slowness\
+  \ ratio for SFA arm; check >= 0.6.\n\nFiles to create/modify:\n- MODIFY: src/models_dual_stream.py\
+  \ (add SFA objective option to NonParametricJEPASpatial.forward)\n- CREATE: src/run_phase0_sfa.py\
+  \ (experiment runner with 3 arms × 5 seeds)\n- UPDATE: src/pre_registration.md (with\
+  \ Phase 0 pre-registration)\n"

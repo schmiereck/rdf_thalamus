@@ -1,0 +1,921 @@
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: iter | status          | hypothesis
+-----|-----------------|----------
+002  | ok              | phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
+003  | ok              | phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
+004  | ok              | phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
+005  | ok              | phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
+006  | ok              | phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
+007  | ok              | phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
+008  | ok              | phase-8: evaluate unsupervised spatial bottlenecks and close...]
+
+
+[Tool Call: read_file({'path': 'current_state.md'})]
+
+[Tool Result: # Current Research State
+Phase: Phase 18 Complete (EG-MDL Falsified, Cold-Start Optimization Transient Discovered)
+
+## Goal
+Design and evaluate a novel dynamic representation network ("Thalamus") with hierarchical
+abstraction, dynamic dimension recruitment, and thalamic gating. Current focus: solving the
+distractor-rejection problem for dimension recruitment gating.
+
+## Confirmed
+- FALSIFICATION OF EG-MDL HYPOTHESIS (iter_18.2): The prediction-trend gate ρ = E_late/E_early
+  provides zero discriminative power between genuine objects and Noisy-TV. All arms (P, S, S_alt)
+  recruit the Noisy-TV distractor in 5/5 seeds. Falsified on Criterion C2 (false recruitment > 20%).
+- COLD-START OPTIMIZATION TRANSIENT (iter_18.2): When the predictor's 4th-dimension weights are
+  randomly initialized, E_early is enormous (26-314 across seeds) and E_late drops to near-zero
+  (0.07-0.43) regardless of signal type, driving ρ to ~0.001-0.006. This transient dominates
+  any learnability signal and renders ...]
+
+
+[Tool Call: read_file({'path': 'goal.md'})]
+
+[Tool Result: # GOAL: Thalamus — Curiosity-Driven, Decoder-Free Representation Agent (v4, sml-grounded)
+
+## 0. Status and Relationship to `rdf_thalamus_sml`
+
+This is an **evolutionary revision** of the project goal, not a reset. The existing
+machinery is retained: GDASR (dynamic dimension recruitment), Arm F
+(Non-Parametric Soft-Argmax centroid projection), Arm G (CLTS motorics), the
+Watchdog/noise-robustness apparatus, and Pillars A–E. What changes is that three
+findings, validated across an 8-iteration RDF run in the companion project, now
+govern the design as non-negotiable mandates.
+
+**Companion project:** `..\rdf_thalamus_sml\` (HSUN — Hierarchical Sparse Universal
+Nodes). It validated the *representational foundation* on a controlled 1D binary
+toy problem. The implementing agents have filesystem access to that directory and
+**must read its iteration reports** (`RESEARCH-RESULT-001` through `008`) before
+planning Phase 0.
+
+**Scope of transfer (important):** the sml findings transfer at the **ob...]
+
+Now let me explore the current codebase to understand the implementation details:
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+      train_thalamus.py]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_...]
+
+
+[Tool Call: read_file({'path': 'src/thalamus.py'})]
+
+[Tool Result: import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+
+class SegmentEncoder(nn.Module):
+    def __init__(self, d_max=8, pos_encoding="none"):
+        """
+        Maps visual segment of shape (B, 3, 32) to latent space of shape (B, d_max).
+        Uses 1D convolution layers.
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.pos_encoding = pos_encoding
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Li...]
+
+
+[Tool Call: read_file({'path': 'src/train.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import time
+import random
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Ensure src directory is in the path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import FixedJEPA, DynamicJEPA
+
+# Replay Buffer storing (x_hist, x_target)
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        x_hist_batch, x_target_bat...]
+
+
+[Tool Call: read_file({'path': 'src/train_thalamus.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import pandas as pd
+
+# Set threads to prevent CPU thrashing
+torch.set_num_threads(2)
+
+# Ensure src directory is in path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import FixedJEPA
+from src.thalamus import ThalamusNet, NonGatedControlNet
+
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target, color_0, pos_0):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target, color_0, pos_0)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        bat...]
+
+
+[Tool Call: read_file({'path': 'src/motor.py'})]
+
+[Tool Result: import numpy as np
+import torch
+
+class SubsumptionMotorController:
+    def __init__(self, Kp=1.0, Kd=0.1, Kv=0.5, error_thresh=4.0, stability_thresh=0.05, 
+                 push_cooldown=15, push_magnitude=20.0, dt=1.0, ablation=None):
+        """
+        Subsumption Motor Controller with 3 hierarchical layers.
+        
+        Args:
+            Kp (float): Proportional gain for reflexive PD tracking.
+            Kd (float): Derivative gain for reflexive PD tracking.
+            Kv (float): Velocity gain for predictive kinematics.
+            error_thresh (float): Threshold under which the pointer is close enough to target to trigger boredom.
+            stability_thresh (float): Threshold under which surprise change is stable.
+            push_cooldown (int): Cooldown steps after a push is triggered.
+            push_magnitude (float): Override acceleration magnitude during a deliberate push.
+            dt (float): Control loop time step.
+            ablation (str, optional): "random...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase18_experiments.py'})]
+
+[Tool Result: import os
+import sys
+import json
+import copy
+import random
+import collections
+import numpy as np
+import pandas as pd
+import torch
+import torch.optim as optim
+import torch.nn.functional as F
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from scipy import stats
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import NonParametricJEPASpatial
+from src.motor import CLTSMotorController
+
+
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, min(batch_size, len(self.bu...]
+
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_b...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase19_experiments.py'})]
+
+[Tool Result: import os
+import sys
+import json
+import copy
+import random
+import collections
+import numpy as np
+import pandas as pd
+import torch
+import torch.optim as optim
+import torch.nn.functional as F
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from scipy import stats
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import NonParametricJEPASpatial
+from src.motor import CLTSMotorController
+from src.itag import identify_surprising_positions, compute_itag, compute_isag
+
+
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batc...]
+
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration — Phase 19
+
+## 1. Hypothesis (Modified per Manager Review)
+
+### 1.1 Original ITAG Hypothesis (Reframed)
+The temporal autocorrelation of raw pixel values at spatial positions identified as "surprising" by the pre-trained encoder provides a signal that can distinguish genuine N=3→4 object transitions from Noisy-TV distractors.
+
+**Manager's Reframing:** This is a **verification of a definitional identity**, not an empirical discovery. Noisy-TV is defined as white noise (independent across frames), so zero temporal autocorrelation is a mathematical identity. Cohen's d > 1.5 is virtually guaranteed by construction. This arm serves as a **sanity check** confirming the metric computation is correct — not as evidence of discriminative power.
+
+### 1.2 Primary Scientific Question (New)
+The genuinely non-trivial test is: **can ITAG distinguish structured-but-task-irrelevant distractors from genuine objects?**
+
+If the distractor is temporally correlated but not a ...]
+
+Now let me check the companion project and the itag module:
+
+[Tool Call: read_file({'path': 'src/itag.py'})]
+
+[Tool Result: import numpy as np
+import torch
+
+def identify_surprising_positions(prediction_error_map, top_k=16):
+    """
+    Identify top-K spatial positions with highest prediction error.
+    Args:
+        prediction_error_map: (B, 128) or (128,) - per-position prediction error from the encoder
+        top_k: number of positions to select
+    Returns:
+        positions: list of indices into the 128-pixel array
+    """
+    # If batched, take mean across batch
+    if prediction_error_map.dim() == 2:
+        prediction_error_map = prediction_error_map.mean(dim=0)  # (128,)
+    elif prediction_error_map.dim() == 3:
+        # (B, C, 128) -> take norm across C, mean across B
+        prediction_error_map = prediction_error_map.norm(dim=1).mean(dim=0)  # (128,)
+    
+    _, top_indices = torch.topk(prediction_error_map, min(top_k, prediction_error_map.shape[0]))
+    return top_indices.sort()[0].tolist()
+
+def compute_itag(pixel_buffer, surprising_positions, window=20):
+    """
+    Compute ITAG score: mean l...]
+
+
+[Tool Call: list_dir({'path': '..'})]
+
+[Tool Result: [DIR] ba_arduino_controller_moveit_config
+[DIR] ba_autocalib
+[DIR] ba_calib_model_train
+[DIR] ba_camera_bridge
+[DIR] ba_depth_node
+[DIR] ba_perception_pipeline
+[DIR] ba_training
+[DIR] BAArduinoController
+[DIR] GraphSort
+[DIR] hex_field_map
+[DIR] Hexapod_Brain
+[DIR] open-brain
+[DIR] rdf-test-wet
+[DIR] rdf-test-wet - Kopie
+[DIR] rdf_digital_physic
+[DIR] rdf_thalamus
+[DIR] rdf_thalamus_sml
+[DIR] Test
+[DIR] uroboros-rdf
+[DIR] vlm_memory_map]
+
+
+[Tool Call: list_dir({'path': '../rdf_thalamus_sml'})]
+
+[Tool Result: [DIR] -p
+[DIR] .git
+      .gitignore
+[DIR] .venv
+      _check_csv.py
+      _compute_stats.py
+      _debug.txt
+      _fix_encoding.py
+      _fix_rho.py
+      _fix_st.py
+      _gen_report.py
+      _profile_fast.py
+      _profile_mid.py
+      _profile_speed.py
+      _time_one.py
+      _tst.txt
+[DIR] archive
+      config.toml
+      current_state.md
+      experiment_log.md
+      goal.md
+      hyper_search.py
+      manager_log.md
+      phase3_diagnostic_report.md
+      phase3_run.log
+[DIR] phase_0
+[DIR] phase_1
+[DIR] phase_2
+[DIR] phase_3
+[DIR] phase_4
+[DIR] phase_5
+      RESEARCH-RESULT-001.md
+      RESEARCH-RESULT-002.md
+      RESEARCH-RESULT-003.md
+      RESEARCH-RESULT-004.md
+      RESEARCH-RESULT-005.md
+      RESEARCH-RESULT-006.md
+      RESEARCH-RESULT-007.md
+      RESEARCH-RESULT-008.md
+      research_journal.md
+      run_phase3_bg.py
+[DIR] src
+      test_raw_accuracy.py
+      test_scale.py
+      test_training.py
+      tmp_launch.py
+      tmp_run_bg.py
+      tmp_test_sa.py
+      tmp_t...]
+
+
+[Tool Call: read_file({'path': '../rdf_thalamus_sml/RESEARCH-RESULT-005.md'})]
+
+[Tool Result: # RDF Milestone Review — Iteration 005 — Null Result on Joint Spatiotemporal JEPA
+
+## 1. Pre-Declared Hypothesis and Falsification Criterion
+*   **Hypothesis:** A single UniversalNode weight set (P3-C) trained jointly on spatial and temporal Joint Embedding Predictive Architecture (JEPA) objectives can produce competitive spatiotemporal representations that outperform untrained baselines on a downstream classification suite.
+*   **Falsification Criterion (F1):** The mean classification accuracy of the fully unified grid (P3-C) over the classification suite is less than 8.0 percentage points above the Untrained baseline, or the difference is not statistically significant at $\alpha = 0.05$.
+
+## 2. Experimental Protocol
+*   **Input Space:** 16-pixel binary 1D sequences of length 32.
+*   **Architecture:** 2D grid of kernel-3 nodes stacked spatially (stride 1, overlap of 2) and temporally. Output slot dimension $d=16$.
+*   **Training Parameters:** Joint spatial and temporal JEPA loss, trai...]
+
+
+[Tool Call: read_file({'path': '../rdf_thalamus_sml/RESEARCH-RESULT-007.md'})]
+
+[Tool Result: # RDF Milestone Review — Iteration 007 — Phase 4 Training Objective Comparison
+
+## 1. Pre-Declared Hypothesis and Falsification Criterion
+- **H1 (JEPA Performance):** JEPA + pooled VICReg yields classification accuracy ≥ 55% on the spatiotemporal benchmarks.
+- **H2 (Falsification Criterion F2):** No other training objective (SFA, Hebbian, Reconstruction) when combined with pooled VICReg exceeds JEPA + pooled VICReg by ≥ 3 percentage points (pp).
+- **H3 (VICReg Necessity):** Pooled VICReg improves performance across all evaluated objectives compared to their non-VICReg counterparts.
+
+## 2. Experimental Protocol
+- **Architecture:** HSUN P3-C (fully shared weights across space, time, and layers), input dimension $d=16$, output dimension $d_{out}=16$, total parameters = 1,600.
+- **Grid & Sequence:** 16 binary pixels, sequences of length 32 steps.
+- **Training Parameters:** 30 epochs, 200 training samples per class, 100 test samples per class, batch size 64, learning rate $1\times 10^{-3}$,...]
+
+
+[Tool Call: read_file({'path': '../rdf_thalamus_sml/RESEARCH-RESULT-008.md'})]
+
+[Tool Result: # RDF Milestone Review — Iteration 008 — Null Result: Role of Training and Anchoring in Vector Semantics
+
+## 1. Pre-Declared Hypothesis and Falsification Criterion
+### Pre-Registered Hypotheses:
+- **H1 (Semantic Consistency):** Fully trained universal nodes (P3-C with Reconstruction + VICReg) exhibit consistent coordinate semantics (correlation with physical axes like magnitude and gradient) across spatial positions and hierarchical layers.
+- **H2 (Training Effect):** Unsupervised training significantly improves semantic consistency compared to untrained, random-weight baseline initializations.
+- **H3 (Anchor Effectiveness):** Explicitly anchoring dimensions to target semantic probes (P5-B) increases semantic alignment in those dimensions without collapsing overall representation quality.
+
+### Pre-Declared Falsification Criteria:
+- **F2 (Negligible Training Gain):** If the mean semantic consistency gain of trained models over untrained (Xavier random) baselines is $\le 0.05$, the hypot...]
+
+Now I have a thorough understanding of the codebase, the companion sml findings, and the Phase 0 requirements. Let me also check one critical detail about the NonParametricEncoder's z_dyn computation:
+
+[Tool Call: grep_search({'include_pattern': '*.py', 'pattern': 'z_dyn.*mean.*dim'})]
+
+[Tool Result: src\models_dual_stream.py:636: z_dyn: dynamics representations computed as mean of a_spatial over spatial dim, shape (B, d_max)
+src\models_dual_stream.py:640: z_dyn = a_spatial.mean(dim=-1)]
+
+
+[Tool Call: read_iteration({'iter_num': 18})]
+
+[Tool Result: ```yaml
+cached_tokens: 0
+campaign: Thalamus
+cost_usd: 0.87683
+hypothesis: 'phase-18: falsify EG-MDL prediction-trend gate; discover cold-start optimization
+  transient as third cold-start pathology distinct from encoder and predictor cold-starts'
+input_tokens: 825094
+iter: 18
+metrics:
+  arm_p_false_recruitment_rate: 5/5
+  arm_p_mse_cent_mean: 55.58
+  arm_p_recruitment_rate: 5/5
+  arm_p_test_sim_loss_mean: 0.0877
+  arm_s_alt_false_recruitment_rate: 5/5
+  arm_s_alt_mse_cent_mean: 55.58
+  arm_s_alt_recruitment_rate: 5/5
+  arm_s_false_recruitment_rate: 5/5
+  arm_s_mse_cent_mean: 55.58
+  arm_s_recruitment_rate: 5/5
+  arm_s_rho_control_max: 0.0049
+  arm_s_rho_transition_max: 0.006
+  eg_mdl_verdict: FALSIFIED
+  theta_sensitive: false
+output_tokens: 17244
+status: ok
+```
+
+## iter_018: phase-18: falsify EG-MDL prediction-trend gate; discover cold-start optimization transient as third cold-start pathology distinct from encoder and predictor cold-starts
+
+**Analysis:** Phase 18 tested the third app...]
+
+Now I have a complete picture. Let me synthesize everything for the Phase 0 plan.
+
+Key observations from my analysis:
+
+1. **Current code state**: The `NonParametricJEPASpatial` model uses JEPA (prediction error) as the primary representation objective with VICReg anti-collapse. The forward pass computes `sim_loss` (JEPA prediction), `var_loss` (VICReg variance), and `cov_loss` (VICReg covariance).
+
+2. **Phase 0 requirement**: Switch the representation objective from JEPA to SFA on `z_dyn` + batch VICReg, with `d_t` frozen at 3, GDASR in log-only mode.
+
+3. **The encoder's z_dyn**: Currently `z_dyn = a_spatial.mean(dim=-1)` — this is the mean of the spatial feature map over the 128-pixel dimension. This is the "identity/appearance" stream.
+
+4. **SFA implementation**: Need to add a slowness loss `||z_dyn(t) - z_dyn(t-1)||^2` on the dynamics stream. The current code already has `ccr_smooth_loss` which computes `||z_coord(t) - z_coord(t-1)||` — but this is on coordinates, not z_dyn. The new SFA loss must target `z_dyn`.
+
+5. **Position encoding comparison**: Already supported via `pos_encoding` parameter.
+
+6. **JEPA baseline (B1)**: Keep as comparison arm — same JEPA objective with VICReg.
+
+7. **Frozen d_t**: Set `d_t=3` and disable recruitment (M3).
+
+8. **Best known benchmark**: Arm P (WUP-MDL) achieved centroid MSE 55.58 on the previous JEPA objective.
+
+Now let me formulate the precise hypothesis and plan:
+
+```yaml
+hypothesis: |
+  On the existing NonParametricJEPASpatial CNN encoder with frozen d_t=3 and no dynamic
+  recruitment, replacing the JEPA prediction objective with SFA (slowness) on z_dyn as the
+  primary representation objective, combined with batch VICReg on z_dyn, will:
+  (1) Train without representation collapse (all per-dimension std >= 0.5, no has_collapsed trigger),
+  (2) Achieve centroid-decoding MSE via Arm F (soft-argmax on z_coord) at most 10% higher
+      than the JEPA+VICReg baseline (i.e., MSE_SFA <= 1.10 * MSE_JEPA, where MSE_JEPA ~ 55.6),
+  (3) Produce z_dyn representations that are significantly slower (mean ||z_dyn(t) - z_dyn(t-1)||^2
+      at least 40% lower) than z_coord temporal variation, indicating that SFA separates slow
+      identity from fast position by construction.
+
+falsification_criterion: |
+  The hypothesis is falsified if ANY of the following hold across the 5-seed sweep:
+  C1 (Collapse): SFA+VICReg arm collapses (has_collapsed=True OR any active dimension std < 0.5)
+      in >= 2 out of 5 seeds.
+  C2 (Centroid MSE): Mean centroid-decoding MSE of the SFA arm exceeds 1.10 * mean MSE of the
+      JEPA baseline arm (i.e., SFA degrades spatial readout by more than 10%).
+  C3 (Slowness separation): The ratio mean(||z_dyn(t)-z_dyn(t-1)||^2) / mean(||z_coord(t)-z_coord(t-1)||^2)
+      is >= 0.6 for the SFA arm (i.e., z_dyn is not substantially slower than z_coord,
+      failing the identity-position separation hypothesis).
+
+proposed_method: |
+  Step 1: Create SFA training infrastructure.
+  - MODIFY src/models_dual_stream.py: Add an SFA loss computation to NonParametricJEPASpatial.forward()
+    that computes L_sfa = ||z_dyn_target - z_dyn_prev||^2 over the batch, where z_dyn_prev is
+    z_dyn from the previous frame in the history. Also add batch VICReg on z_dyn_target (the 
+    target frame's dynamics representation). The total representation loss becomes:
+    L_repr = sfa_weight * L_sfa + var_weight * VICReg_var(z_dyn) + cov_weight * VICReg_cov(z_dyn)
+    The JEPA sim_loss is retained ONLY as a readout/surprise signal (stop-gradient detached from
+    the representation), not as a training objective for the encoder.
+  - Keep the predictor's forward pass for surprise computation, but detach its output from the
+    encoder's gradient path when SFA is the primary objective.
+
+  Step 2: Create the Phase 0 experiment runner.
+  - CREATE src/run_phase0_sfa.py: A 5-seed sweep comparing three arms:
+    Arm A (SFA+VICReg): Primary objective = SFA on z_dyn + batch VICReg on z_dyn.
+      - sfa_weight=1.0, var_weight=25.0, cov_weight=25.0
+      - Predictor is retained for surprise readout but gradients do NOT flow to encoder from sim_loss.
+      - z_coord is NOT slowed (M2 mandate).
+      - d_t frozen at 3, no recruitment.
+    Arm B (JEPA+VICReg Baseline, B1): Same as current NonParametricJEPASpatial with
+      sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t frozen at 3, no recruitment.
+      This is the direct comparison baseline.
+    Arm C (SFA+VICReg with pos_encoding="sinusoidal"): Same as Arm A but with sinusoidal
+      position encoding added to the input. Tests whether explicit position channels
+      narrow the Spatial Specialization Gap under SFA.
+
+  Step 3: Training protocol (shared across arms).
+  - Environment: PhysicsSandbox(N=3, seed=seed) for 3000 training steps, batch_size=32.
+  - History buffer: deque(maxlen=4) for H=3 history + 1 target.
+  - Replay buffer: capacity 2000, prefill 100 transitions.
+  - Optimizer: Adam, lr=1e-3.
+  - d_t = 3 frozen from start (no recruitment logic).
+  - GDASR runs in log-only mode (computes and logs growth-point signals without modifying d_t).
+  - Seeds: [42, 123, 456, 789, 999].
+
+  Step 4: Evaluation protocol (at step 3000 and checkpoint at 1500).
+  - Non-collapse check: has_collapsed criterion + per-dimension std >= 0.5.
+  - Centroid decoding MSE: linear probe on soft-argmax centroids vs. true object positions
+    (all 3 objects, report mean and per-object).
+  - Slowness metrics: mean ||z_dyn(t) - z_dyn(t-1)||^2 and mean ||z_coord(t) - z_coord(t-1)||^2
+    over 200 test frames, and their ratio.
+  - VICReg health: per-dimension std, mean absolute correlation between active dimensions.
+  - GDASR growth-point log: count and timing of would-have-recruited events.
+
+  Step 5: Statistical analysis.
+  - Welch's t-test comparing SFA arm vs JEPA arm on centroid MSE.
+  - Welch's t-test comparing SFA arm z_dyn slowness ratio vs 0.6 threshold.
+  - Cohen's d for effect sizes.
+  - Report with confidence intervals per reporting standards (Section 9).
+
+  Step 6: Falsification audit against C1, C2, C3.
+  - C1: Count collapsed seeds per arm.
+  - C2: Compare mean MSE_SFA vs 1.10 * mean MSE_JEPA.
+  - C3: Compute slowness ratio for SFA arm; check >= 0.6.
+
+  Files to create/modify:
+  - MODIFY: src/models_dual_stream.py (add SFA objective option to NonParametricJEPASpatial.forward)
+  - CREATE: src/run_phase0_sfa.py (experiment runner with 3 arms × 5 seeds)
+  - UPDATE: src/pre_registration.md (with Phase 0 pre-registration)
+
+pre_registration_file: "src/pre_registration.md"
+```
+
+Wait, I need to think more carefully about the SFA implementation. The current model processes `(x_hist, x_target)` where `x_hist` has shape `(B, H, 3, 128)` and `x_target` has shape `(B, 3, 128)`. The SFA loss needs `z_dyn(t)` and `z_dyn(t-1)` from consecutive frames. In the current setup, `x_hist` contains frames `(t-2, t-1, t)` and `x_target` is frame `t+1`. So `z_dyn(t)` is the encoding of `x_hist[:, -1, :, :]` (the last history frame) and `z_dyn(t-1)` is the encoding of `x_hist[:, -2, :, :]` (the second-to-last history frame). But actually, the model currently encodes `x_hist` by flattening across H, so it gets `(B*H, 3, 128)` and then reshapes back to `(B, H, d_max)`. So `z_hist_dyn` already contains the z_dyn for all H history frames.
+
+For SFA, the natural computation is:
+- `z_dyn_target = encoder(x_target)` → `z_dyn(t+1)` 
+- `z_dyn_prev = z_hist_dyn[:, -1, :]` → `z_dyn(t)` (last history frame)
+- `L_sfa = ||z_dyn_target - z_dyn_prev||^2`
+
+Actually wait - we could also compute pairwise slowness over all consecutive pairs in the history window: sum of ||z_dyn(t) - z_dyn(t-1)||^2 for t in the history. But the simplest and most standard SFA is just between consecutive frames. Since the target is `t+1` and the last history frame is `t`, the slowness between those two is the natural SFA loss.
+
+Let me also think about the critical distinction: under SFA as the primary objective, the encoder learns to make z_dyn change slowly. VICReg prevents collapse. The predictor still runs for surprise readout, but its prediction error does NOT train the encoder.
+
+Actually, re-reading the goal more carefully:
+
+> **Surprise / saliency readout (does NOT shape the representation):**
+> A lightweight next-latent predictor reads out of the (stop-gradient) SFA representation; its prediction error is the **surprise** signal driving attention and motor only.
+
+So the predictor still exists, still predicts, but its prediction error is only used for:
+1. Surprise readout (attention/motor)
+2. NOT as a training signal for the encoder
+
+This means in the SFA training mode:
+- The encoder's forward pass produces `z_coord` and `z_dyn` for both history and target frames.
+- The SFA loss `||z_dyn_target - z_dyn_prev||^2` trains the encoder.
+- VICReg on `z_dyn_target` trains the encoder (anti-collapse).
+- The predictor still runs on `(z_coord_history, z_dyn_history)` to produce `(z_pred_coord, z_pred_dyn)`.
+- The prediction error `||z_pred - z_target||` is computed and logged as surprise, but with stop-gradient so it doesn't train the encoder.
+- The predictor itself CAN still be trained by the prediction error (optional — it needs to learn to be a good surprise readout). But the key is that the encoder is NOT trained by the prediction error.
+
+Actually, re-reading more carefully: the predictor should be trained by the prediction error to be a useful surprise readout. The stop-gradient is on the encoder side, not the predictor side. So:
+- Encoder trains on: SFA loss + VICReg
+- Predictor trains on: prediction error (sim_loss) — but this gradient only flows through the predictor, not the encoder, because we detach the encoder's output before passing to the predictor.
+
+Wait, but in the current code, the predictor receives `z_hist_coord` and `z_hist_dyn` directly from the encoder. If we want the predictor to be trained but not backprop to the encoder, we need to detach these before passing to the predictor. Currently in `NonParametricJEPASpatial.forward`, there's no detachment — gradients flow freely.
+
+For Phase 0 (passive observation, no motor), the simplest approach is:
+1. Encode history and target → get z_hist and z_target
+2. Compute SFA loss on z_dyn (train encoder)
+3. Compute VICReg on z_dyn (train encoder)
+4. Detach encoder outputs, pass to predictor
+5. Compute prediction error (train predictor only, for surprise readout)
+6. Total loss = SFA + VICReg + prediction_error (but prediction_error gradient is blocked from encoder)
+
+Actually, for Phase 0, we don't even need the predictor to be well-trained since there's no motor/attention yet. But per the goal, we should retain it as a readout. The simplest implementation: keep the predictor, let it train on prediction error with stop-gradient on encoder outputs, and log the prediction error as a diagnostic.
+
+Let me also think about the exact SFA computation. The slowness objective is `||z_dyn(t+1) - z_dyn(t)||^2`. We have:
+- `z_target_dyn` = encoder(x_target) → z_dyn at frame t+1
+- `z_hist_dyn[:, -1, :]` = z_dyn at frame t
+
+The SFA loss is `F.mse_loss(z_target_dyn_active, z_hist_dyn[:, -1, :d_t].detach())` — wait, should we detach the history frame? No — in standard SFA, both sides of the difference should be differentiable. But if we make both sides differentiable, the gradient would try to make z_dyn(t+1) = z_dyn(t), which would collapse. VICReg prevents that by keeping the variance up. So we should NOT detach either side.
+
+Actually, this is a subtle point. In the standard SFA formulation, the objective is:
+E[||z(t+1) - z(t)||^2] subject to E[z] = 0 and E[z_i * z_j] = δ_ij
+
+The VICReg variance and covariance terms enforce the constraints. So the SFA loss should be differentiable on both sides, and VICReg prevents collapse.
+
+But there's a practical issue: `z_hist_dyn[:, -1, :]` comes from the same encoder as `z_target_dyn`. If we don't detach, the gradient flows through both paths, which is correct for SFA but means the encoder gets gradient from two forward passes through the same input frame (once as history, once as target). This should be fine — it's standard.
+
+Actually, wait — in the current training setup, `x_hist` and `x_target` are different frames from different timesteps in the replay buffer. The encoder is applied to `x_hist_flat` (which includes frames t-2, t-1, t) and `x_target` (frame t+1). So `z_hist_dyn[:, -1, :]` is the encoding of frame t, and `z_target_dyn` is the encoding of frame t+1. These are consecutive frames.
+
+One more issue: the current code encodes `x_hist_flat` with a single forward pass that processes all H=3 frames. The gradients from `z_hist_dyn` flow back through all three history encodings. For SFA, we want the gradient to properly train the encoder to produce slow z_dyn. Since z_hist and z_target both come from the same encoder with the same weights, the SFA gradient correctly adjusts the encoder.
+
+OK, I think the implementation is clear. Let me finalize the plan.
+
+Also, I need to think about whether we should compute SFA over all consecutive pairs in the history (t-2→t-1, t-1→t) plus the target pair (t→t+1), or just the target pair. Using all pairs gives a stronger signal and is more consistent with the SFA principle. Let me use all consecutive pairs:
+
+```
+L_sfa = sum over consecutive pairs (i, i+1): ||z_dyn(i+1) - z_dyn(i)||^2
+```
+
+where z_dyn(0..H-1) are from history and z_dyn(H) is from target. With H=3, this gives 3 pairs: (0,1), (1,2), (2,3). The last pair (2,3) is the target prediction pair.
+
+Actually, this is more natural than just the last pair because it uses all available temporal structure. And the SFA principle is "extract slowly varying features from a quickly varying input" — the more temporal pairs we have, the better the slowness signal.
+
+But wait — there's a subtlety. In the replay buffer, consecutive frames within a single sample may not be truly consecutive in time if the buffer was sampled randomly. Actually, they ARE consecutive — the history buffer maintains a deque of 4 consecutive frames, so x_hist contains frames t-2, t-1, t, and x_target is frame t. These are genuinely consecutive in time.
+
+OK, but actually, in the current training loop, the replay buffer stores (x_hist, x_target) pairs where x_hist = [frame_t-2, frame_t-1, frame_t] and x_target = frame_t+1. When we sample a batch, each sample is from a different point in time, but within each sample, the frames are consecutive. So computing SFA within each sample is correct.
+
+Let me finalize:
+
+For the SFA objective:
+```
+z_hist_dyn = encoder(x_hist_flat).reshape(B, H, d_max)  # (B, 3, d_max)
+z_target_dyn = encoder(x_target)  # (B, d_max)
+
+# Stack all consecutive dynamics representations
+z_all_dyn = torch.cat([z_hist_dyn, z_target_dyn.unsqueeze(1)], dim=1)  # (B, 4, d_max)
+z_dyn_active = z_all_dyn[:, :, :d_t]  # (B, 4, d_t)
+
+# SFA loss: mean squared difference between consecutive frames
+diffs = z_dyn_active[:, 1:, :] - z_dyn_active[:, :-1, :]  # (B, 3, d_t)
+L_sfa = (diffs ** 2).mean()
+```
+
+And VICReg on the target frame's z_dyn:
+```
+var_loss = calc_var_loss(z_target_dyn[:, :d_t])
+cov_loss = calc_cov_loss(z_target_dyn[:, :d_t])
+```
+
+This is clean and well-defined.
+
+Now, for the JEPA baseline (Arm B), we use the existing forward pass with sim_weight=25.0, var_weight=25.0, cov_weight=25.0. No changes needed.
+
+For the position encoding comparison (Arm C), we use pos_encoding="sinusoidal" with the SFA objective.
+
+One more important detail: the existing `ccr_smooth_loss` computes temporal smoothness on `z_coord` (not z_dyn). Per M2, we should NOT smooth z_coord. The CCR module should be disabled in the SFA arm, since SFA on z_dyn replaces the CCR smoothness objective. Actually, CCR does two things: smoothness AND spatial decorrelation. We may want to keep the spatial decorrelation part. But for Phase 0 simplicity, let's disable CCR entirely for the SFA arm and rely on VICReg for all anti-collapse/decorrelation. CCR was a Phase 14 addition that may be superseded by the cleaner SFA+VICReg formulation.
+
+Let me also think about what happens to the predictor in the SFA arm. Per the goal:
+
+> The surprise / prediction-error signal survives as a readout (drives attention and motor), not as the representation objective.
+
+So the predictor should still be trained, but its gradients should NOT flow back to the encoder. The cleanest way:
+1. Detach z_hist and z_target before passing to predictor
+2. Let the predictor train on the prediction error
+3. Log the prediction error as a diagnostic (surprise signal)
+
+This way, the predictor becomes a useful surprise readout without influencing the representation.
+
+For Phase 0 (passive observation, no motor), the predictor's surprise signal is just logged, not used for anything. But training it now sets up the infrastructure for Phase 2 (thalamic gating) where it will drive attention.
+
+OK, I'm ready to write the final plan. Let me also make sure the falsification criteria are precise and the method is detailed enough.
+
+One more consideration: the centroid decoding MSE. In the current evaluation, this is computed by:
+1. Get soft-argmax centroids from the encoder's spatial feature map
+2. Fit a linear probe from centroids to true object positions
+3. Report MSE on held-out test frames
+
+This is the Arm F metric. It only depends on z_coord (the soft-argmax readout), not on z_dyn. Under SFA, z_coord is NOT directly trained (no slowness penalty on it). But z_coord comes from the same encoder backbone, so it's indirectly shaped by the SFA+VICReg objective on z_dyn. The question is whether SFA on z_dyn degrades the spatial readout quality.
+
+The key insight from M2: "SFA on z_dyn may separate slow identity from fast position by construction." If this works, z_coord might actually IMPROVE because the encoder is freed from having to encode identity information in the coordinate stream.
+
+But we can't assume this — we need to measure it. That's exactly what Phase 0 is for.
+
+Let me finalize my plan now.Now I have a comprehensive understanding of the entire codebase, the companion sml project findings, and the Phase 0 requirements. Let me formulate the plan.
+
+Key implementation details I've confirmed:
+1. **`NonParametricJEPASpatial`** is the production encoder with `NonParametricEncoder` producing both `z_coord` (soft-argmax centroid) and `z_dyn` (mean of spatial feature map, shape `(B, d_max)`)
+2. Current training objective is JEPA `sim_loss` (prediction error) + VICReg on both streams
+3. SFA requires adding slowness loss `||z_dyn(t+1) - z_dyn(t)||²` on the dynamics stream only
+4. The predictor must be retained for surprise readout but its gradients must be detached from the encoder when SFA is primary
+5. `d_t` must be frozen at 3 with GDASR in log-only mode
+6. Position encoding already supported via `pos_encoding` parameter
+
+```yaml
+hypothesis: |
+  On the existing NonParametricJEPASpatial CNN encoder with frozen d_t=3 and no dynamic
+  recruitment (M3), replacing the JEPA prediction objective with SFA (temporal slowness) on
+  z_dyn as the primary representation objective, combined with batch VICReg on z_dyn (M1, M2),
+  will:
+  (1) Train without representation collapse (all per-dimension std >= 0.5, has_collapsed=False)
+      in >= 4 out of 5 seeds;
+  (2) Achieve centroid-decoding MSE via Arm F (soft-argmax on z_coord) no more than 10%
+      higher than the JEPA+VICReg baseline (MSE_SFA <= 1.10 * MSE_JEPA, where the JEPA
+      baseline under frozen d_t=3 is expected near ~55-60 based on iter_018 Arm P);
+  (3) Produce z_dyn representations that are substantially slower than z_coord, with the
+      slowness ratio R = mean(||z_dyn(t)-z_dyn(t-1)||²) / mean(||z_coord(t)-z_coord(t-1)||²)
+      <= 0.6, indicating that SFA separates slow identity from fast position by construction
+      (the Spatial Specialization Gap hypothesis from M2).
+
+falsification_criterion: |
+  The hypothesis is falsified if ANY of the following hold across the 5-seed sweep
+  (seeds [42, 123, 456, 789, 999]):
+  C1 (Collapse): SFA+VICReg arm collapses (has_collapsed=True OR any active dimension
+      batch std < 0.5) in >= 2 out of 5 seeds.
+  C2 (Centroid MSE Degradation): Mean centroid-decoding MSE of the SFA arm exceeds
+      1.10 * mean MSE of the JEPA baseline arm. This would indicate that SFA on z_dyn
+      degrades the spatial readout beyond acceptable tolerance.
+  C3 (Slowness Separation Failure): The slowness ratio R for the SFA arm is >= 0.6,
+      meaning z_dyn is NOT substantially slower than z_coord, falsifying the M2 claim
+      that SFA structurally separates identity from position.
+
+proposed_method: |
+  Step 1: Modify NonParametricJEPASpatial to support SFA training mode.
+  - MODIFY src/models_dual_stream.py:
+    * Add an `objective` parameter to NonParametricJEPASpatial.__init__() with values
+      "jepa" (default, current behavior) and "sfa" (new).
+    * In forward(), when objective="sfa":
+      a) Encode x_hist and x_target → z_hist_dyn (B,H,d_max) and z_target_dyn (B,d_max).
+      b) Compute SFA loss on z_dyn only:
+         z_all_dyn = cat([z_hist_dyn, z_target_dyn.unsqueeze(1)], dim=1) → (B,4,d_max)
+         z_dyn_active = z_all_dyn[:, :, :d_t]
+         diffs = z_dyn_active[:, 1:] - z_dyn_active[:, :-1]  → (B,3,d_t)
+         L_sfa = (diffs ** 2).mean()
+      c) Compute batch VICReg on z_target_dyn[:, :d_t]:
+         var_loss_dyn = calc_var_loss(z_target_dyn[:, :d_t])
+         cov_loss_dyn = calc_cov_loss(z_target_dyn[:, :d_t])
+      d) Representation loss = sfa_weight * L_sfa + var_weight * var_loss_dyn + cov_weight * cov_loss_dyn.
+         This trains the encoder ONLY.
+      e) For surprise readout: detach z_hist and z_target, pass to predictor, compute
+         sim_loss_coord and sim_loss_dyn. This trains the predictor ONLY (stop-gradient
+         prevents encoder gradients from sim_loss). Log sim_loss as surprise diagnostic.
+      f) z_coord is NOT slowed (M2 mandate). No SFA loss on z_coord.
+      g) Disable CCR in SFA mode (superseded by SFA+VICReg).
+    * When objective="jepa": current behavior unchanged (baseline B1).
+    * Add GDASR log-only mode: compute and log growth-point signals (EMA error, buffer
+      statistics, would-have-recruited events) without modifying d_t.
+
+  Step 2: Create Phase 0 experiment runner.
+  - CREATE src/run_phase0_sfa.py with 3 arms × 5 seeds = 15 runs:
+    * Arm A (SFA+VICReg, RGB-only): objective="sfa", pos_encoding="none",
+      sfa_weight=1.0, var_weight=25.0, cov_weight=25.0, d_t=3 frozen.
+    * Arm B (JEPA+VICReg Baseline B1): objective="jepa", pos_encoding="none",
+      sim_weight=25.0, var_weight=25.0, cov_weight=25.0, d_t=3 frozen.
+    * Arm C (SFA+VICReg, RGB+sinusoidal position): objective="sfa",
+      pos_encoding="sinusoidal", sfa_weight=1.0, var_weight=25.0, cov_weight=25.0,
+      d_t=3 frozen.
+  - Training: PhysicsSandbox(N=3), 3000 steps, batch_size=32, lr=1e-3, Adam.
+  - Evaluation at step 3000 (and checkpoint at 1500):
+    * Non-collapse: has_collapsed + per-dim std >= 0.5
+    * Centroid decoding MSE: linear probe on soft-argmax centroids vs. true positions
+    * Slowness ratio R: mean(||z_dyn(t)-z_dyn(t-1)||²) / mean(||z_coord(t)-z_coord(t-1)||²)
+      over 200 test frames
+    * Per-dimension std and mean absolute correlation (VICReg health)
+    * GDASR growth-point log count and timing
+    * Predictor surprise (sim_loss) as diagnostic
+    * Test sim loss for comparison
+
+  Step 3: Statistical analysis and falsification audit.
+  - Welch's t-test on centroid MSE (Arm A vs Arm B)
+  - Welch's t-test on slowness ratio R (Arm A vs 0.6 threshold)
+  - Cohen's d effect sizes
+  - Falsification check against C1, C2, C3
+  - Position encoding comparison (Arm A vs Arm C) reported as measurement, not assumption
+
+  Step 4: Report generation.
+  - Quantitative results with 5-seed confidence intervals
+  - Honest reporting of failure modes
+  - Cross-project consistency notes with rdf_thalamus_sml findings
+  - Growth-point log summary for future Phase 5 recruitment design
+
+  Files to create/modify:
+  - MODIFY: src/models_dual_stream.py (add SFA objective mode to NonParametricJEPASpatial)
+  - CREATE: src/run_phase0_sfa.py (3-arm, 5-seed experiment runner)
+  - UPDATE: src/pre_registration.md (Phase 0 pre-registration)
+
+pre_registration_file: "src/pre_registration.md"
+```
