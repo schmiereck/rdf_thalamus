@@ -152,7 +152,7 @@ class DualStreamPredictor(nn.Module):
         pred = self.net(z_history_flat) # (B, d_max + d_dyn)
         
         # Split into coord and dyn predictions
-        pred_coord, pred_dyn = torch.split(pred, self.d_max, dim=-1)
+        pred_coord, pred_dyn = torch.split(pred, [self.d_max, self.d_dyn], dim=-1)
         
         # Zero out inactive dimensions in the outputs
         out_mask_coord = torch.zeros_like(pred_coord)
