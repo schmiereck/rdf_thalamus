@@ -1,81 +1,111 @@
+## Task: Create and run the CGIR Phase 0 experiment
 
-# Phase 0 Recovery: Fix SFA Implementation and Re-run with Adjusted Parameters
+Read src/pre_registration.md FIRST before doing anything else. You must strictly adhere to the pre-registered hypothesis and falsification criteria.
 
-## Context
-The initial Phase 0 experiment (run_phase0_sfa.py) produced results showing:
-- 2/5 SFA seeds collapsed (per-dim std < 0.5)  
-- JEPA baseline also unhealthy (4/5 seeds with per-dim std < 0.5)
-- Slowness ratio extremely high (805.2) in SFA arm — z_dyn collapsed to constant, making ratio meaningless
-- Semantic probes showed negative R² (worse than mean prediction)
+### Overview
+Create `src/run_phase0_sfa_cgir.py` — an experiment runner that tests the CGIR (Centroid-Gated Identity Readout) architectural change against the pre-registered falsification criteria C1-C4.
 
-Root cause analysis identified TWO issues:
-1. **SFA implementation bug**: z_prev_dyn is NOT detached in the SFA loss, causing gradient to flow through BOTH z_target and z_prev, effectively doubling the SFA gradient signal. Fix: add `.detach()` on z_prev_dyn_active.
-2. **Training regime too simplified**: No CCR, only 3000 steps, no recruitment — this is insufficient even for the JEPA baseline. The prior successful baselines used 5000 steps + CCR covariance mode.
+### Architecture Changes (already made in src/models_dual_stream.py)
+- `NonParametricEncoder` now accepts `dyn_readout="centroid_gated"` which:
+  - Adds `conv_identity = nn.Conv1d(128, d_max, kernel_size=1)` 
+  - Computes z_dyn by pooling identity features at soft-argmax-attended positions with stop-gradient on attention
+  - `p_c = F.softmax(a_spatial, dim=-1)` then `z_dyn = torch.sum(a_identity * p_c.detach(), dim=-1)`
+- `NonParametricJEPASpatial` passes `dyn_readout` parameter to the encoder
 
-## Task: Fix, Adjust, and Re-run
+### Four Arms × 5 Seeds × 5000 Steps
 
-### Step 1: Fix the SFA implementation in src/models_dual_stream.py
-
-In the SFA branch of `NonParametricJEPASpatial.forward()`, find this line:
-```python
-sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active)
+```
+Arm A (CGIR+SFA+CCR):      dyn_readout="centroid_gated", sfa_weight=0.1, pos_encoding="none", 
+                            CCR=covariance (ccr_smooth=10, ccr_spatial=10), var=25, cov=25
+Arm B (Mean+SFA+CCR):      dyn_readout="mean",           sfa_weight=0.1, pos_encoding="none",
+                            CCR=covariance (ccr_smooth=10, ccr_spatial=10), var=25, cov=25
+Arm C (CGIR+SFA+CCR+pos):  dyn_readout="centroid_gated", sfa_weight=0.1, pos_encoding="sinusoidal",
+                            CCR=covariance (ccr_smooth=10, ccr_spatial=10), var=25, cov=25
+Arm D (CGIR+SFA no CCR):   dyn_readout="centroid_gated", sfa_weight=0.1, pos_encoding="none",
+                            CCR=none, var=25, cov=25
 ```
 
-Change it to:
-```python
-sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active.detach())
-```
+Seeds: [42, 123, 456, 789, 999]
+Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000
+d_t=3, gdasr_log_only=True
 
-This ensures the SFA gradient only flows through z_target (pushing it toward z_prev), not also through z_prev (which would double the effective SFA gradient strength).
+### Experiment Runner Structure
 
-### Step 2: Create src/run_phase0_sfa_recovery.py
+Use `src/run_phase0_sfa_recovery.py` as a template. The runner should:
 
-A new experiment runner with these adjustments:
+1. **Training loop**: Same as recovery runner (ReplayBuffer, PhysicsSandbox with N=3, etc.)
+   - Use `NonParametricJEPASpatial(primary_objective="sfa", ...)` with appropriate `dyn_readout`
+   - Pass CCR params through the forward call
 
-**Recovery arms (4 arms × 5 seeds):**
-- **Arm A1 (SFA w=0.1)**: sfa_weight=0.1, 5000 steps, CCR covariance mode (smooth=10, spatial=10), pos_encoding="none", d_t=3, gdasr_log_only=True
-- **Arm A2 (SFA w=1.0 fixed)**: sfa_weight=1.0, 5000 steps, CCR covariance mode, pos_encoding="none", d_t=3, gdasr_log_only=True — this tests whether the detach fix alone resolves collapse
-- **Arm B (JEPA+CCR baseline)**: primary_objective="jepa", 5000 steps, CCR covariance mode, pos_encoding="none", d_t=3, gdasr_log_only=True — same extended regime for fair comparison
-- **Arm C (SFA w=0.1+pos)**: sfa_weight=0.1, 5000 steps, CCR covariance mode, pos_encoding="sinusoidal", d_t=3
+2. **Evaluation protocol** (same as iter_020):
+   - Collapse check: per-dim std < 0.5
+   - VICReg health: per-dim std and mean absolute correlation
+   - Centroid decoding MSE: linear probe of z_coord → position
+   - Slowness metrics: mean_dyn_delta / mean_coord_delta ratio
+   - Semantic disentanglement probes: delta_R2_color
+   - GDASR growth-point logging
+   - Checkpoint evaluation at step 2500
 
-**Training protocol:**
-- Seeds: [42, 123, 456, 789, 999]
-- Environment: PhysicsSandbox(N=3, seed=seed) for 5000 steps (increased from 3000)
-- Passive observation only (no motor)
-- History: deque(maxlen=4)
-- Replay buffer: capacity 2000, prefill 100
-- Optimizer: Adam, lr=1e-3
-- d_t=3 frozen, GDASR log-only
-- CCR mode: 'covariance', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0
-- sim_weight=25.0, var_weight=25.0, cov_weight=25.0 (same as before)
+3. **C4 Identity Probe** (NEW — Manager's recommended addition):
+   Extend `compute_semantic_probes()` to also probe for object identity = compound label encoding both color AND size (radius).
+   
+   For each dimension d matched to object o:
+   - Compute R²_dyn_identity: R² of z_dyn[d] predicting a compound identity label
+   - Compute R²_coord_identity: R² of z_coord[d] predicting the same compound label
+   - The compound label should combine color and radius information. Since color is 3D (RGB) and radius is 1D, create a 4D compound: `identity = [R, G, B, radius_normalized]`. Normalize radius to [0, 1] range (divide by max radius ~20).
+   - Fit a MULTIVARIATE linear probe: predict the 4D identity vector from z_dyn[d] or z_coord[d] using a single linear layer. Report R² as 1 - SS_res/SS_tot.
+   - Compute delta_R2_identity = R²_dyn_identity - R²_coord_identity
+   - This is C4: delta_R2_identity ≥ 0.10 means z_dyn predicts identity better than z_coord
 
-**Evaluation protocol (same as original, at step 5000 and checkpoint at 2500):**
-1. Non-collapse check: has_collapsed + per-dim std >= 0.5
-2. Centroid decoding MSE (200 test frames, 3 objects)
-3. Slowness metrics (sanity check)
-4. Semantic disentanglement probes (linear probes for color R² from z_dyn vs z_coord)
-5. VICReg health (per-dim std, mean abs correlation)
-6. GDASR growth-point log
-7. Prediction error
+   Implementation: For multivariate R², use:
+   ```python
+   # y is (N, 4), z is (N,)
+   # Fit: y_pred = z @ W + b where W is (1, 4), b is (4,)
+   # Use least-squares
+   Z_aug = np.stack([z, np.ones_like(z)], axis=1)  # (N, 2)
+   theta = np.linalg.pinv(Z_aug.T @ Z_aug) @ Z_aug.T @ y  # (2, 4)
+   y_pred = Z_aug @ theta  # (N, 4)
+   ss_res = np.sum((y - y_pred) ** 2)
+   ss_tot = np.sum((y - np.mean(y, axis=0)) ** 2)
+   r2 = 1.0 - ss_res / (ss_tot + 1e-12)
+   ```
 
-**Key comparison:** 
-- C1: SFA arm A1 collapse rate vs original A collapse rate (2/5)
-- C2: MSE_A1 vs MSE_B (need MSE_A1 <= 1.10 * MSE_B)
-- C3 semantic: delta_R2_color for A1 >= 0.10
+4. **Output files** — save to `archive/iter_020/results/` (same directory structure as iter_020 recovery):
+   - Per-run CSVs and JSONs in `runs/` subdirectory
+   - Training logs in `runs/`
+   - Model checkpoints in `checkpoints/`
+   - Summary CSV: `summary_phase0_cgir.csv` (final step=5000 only)
+   - Checkpoint summary: `summary_phase0_cgir_cp2500.csv`
+   - Aggregated stats: `aggregated_phase0_cgir.csv`
+   - Audit JSON: `audit_phase0_cgir.json`
+   - **Comparison report**: `CGIR_COMPARISON_REPORT.md` — must include:
+     - Table comparing all 4 arms on C1-C4
+     - Per-dimension probe details for the CGIR arm
+     - Comparison with iter_020 results (Arm A1 from iter_020 = replication of Arm B here)
+     - Honest falsification audit
+     - If C3 passes for Arm A but not Arm B, frame as: "CGIR structurally routes per-object appearance information into z_dyn, consistent with the hypothesis that mean-pooling prevented this routing." NOT "SFA enables emergent identity-position disentanglement."
+     - If C3 passes but C4 fails, clarify: the separation is color-vs-position, not identity-vs-position.
 
-### Step 3: Run the experiment
+### CRITICAL Implementation Notes
 
-Execute `python src/run_phase0_sfa_recovery.py` and save all results to `archive/iter_020/results/`.
+1. The `NonParametricJEPASpatial` constructor signature is:
+   ```python
+   NonParametricJEPASpatial(d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, 
+       pos_encoding="none", primary_objective="jepa", sfa_weight=25.0, 
+       gdasr_log_only=True, dyn_readout="mean")
+   ```
+   Use `primary_objective="sfa"` for all SFA arms.
 
-### Step 4: Generate comparison report
+2. For Arm D (no CCR), pass `ccr_mode='none'` to the forward call.
 
-After all runs complete, output a clear comparison between the original Phase 0 results and the recovery results, including:
-- Per-arm mean ± std for: centroid_mse_mean, slowness_ratio, delta_R2_color, per_dim_std
-- Falsification audit for each SFA arm against C1, C2, C3
-- Whether the detach fix and/or sfa_weight reduction resolved the collapse
+3. Make sure the `collect_multitraj_eval_data()` function also collects `radii` from `info["radii"]` for the C4 probe.
 
-### Important:
-- Use CPU (torch device "cpu") unless CUDA is available
-- Set torch.set_num_threads(2) to prevent CPU thrashing
-- The evaluation functions (compute_centroid_mse, compute_semantic_probes, etc.) from run_phase0_sfa.py can be reused
-- Document any parameter adjustments and their rationale in the output
+4. Save the comparison report to `archive/iter_020/results/CGIR_COMPARISON_REPORT.md`.
+
+5. Run the full experiment (not dry-run). Expect ~20 minutes per arm (5 seeds × 5000 steps each).
+
+6. After all runs complete, generate the falsification audit JSON comparing all arms against C1-C4.
+
+7. IMPORTANT: The evaluation functions (collapse check, centroid MSE, semantic probes) should work with the CGIR encoder just like they did with the mean-pooling encoder. The encoder returns (z_coord, z_dyn) with the same shapes regardless of dyn_readout mode.
+
+8. Make sure the runner script can be executed standalone: `python src/run_phase0_sfa_cgir.py`
