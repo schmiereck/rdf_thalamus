@@ -1,0 +1,1 @@
+Run python src/run_phase0_sfa.py --dry-run to make sure the dry run passes cleanly without any syntax or runtime errors. If it passes, run the full training sweep (which runs the actual training of 3000 steps across 3 arms × 5 seeds) using python src/run_phase0_sfa.py. Ensure that it saves all output files in the correct places.
