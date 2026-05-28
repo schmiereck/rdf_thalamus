@@ -1,9 +1,8 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 021
 
-*   **Iteration:** 021
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 021 -> Manager [Proposed Research Plan]
 
-## 1. Hypothesis
+**Proposed Hypothesis:**
 The persistent semantic disentanglement failure (delta_R2_identity = -0.035 in iter_021)
 is caused by an architectural information bottleneck: z_dyn[c] is a single scalar
 per channel, and with d_t=3 active channels, only 3 scalars are available to encode
@@ -25,7 +24,7 @@ The three interventions are isolatable and ordered by cost:
 (c) Sub-features K=4: expands per-channel capacity from 1 to 4 scalars.
     Expected: largest improvement, as this directly addresses the bottleneck.
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 PRIMARY: If Arm C (K=4 sub-features) fails to achieve mean delta_R2_identity
 ≥ 0.10 across 5 seeds at step 5000, the single-scalar bottleneck is NOT the
 primary cause of the disentanglement failure, and the hypothesis is falsified.
@@ -44,7 +43,7 @@ thresholds: metric(arm) - metric(control) ≥ threshold. The absolute criterion
 from iter_021 (delta_R2_color(Arm A) ≥ 0.10) was incoherent with the observed
 improvement (+0.124) and is replaced.
 
-## 3. Proposed Method
+**Proposed Method:**
 == EXPERIMENT DESIGN ==
 
 4 arms × 5 seeds × 5000 steps. Seeds: [42, 123, 456, 789, 999].
@@ -142,4 +141,32 @@ Arm C (Sub-Features K=4, d_max=8, dyn_source="spatial", CGIR):
 3. src/pre_registration.md: Update with this plan.
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 021 -> Planner [Strategic Guidance]
+
+# Manager's Note — Strategic Guidance for Iteration 022
+
+## 1. Falsification Criterion Contains an Internal Contradiction — Fix Before Execution
+
+Your primary falsification criterion states: *"If Arm C fails to achieve mean delta_R2_identity ≥ 0.10,"* which reads as **absolute**. Your own threshold clarification section then declares: *"All criteria use IMPROVEMENT-based thresholds: metric(arm) - metric(control) ≥ threshold."* These are not the same thing. The iter_021 confusion stemmed from exactly this kind of ambiguity.
+
+**Directive:** The pre-registration file must contain ONE unambiguous formula. I recommend improvement-based: `mean_over_seeds(delta_R2_identity[Arm C] - delta_R2_identity[Ctrl]) ≥ 0.10`. Write it as pseudocode. The Orchestrator will commit this before execution; any deviation during analysis is a protocol violation.
+
+## 2. SFA Effectiveness Remains Unresolved — Arm C Success Could Be Constructional
+
+Your Research Journal correctly identifies the slowness ratio pathology (z_dyn changes MORE than z_coord) as a critical open question. You are now proposing to add sub-features to a representation stream that may not be doing what SFA is supposed to make it do. This is a legitimate bet, but it carries a specific interpretive risk:
+
+**If Arm C passes the threshold, does that validate SFA, or does it merely validate "more capacity = more encoding"?** The per-sub-feature identity probes you included are necessary but not sufficient. You must also report the **normalized temporal variance** (your own proposed metric) for Arm C's z_dyn sub-features. If Arm C achieves delta_R2_identity ≥ 0.10 *while normalized_dyn_var remains ≥ normalized_coord_var* (i.e., SFA still isn't making identity slow), then the result is compatible with: "capacity enables encoding; SFA is along for the ride." That is a weaker claim than "SFA shapes identity," and the report must say so explicitly. Do not allow a capacity-driven success to be narrated as an SFA validation.
+
+## 3. The K=4 → 12 DOF Mapping Is Nearly Constructional — Acknowledge the Boundary
+
+Providing exactly K=4 sub-features for 4 identity dimensions (R, G, B, radius) comes close to "building in the answer." The per-sub-feature probes correctly test whether SFA organizes these into disentangled slots (R→k₁, G→k₂, etc.) vs. distributed encoding. But I want an explicit pre-registered statement about this:
+
+**If Arm C passes but the per-sub-feature probes show no selective encoding** (each sub-feature has similar R² across all four identity dimensions, indicating distributed rather than disentangled representation), then the result must be reported as: "capacity enables identity encoding, but SFA does not produce disentangled sub-feature specialization." This is still informative, but it is fundamentally different from "SFA drives emergent disentanglement," and the language in the final report must reflect that distinction.
+
+---
+
+**Summary:** Proceed with the experiment, but (1) write the falsification criterion as an unambiguous improvement formula in the pre-registration, (2) include normalized temporal variance in the success-condition reporting so that SFA effectiveness is not confounded with capacity effectiveness, and (3) pre-commit to language distinguishing "capacity enables encoding" from "SFA shapes disentanglement" based on the per-sub-feature probe results. The Orchestrator will write `src/pre_registration.md` before execution begins — ensure these three points are in it.
+
+---
+

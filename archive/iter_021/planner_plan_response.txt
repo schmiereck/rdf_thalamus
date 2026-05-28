@@ -1,0 +1,637 @@
+I need to thoroughly understand the current codebase and the interpretation issues raised by the user hint before formulating a hypothesis. Let me explore systematically.
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_sfa.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_recovery.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+      train_thalamus.py]
+
+
+[Tool Call: read_iteration({'iter_num': 20})]
+
+[Tool Result: ```yaml
+cached_tokens: 4385526
+cost_usd: 2.02313
+hypothesis: strategy_error
+input_tokens: 8746156
+iter: 20
+metrics: {}
+output_tokens: 134565
+status: code_error
+```
+
+## iter_020: strategy_error
+
+**Analysis:** Client error '403 Forbidden' for url 'https://openrouter.ai/api/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
+
+**Status:** code_error
+
+**Metrics:** `{}`
+
+**Experimenter view:** 
+
+**Notes:** Planner call failed: Client error '403 Forbidden' for url 'https://openrouter.ai/api/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
+
+## Files in archive/iter_020/
+  aggregated_phase0.csv  (1,582 bytes)
+  audit_phase0.json  (444 bytes)
+  checkpoints/arm_a_sfa+vicreg_seed123.pt  (326,953 bytes)
+  checkpoints/arm_a_sfa+vicreg_seed42.pt  (326,931 bytes)
+  checkpoints/arm_a_sfa+vicreg_seed456.pt  (326,953 bytes)
+  checkpoints/arm_a_sfa+vicreg_seed789.pt  (326,953 bytes)
+  che...]
+
+Now let me read the key source files to understand the slowness ratio computation and the model architecture:
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa_cgir.py'})]
+
+[Tool Result: #!/usr/bin/env python3
+"""
+Phase 0 SFA CGIR Evaluation Runner.
+
+Tests the Centroid-Gated Identity Readout (CGIR) architectural change against
+the pre-registered falsification criteria C1-C4.
+
+Four arms x 5 seeds x 5000 steps:
+  Arm A (CGIR+SFA+CCR):       dyn_readout="centroid_gated", sfa_weight=0.1,  pos_encoding="none",      CCR=covariance
+  Arm B (Mean+SFA+CCR):       dyn_readout="mean",           sfa_weight=0.1,  pos_encoding="none",      CCR=covariance
+  Arm C (CGIR+SFA+CCR+pos):   dyn_readout="centroid_gated", sfa_weight=0.1,  pos_encoding="sinusoidal", CCR=covariance
+  Arm D (CGIR+SFA no CCR):    dyn_readout="centroid_gated", sfa_weight=0.1,  pos_encoding="none",      CCR=none
+
+Seeds: [42, 123, 456, 789, 999]
+Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000
+d_t=3, gdasr_log_only=True
+
+Results saved to archive/iter_020/results/
+"""
+
+import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+import warnings
+
+import numpy as np...]
+
+Now let me examine the CGIR results and the environment code to understand the z_dyn computation bottleneck:
+
+[Tool Call: read_result_file({'filename': 'results/aggregated_phase0_cgir.csv', 'iter_num': 20})]
+
+[Tool Result: ,arm,has_collapsed,has_collapsed,mean_dyn_delta,mean_dyn_delta,mean_coord_delta,mean_coord_delta,slowness_ratio,slowness_ratio,centroid_mse_mean,centroid_mse_mean,centroid_r_mean,centroid_r_mean,mean_abs_corr,mean_abs_corr,final_train_loss,final_train_loss,final_train_sim_loss,final_train_sim_loss,gdasr_growth_point_count,gdasr_growth_point_count,r2_dyn_color,r2_dyn_color,r2_coord_color,r2_coord_color,delta_r2_color,delta_r2_color,r2_dyn_identity,r2_dyn_identity,r2_coord_identity,r2_coord_identity,delta_r2_identity,delta_r2_identity
+,,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std
+0,Arm A (CGIR+SFA+CCR),0.2,0.447213595499958,0.2500877410173416,0.1726427044981128,0.003924769721925259,0.006307852522385306,208.80029508101657,230.4248041895662,117.84627808047529,52.543349739305114,0.46410299728798493,0.0921566270002365,0.2162232296664491,0.096725046166129,4.7567678689956665,3.5308725842518975...]
+
+
+[Tool Call: read_result_file({'filename': 'results/audit_phase0_cgir.json', 'iter_num': 20})]
+
+[Tool Result: {
+  "c1_collapse_pass": true,
+  "c1_collapsed_seeds_a": 1,
+  "c2_mse_pass": true,
+  "c2_mse_a_mean": 117.84627808047529,
+  "c2_mse_b_mean": 121.85857071346113,
+  "c2_mse_threshold": 134.04442778480725,
+  "c3_semantic_disentanglement_pass": false,
+  "c3_semantic_delta_r2_color_a": 0.04983072761238547,
+  "c4_identity_disentanglement_pass": false,
+  "c4_identity_delta_r2_identity_a": -0.034620769649982355,
+  "overall_validated": false,
+  "arms": {
+    "a": {
+      "collapsed": 1,
+      "n": 5,
+      "mse_mean": 117.84627808047529,
+      "delta_r2_color": 0.04983072761238547,
+      "delta_r2_identity": -0.034620769649982355,
+      "slowness_ratio": 208.80029508101657,
+      "per_dim_std_mean": 0.8928736865520477
+    },
+    "b": {
+      "collapsed": 1,
+      "n": 5,
+      "mse_mean": 121.85857071346113,
+      "delta_r2_color": -0.07355353428609054,
+      "delta_r2_identity": 0.0027756821377303786,
+      "slowness_ratio": 338.00720797059506,
+      "per_dim_std_me...]
+
+Let me look at the environment code and some individual run results to understand the scale of z_dyn vs z_coord values:
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_b...]
+
+
+[Tool Call: read_result_file({'filename': 'results/summary_phase0_cgir.csv', 'iter_num': 20})]
+
+[Tool Result: arm,seed,checkpoint_step,has_collapsed,per_dim_std,mean_abs_corr,mean_dyn_delta,mean_coord_delta,slowness_ratio,centroid_mse_mean,centroid_mse_per_object,centroid_r_mean,centroid_r_per_object,vicreg_per_dim_std,vicreg_mean_abs_corr,r2_dyn_color,r2_coord_color,r2_dyn_pos,r2_coord_pos,delta_r2_color,r2_dyn_identity,r2_coord_identity,delta_r2_identity,r2_per_dim,dim_to_obj,gdasr_growth_point_count,gdasr_growth_points,final_train_loss,final_train_sim_loss,final_train_sfa_loss
+Arm A (CGIR+SFA+CCR),42,5000,0,"[0.7847537994384766, 1.1597977876663208, 0.8636336922645569]",0.24739981173656553,0.19334258139133453,0.015203753486275673,12.716766392795492,59.512536437219524,"[83.12458903893261, 38.80530891976594, 56.607711352960024]",0.5674675686201375,"[0.4817516020584549, 0.8296115422982092, 0.39103956150374836]","[0.7847537994384766, 1.1597977876663208, 0.8636336922645569]",0.24739981173656553,-0.15848654647407273,0.036541722955594984,-0.0849078686962933,0.12722684843351728,-0.19502826942966772...]
+
+Let me look at the CGIR comparison report and the existing pre-registration to understand the current interpretation issues more deeply:
+
+[Tool Call: read_result_file({'filename': 'results/CGIR_COMPARISON_REPORT.md', 'iter_num': 20})]
+
+[Tool Result: # CGIR Phase 0: Comparison Report
+
+## Summary
+
+This report evaluates the Centroid-Gated Identity Readout (CGIR) architectural
+change against the pre-registered falsification criteria C1-C4.
+
+## Arm Configurations
+
+| Arm | dyn_readout | pos_encoding | CCR | Notes |
+|-----|-------------|--------------|-----|-------|
+| A   | centroid_gated | none      | covariance (smooth=10, spatial=10) | Primary test |
+| B   | mean        | none         | covariance (smooth=10, spatial=10) | Baseline replication (iter_020 A1) |
+| C   | centroid_gated | sinusoidal | covariance (smooth=10, spatial=10) | With positional encoding |
+| D   | centroid_gated | none      | none | CGIR without CCR |
+
+Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000, d_t=3.
+Seeds: [42, 123, 456, 789, 999].
+
+## C1-C4 Comparison Table
+
+| Criterion | Arm A (CGIR+CCR) | Arm B (Mean+CCR) | Arm C (CGIR+pos) | Arm D (CGIR no CCR) |
+|-----------|------------------|------------------|-------------...]
+
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 021
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+
+The spatial-mean z_dyn computation (z_dyn = a_spatial.mean(dim=-1)) in
+NonParametricEncoder is the primary structural cause of the semantic
+disentanglement failure (delta_R2_color = -0.074, target ≥ 0.10) observed
+across all arms in iter_020. This was a measured null result: all arms had
+negative delta_R2_color, meaning z_coord predicted color at least as well as
+z_dyn. This iteration tests whether a specific architectural change (CGIR)
+changes that outcome — the prior outcome was not "wrong" but motivates this
+architectural intervention.
+
+Replacing the spatial-mean with a Centroid-Gated Identity Readout (CGIR) — a
+separate 1x1 convolution (conv_identity) producing an identity feature map,
+pooled at the soft-argmax-attended spatial positions with stop-gradient on the
+spatial attention — will structurally route per-object appearance information
+into z_dyn. ...]
+
+Now let me look at the most recent detailed results to understand the absolute scale of z_dyn and z_coord values:
+
+[Tool Call: read_result_file({'filename': 'results/runs/arm_a_cgir+sfa+ccr_seed42_cp5000.json', 'iter_num': 20})]
+
+[Tool Result: {
+  "arm": "Arm A (CGIR+SFA+CCR)",
+  "seed": 42,
+  "checkpoint_step": 5000,
+  "has_collapsed": 0,
+  "per_dim_std": [
+    0.7847537994384766,
+    1.1597977876663208,
+    0.8636336922645569
+  ],
+  "mean_abs_corr": 0.24739981173656553,
+  "mean_dyn_delta": 0.19334258139133453,
+  "mean_coord_delta": 0.015203753486275673,
+  "slowness_ratio": 12.716766392795492,
+  "centroid_mse_mean": 59.512536437219524,
+  "centroid_mse_per_object": [
+    83.12458903893261,
+    38.80530891976594,
+    56.607711352960024
+  ],
+  "centroid_r_mean": 0.5674675686201375,
+  "centroid_r_per_object": [
+    0.4817516020584549,
+    0.8296115422982092,
+    0.39103956150374836
+  ],
+  "vicreg_per_dim_std": [
+    0.7847537994384766,
+    1.1597977876663208,
+    0.8636336922645569
+  ],
+  "vicreg_mean_abs_corr": 0.24739981173656553,
+  "r2_dyn_color": -0.15848654647407273,
+  "r2_coord_color": 0.036541722955594984,
+  "r2_dyn_pos": -0.0849078686962933,
+  "r2_coord_pos": 0.12722684843351728,
+  "d...]
+
+
+[Tool Call: read_file({'end_line': 100, 'path': 'src/run_phase0_sfa_cgir.py', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 100 of 1181 ---
+#!/usr/bin/env python3
+"""
+Phase 0 SFA CGIR Evaluation Runner.
+
+Tests the Centroid-Gated Identity Readout (CGIR) architectural change against
+the pre-registered falsification criteria C1-C4.
+
+Four arms x 5 seeds x 5000 steps:
+  Arm A (CGIR+SFA+CCR):       dyn_readout="centroid_gated", sfa_weight=0.1,  pos_encoding="none",      CCR=covariance
+  Arm B (Mean+SFA+CCR):       dyn_readout="mean",           sfa_weight=0.1,  pos_encoding="none",      CCR=covariance
+  Arm C (CGIR+SFA+CCR+pos):   dyn_readout="centroid_gated", sfa_weight=0.1,  pos_encoding="sinusoidal", CCR=covariance
+  Arm D (CGIR+SFA no CCR):    dyn_readout="centroid_gated", sfa_weight=0.1,  pos_encoding="none",      CCR=none
+
+Seeds: [42, 123, 456, 789, 999]
+Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000
+d_t=3, gdasr_log_only=True
+
+Results saved to archive/iter_020/results/
+"""
+
+import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+impo...]
+
+Now I have a thorough understanding of all three issues. Let me verify the slowness ratio computation one more time by examining the actual values in detail:
+
+[Tool Call: grep_search({'include_pattern': '*.py', 'pattern': 'slowness_ratio|mean_dyn_delta|mean_coord_delta'})]
+
+[Tool Result: src\run_phase0_sfa.py:99: mean_dyn_delta = float(np.mean(dyn_deltas)) if dyn_deltas else 0.0
+src\run_phase0_sfa.py:100: mean_coord_delta = float(np.mean(coord_deltas)) if coord_deltas else 0.0
+src\run_phase0_sfa.py:101: ratio = mean_dyn_delta / (mean_coord_delta + 1e-12)
+src\run_phase0_sfa.py:103: "mean_dyn_delta": mean_dyn_delta,
+src\run_phase0_sfa.py:104: "mean_coord_delta": mean_coord_delta,
+src\run_phase0_sfa.py:590: "mean_dyn_delta": slowness["mean_dyn_delta"],
+src\run_phase0_sfa.py:591: "mean_coord_delta": slowness["mean_coord_delta"],
+src\run_phase0_sfa.py:592: "slowness_ratio": slowness["ratio"],
+src\run_phase0_sfa.py:769: "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+src\run_phase0_sfa.py:787: "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+src\run_phase0_sfa.py:868: ratios_a = arm_a["slowness_ratio"].values.astype(float)
+src\run_phase0_sfa.py:920: "c3_sanity_slowness_ratio_mean": float(mean_ratio_a),
+src\run_phase0_sfa_cgir....]
+
+Now let me examine the exact model architecture dimensions more carefully to understand the bottleneck:
+
+[Tool Call: read_file({'end_line': 170, 'path': 'src/models_dual_stream.py', 'start_line': 112})]
+
+[Tool Result: --- lines 112 to 170 of 1071 ---
+            nn.ReLU(),
+            nn.Linear(128, 2 * d_max)
+        )
+        
+    def forward(self, z_coord_history, z_dyn_history, d_t, mask_coord=False):
+        """
+        Args:
+            z_coord_history (Tensor): Shape (B, H, D_max)
+            z_dyn_history (Tensor): Shape (B, H, D_max)
+            d_t (int): Current active latent dimension.
+            mask_coord (bool): If True, zero out the coordinate input.
+        """
+        # Option to zero out coordinate input completely
+        if mask_coord:
+            z_coord_history = torch.zeros_like(z_coord_history)
+            
+        # Zero out inactive dimensions (index >= d_t)
+        mask_c = torch.zeros_like(z_coord_history)
+        mask_c[:, :, :d_t] = 1.0
+        z_coord_active = z_coord_history * mask_c
+        
+        mask_d = torch.zeros_like(z_dyn_history)
+        mask_d[:, :, :d_t] = 1.0
+        z_dyn_active = z_dyn_history * mask_d
+        
+        # Concatenate coordinate and dy...]
+
+Let me look at the NonParametricEncoder forward method to understand the exact flow of z_dyn computation:
+
+[Tool Call: read_file({'end_line': 345, 'path': 'src/models_dual_stream.py', 'start_line': 275})]
+
+[Tool Result: --- lines 275 to 345 of 1071 ---
+        # 2. Variance Loss
+        def calc_var_loss(x, gamma=1.0, eps=1e-4):
+            mean = x.mean(dim=0)
+            var = torch.mean((x - mean)**2, dim=0)
+            std = torch.sqrt(var + eps)
+            return torch.mean(F.relu(gamma - std))
+            
+        var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+        var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+        var_loss = var_loss_coord + var_loss_dyn
+        
+        # 3. Covariance Loss
+        def calc_cov_loss(x):
+            B, d = x.shape
+            if B <= 1 or d <= 1:
+                return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            mean = x.mean(dim=0, keepdim=True)
+            x_centered = x - mean
+            cov = (x_centered.T @ x_centered) / (B - 1)
+            diag = torch.diagonal(cov)
+            off_diag = cov - torch.diag(diag)
+            return (o...]
+
+
+[Tool Call: read_file({'end_line': 260, 'path': 'src/models_dual_stream.py', 'start_line': 195})]
+
+[Tool Result: --- lines 195 to 260 of 1071 ---
+            lambda_spatial (float): spatial bottleneck loss weight
+            k_chan (int, optional): channel index to minimize spatial variance on. Defaults to d_t - 1.
+            mask_coord (bool): whether to zero out coordinate history in predictor.
+        """
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+        
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
+        
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+        
+        # Apply stabilization stop-gradient logic to history and target representations
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_hist_coord_stable = torch.cat([
+                z_hist_coord[:, :, :self.d_t-1].detach(),...]
+
+I now have a comprehensive understanding of all the issues. Let me compile my analysis and design the experiment.
+
+**Summary of Analysis:**
+
+**Issue 1 (Slowness Ratio):** The code computes `ratio = mean_dyn_delta / mean_coord_delta`. From iter_021 Arm A: mean_dyn_delta=0.250, mean_coord_delta=0.004. The ratio=208.8 is correct per the code. But the *absolute* numbers reveal two separate pathologies: (a) z_dyn's relative change is ~29% of its magnitude per step (SFA is NOT effectively slowing it), AND (b) z_coord barely changes (~0.06 pixels/step despite objects moving ~2 pixels/step), which is pathological centroid tracking, NOT slowness. The ratio is driven by both factors. The iter_021 interpretation ("z_dyn changes more") is technically correct but misleading without the absolute context.
+
+**Issue 2 (CGIR Threshold):** The pre-registered criterion was `delta_R2_color(Arm A) ≥ 0.10` (absolute value). Arm A achieved +0.050 → FAIL. But Arm A - Arm B = +0.124 improvement, which is substantial. The criterion should have been improvement-based. I will use improvement-based thresholds going forward.
+
+**Issue 3 (Architectural Ceiling):** z_dyn[c] is 1 scalar per channel; with d_t=3, there are 3 scalars for 3 objects × 4 identity features (R,G,B,radius) = 12 values. Information-theoretically, 3 scalars cannot encode 12 values. The negative delta_R2_identity (-0.035) across ALL arms is consistent with this bottleneck. CGIR's partial improvement (+0.124 on color improvement) suggests it routes some color information, but the 1-scalar channel still cannot decompose into R,G,B,size.
+
+Now let me design the experiment:
+
+[Tool Call: read_file({'end_line': 320, 'path': 'src/models_dual_stream.py', 'start_line': 290})]
+
+[Tool Result: --- lines 290 to 320 of 1071 ---
+                return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            mean = x.mean(dim=0, keepdim=True)
+            x_centered = x - mean
+            cov = (x_centered.T @ x_centered) / (B - 1)
+            diag = torch.diagonal(cov)
+            off_diag = cov - torch.diag(diag)
+            return (off_diag ** 2).sum() / d
+            
+        cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
+        cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+        cov_loss = cov_loss_coord + cov_loss_dyn
+        
+        base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+        
+        # 4. Spatial Bottleneck Loss
+        if lambda_spatial > 0:
+            z_target_spatial = self.encoder.forward_spatial(x_target)
+            _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+            if k_chan is None:
+...]
+
+Now I have a complete understanding of all the issues. Let me formulate the plan.
+
+**Analysis Summary:**
+
+1. **Slowness Ratio (Issue 1):** The code computes `ratio = mean_dyn_delta / mean_coord_delta`. From iter_021 Arm A: mean_dyn_delta=0.250, mean_coord_delta=0.004, ratio=208.8. Two pathologies co-exist: (a) z_dyn changes ~29% of its magnitude per step (SFA ineffective), AND (b) z_coord barely changes (~0.06 pixels/step despite objects moving ~2px/step), which is pathological centroid stasis, not slowness. The ratio is driven by both. The iter_021 interpretation "z_dyn changes MORE than z_coord" is technically correct but misleading — z_coord's near-zero delta is a tracking failure, not evidence that z_coord is properly slow.
+
+2. **CGIR Threshold (Issue 2):** Pre-registered C3 was `delta_R2_color(Arm A) ≥ 0.10` (absolute). Arm A=+0.050 → FAIL. But improvement(A-B)=+0.124 → would PASS an improvement criterion. The criterion was poorly designed. Use improvement-based thresholds going forward.
+
+3. **Architectural Ceiling (Issue 3):** z_dyn[c] = 1 scalar × d_t=3 channels = 3 scalars for 3 objects × 4 identity features (R,G,B,radius) = 12 values. Information-theoretically impossible. The negative delta_R2_identity (-0.035) across ALL arms is consistent with this bottleneck. CGIR's partial improvement (+0.124 on color) confirms spatial-mean was a contributing factor, but the 1-scalar ceiling prevents full identity encoding.
+
+```yaml
+hypothesis: |
+  The persistent semantic disentanglement failure (delta_R2_identity = -0.035 in iter_021)
+  is caused by an architectural information bottleneck: z_dyn[c] is a single scalar
+  per channel, and with d_t=3 active channels, only 3 scalars are available to encode
+  3 objects × 4 identity features (R, G, B, radius) = 12 values. This makes it
+  information-theoretically impossible for z_dyn to fully encode identity.
+
+  Expanding z_dyn[c] from 1 scalar to K=4 sub-features per channel (total capacity:
+  3×4=12, matching the identity DOF) via a conv4-backed centroid-gated per-channel
+  feature head will raise mean delta_R2_identity from -0.035 to ≥ +0.10, and
+  mean delta_R2_color from +0.050 to ≥ +0.15, across 5 seeds at 5000 steps.
+
+  The three interventions are isolatable and ordered by cost:
+  (a) Conv4 feature readout: richer source (128-dim conv4 vs 8-dim conv_identity),
+      but z_dyn[c] remains 1 scalar. Expected: small improvement if d_max=8
+      projection loses identity information.
+  (b) Expanded d_max=16: more spatial channels, but z_dyn[c] remains 1 scalar.
+      Expected: minimal improvement since the bottleneck is per-channel capacity,
+      not channel count.
+  (c) Sub-features K=4: expands per-channel capacity from 1 to 4 scalars.
+      Expected: largest improvement, as this directly addresses the bottleneck.
+
+falsification_criterion: |
+  PRIMARY: If Arm C (K=4 sub-features) fails to achieve mean delta_R2_identity
+  ≥ 0.10 across 5 seeds at step 5000, the single-scalar bottleneck is NOT the
+  primary cause of the disentanglement failure, and the hypothesis is falsified.
+
+  SECONDARY (supporting evidence): If Arms A and B show delta_R2_identity
+  improvements < 0.05 over Control, this confirms that richer feature sources
+  and more spatial channels cannot compensate for the per-channel scalar bottleneck.
+
+  ANCILLARY FALSIFICATION: If Arm C achieves delta_R2_identity ≥ 0.10 but
+  delta_R2_color improvement(Arm C - Control) < 0.05, the sub-features are
+  not selectively improving identity encoding — they are just adding capacity
+  that happens to fit the probe.
+
+  THRESHOLD CLARIFICATION (resolving Issue 2): All criteria use IMPROVEMENT-based
+  thresholds: metric(arm) - metric(control) ≥ threshold. The absolute criterion
+  from iter_021 (delta_R2_color(Arm A) ≥ 0.10) was incoherent with the observed
+  improvement (+0.124) and is replaced.
+
+proposed_method: |
+  == EXPERIMENT DESIGN ==
+
+  4 arms × 5 seeds × 5000 steps. Seeds: [42, 123, 456, 789, 999].
+
+  Arm Ctrl (CGIR+SFA+CCR, d_max=8, K=1, dyn_source="spatial"):
+    Replication of iter_021 Arm A as within-run control. Same architecture:
+    conv_identity: 128→8, centroid-gated readout, z_dyn shape (B, 8).
+    Purpose: Establish baseline for improvement-based criteria.
+
+  Arm A (Conv4 CGIR, d_max=8, K=1, dyn_source="conv4"):
+    Intervention (a): Richer feature source. Instead of reading z_dyn from the
+    d_max=8 conv_identity projection, read from conv4 features (B, 128, 8)
+    at the centroid-gated spatial position. Implementation: interpolate conv4
+    to (B, 128, 128), use p_c from spatial stream to soft-attend, producing
+    (B, d_max, 128) attended features, then linear(128→1) per channel →
+    z_dyn (B, d_max). z_dyn[c] is still 1 scalar. Tests whether the d_max=8
+    projection bottleneck is the cause.
+
+  Arm B (Expanded d_max=16, K=1, dyn_source="spatial", CGIR):
+    Intervention (b): More latent spatial channels. d_max=16 instead of 8.
+    conv_spatial and conv_identity project 128→16. More channels means each
+    channel can specialize more, but z_dyn[c] is still 1 scalar.
+    Tests whether channel count vs per-channel capacity matters.
+
+  Arm C (Sub-Features K=4, d_max=8, dyn_source="spatial", CGIR):
+    Intervention (c): Expanded per-channel capacity. conv_identity projects
+    128→d_max*K=32. Reshape to (B, d_max, K, 128) after interpolation.
+    Use shared centroid attention p_c for all K sub-features of each channel:
+    z_dyn[c,k] = sum_s p_c[c,s] * a_identity[c*K+k, s] → (B, d_max, K).
+    Flatten to (B, d_max*K=32) for SFA/VICReg/predictor. SFA slowness on
+    all d_t*K=12 active features. VICReg on (B, 12) batch-wise. Predictor
+    input: H*(d_max + d_max*K)=3*(8+32)=120, output: d_max+d_max*K=40.
+    Tests whether 1 scalar per channel is the fundamental bottleneck.
+
+  == ALL ARMS PRESERVE ==
+  - SFA on z_dyn (all K sub-features per channel), sfa_weight=0.1
+  - CCR covariance mode on z_coord, ccr_smooth=10, ccr_spatial=10
+  - d_t=3 frozen, GDASR log-only
+  - pos_encoding="none" (pos-encoding-hurts is a cross-objective regularity)
+  - Adam lr=1e-3, batch=32, replay_buffer=2000
+  - JEPA predictor as readout with stop-gradient (M2)
+
+  == METRICS IMPROVEMENTS (resolving Issues 1 and 2) ==
+
+  1. SLARNESS RESOLUTION (Issue 1):
+     - Report temporal_var(z_dyn) and temporal_var(z_coord) as SEPARATE
+       absolute numbers (mean squared frame-to-frame change per dimension).
+     - Report NORMALIZED temporal variance: temporal_var / (spatial_std²),
+       giving a scale-free measure of "how fast" each stream is relative
+       to its own magnitude. SFA works iff normalized_dyn_var < normalized_coord_var.
+     - Report centroid tracking quality: corr(Δz_coord[c], Δtrue_pos[c])
+       per channel. If z_coord is nearly static (normalized_coord_var ≈ 0)
+       while objects move, this is a tracking failure, not slowness.
+     - Label the slowness ratio convention explicitly: ratio = dyn_delta/coord_delta,
+       where ratio < 1 means SFA succeeded (z_dyn slower than z_coord).
+
+  2. THRESHOLD CLARIFICATION (Issue 2):
+     - C3 (color): improvement(arm - ctrl) in delta_R2_color ≥ 0.10
+     - C4 (identity): improvement(arm - ctrl) in delta_R2_identity ≥ 0.10
+     - Also report absolute delta_R2 for reference, but improvement is primary.
+
+  3. PER-DIMENSION PROBES for Arm C (K=4):
+     - For each channel c and sub-feature k, fit R² against [R, G, B, radius]
+       individually to characterize which sub-features encode which identity
+       dimensions. This tests whether disentanglement is emergent (sub-feature k
+       spontaneously encodes R, etc.) or distributed.
+
+  4. COLLAPSE CHECK: per-dim std < 0.5 in < 2/5 seeds (same as iter_021).
+  5. CENTROID MSE: arm MSE ≤ 1.10 × ctrl MSE (no tracking degradation).
+  6. GDASR growth-point logging (log-only, per M3).
+
+  == CODE CHANGES ==
+
+  1. src/models_dual_stream.py:
+     - Add `sub_features` (K, default=1) and `dyn_source` ("spatial"|"conv4",
+       default="spatial") to NonParametricEncoder.
+     - For dyn_source="conv4", K=1: add dyn_proj Linear(128,1), compute attended
+       conv4 features via centroid attention, then project 128→1 per channel.
+     - For sub_features=K: modify conv_identity to output d_max*K channels,
+       reshape after interpolation, apply shared centroid attention, produce
+       z_dyn of shape (B, d_max*K) when flattened.
+     - Modify NonParametricJEPASpatial to pass K and dyn_source through.
+     - In SFA mode: handle z_dyn shape (B, d_max*K) for SFA, VICReg, predictor.
+     - Modify DualStreamPredictor to accept d_dyn=d_max*K instead of d_max,
+       with input H*(d_max + d_dyn) and output d_max + d_dyn.
+
+  2. src/run_phase0_sfa_archceiling.py (NEW):
+     - 4 arms × 5 seeds × 5000 steps
+     - Same training loop as run_phase0_sfa_cgir.py
+     - Updated evaluation: normalized temporal variance, centroid tracking
+       quality, per-sub-feature identity probes for Arm C
+     - Checkpoint at step 2500 and final at 5000
+     - Falsification audit using improvement-based criteria
+
+  3. src/pre_registration.md: Update with this plan.
+
+pre_registration_file: "src/pre_registration.md"
+```
