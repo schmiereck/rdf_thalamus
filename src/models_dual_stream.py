@@ -97,61 +97,71 @@ class DualStreamEncoder(nn.Module):
 
 
 class DualStreamPredictor(nn.Module):
-    def __init__(self, d_max=8, h=3):
+    def __init__(self, d_max=8, d_dyn=None, h=3):
         """
-        MLP forecasting target z_{t+1} of size (B, 2 * D_max)
-        from history of active latent states (B, H * 2 * D_max).
+        MLP forecasting target z_{t+1} of size (B, d_max + d_dyn)
+        from history of active latent states (B, H * (d_max + d_dyn)).
         """
         super().__init__()
         self.d_max = d_max
+        self.d_dyn = d_dyn if d_dyn is not None else d_max
         self.h = h
+        total_in = h * (d_max + self.d_dyn)
+        total_out = d_max + self.d_dyn
         self.net = nn.Sequential(
-            nn.Linear(h * 2 * d_max, 128),
+            nn.Linear(total_in, 128),
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(128, 2 * d_max)
+            nn.Linear(128, total_out)
         )
         
-    def forward(self, z_coord_history, z_dyn_history, d_t, mask_coord=False):
+    def forward(self, z_coord_history, z_dyn_history, d_t, mask_coord=False, d_t_dyn=None):
         """
         Args:
             z_coord_history (Tensor): Shape (B, H, D_max)
-            z_dyn_history (Tensor): Shape (B, H, D_max)
-            d_t (int): Current active latent dimension.
+            z_dyn_history (Tensor): Shape (B, H, D_dyn)
+            d_t (int): Current active latent dimension for coord stream.
             mask_coord (bool): If True, zero out the coordinate input.
+            d_t_dyn (int or None): Current active latent dimension for dyn stream.
+                                   Defaults to d_t if None.
         """
+        if d_t_dyn is None:
+            d_t_dyn = d_t
+            
         # Option to zero out coordinate input completely
         if mask_coord:
             z_coord_history = torch.zeros_like(z_coord_history)
             
-        # Zero out inactive dimensions (index >= d_t)
+        # Zero out inactive dimensions (index >= d_t for coord, >= d_t_dyn for dyn)
         mask_c = torch.zeros_like(z_coord_history)
         mask_c[:, :, :d_t] = 1.0
         z_coord_active = z_coord_history * mask_c
         
         mask_d = torch.zeros_like(z_dyn_history)
-        mask_d[:, :, :d_t] = 1.0
+        mask_d[:, :, :d_t_dyn] = 1.0
         z_dyn_active = z_dyn_history * mask_d
         
-        # Concatenate coordinate and dynamics histories along feature dimension: (B, H, 2 * d_max)
+        # Concatenate coordinate and dynamics histories along feature dimension: (B, H, d_max + d_dyn)
         z_history = torch.cat([z_coord_active, z_dyn_active], dim=-1)
         
-        # Flatten history: (B, H * 2 * d_max)
-        z_history_flat = z_history.reshape(-1, self.h * 2 * self.d_max)
+        # Flatten history: (B, H * (d_max + d_dyn))
+        z_history_flat = z_history.reshape(-1, self.h * (self.d_max + self.d_dyn))
         
         # Predict both streams
-        pred = self.net(z_history_flat) # (B, 2 * d_max)
+        pred = self.net(z_history_flat) # (B, d_max + d_dyn)
         
         # Split into coord and dyn predictions
         pred_coord, pred_dyn = torch.split(pred, self.d_max, dim=-1)
         
         # Zero out inactive dimensions in the outputs
-        out_mask = torch.zeros_like(pred_coord)
-        out_mask[:, :d_t] = 1.0
+        out_mask_coord = torch.zeros_like(pred_coord)
+        out_mask_coord[:, :d_t] = 1.0
+        pred_coord_active = pred_coord * out_mask_coord
         
-        pred_coord_active = pred_coord * out_mask
-        pred_dyn_active = pred_dyn * out_mask
+        out_mask_dyn = torch.zeros_like(pred_dyn)
+        out_mask_dyn[:, :d_t_dyn] = 1.0
+        pred_dyn_active = pred_dyn * out_mask_dyn
         
         return pred_coord_active, pred_dyn_active
 
@@ -613,11 +623,14 @@ class PDRCJEPASpatial(DualStreamJEPASpatial):
 
 
 class NonParametricEncoder(nn.Module):
-    def __init__(self, d_max=8, pos_encoding="none", dyn_readout="mean"):
+    def __init__(self, d_max=8, pos_encoding="none", dyn_readout="mean", sub_features=1, dyn_source="spatial"):
         super().__init__()
         self.d_max = d_max
         self.pos_encoding = pos_encoding
         self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
+        
         if pos_encoding == "none":
             in_channels = 3
         elif pos_encoding == "linear":
@@ -631,8 +644,16 @@ class NonParametricEncoder(nn.Module):
         self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
         self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
         self.conv_spatial = nn.Conv1d(128, d_max, kernel_size=1)
+        
         if dyn_readout == "centroid_gated":
-            self.conv_identity = nn.Conv1d(128, d_max, kernel_size=1)
+            if dyn_source == "conv4" and sub_features == 1:
+                self.dyn_proj = nn.Linear(128, 1)
+            else:
+                self.conv_identity = nn.Conv1d(128, d_max * sub_features, kernel_size=1)
+
+    @property
+    def d_dyn(self):
+        return self.d_max * self.sub_features
 
     def _forward_backbone(self, x):
         """Returns backbone features (B, 128, 8)"""
@@ -656,29 +677,49 @@ class NonParametricEncoder(nn.Module):
         """
         Returns both streams:
         z_coord: soft centroids, shape (B, d_max)
-        z_dyn: dynamics representations, shape (B, d_max)
+        z_dyn: dynamics representations, shape (B, d_dyn) where d_dyn = d_max * sub_features
         """
         features = self._forward_backbone(x)
         a_spatial = self.conv_spatial(features)
         a_spatial = F.interpolate(a_spatial, size=128, mode='linear', align_corners=False)
         z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        B = x.shape[0]
         
         if self.dyn_readout == "mean":
             z_dyn = a_spatial.mean(dim=-1)
         elif self.dyn_readout == "centroid_gated":
-            a_identity = self.conv_identity(features)
-            a_identity = F.interpolate(a_identity, size=128, mode='linear', align_corners=False)
             p_c = F.softmax(a_spatial, dim=-1)  # spatial attention
-            z_dyn = torch.sum(a_identity * p_c.detach(), dim=-1)  # stop-gradient on attention
+            
+            if self.dyn_source == "conv4" and self.sub_features == 1:
+                # Conv4-backed readout: attend conv4 features at centroid position
+                features_interp = F.interpolate(features, size=128, mode='linear', align_corners=False)  # (B, 128, 128)
+                attended = torch.bmm(p_c.detach(), features_interp.transpose(1, 2))  # (B, d_max, 128)
+                attended_flat = attended.reshape(B * self.d_max, 128)
+                z_dyn = self.dyn_proj(attended_flat).reshape(B, self.d_max)  # (B, d_max)
+            elif self.sub_features > 1:
+                # Multi-sub-feature readout
+                a_identity = self.conv_identity(features)  # (B, d_max*K, 8)
+                a_identity = F.interpolate(a_identity, size=128, mode='linear', align_corners=False)  # (B, d_max*K, 128)
+                a_identity = a_identity.reshape(B, self.d_max, self.sub_features, 128)  # (B, d_max, K, 128)
+                z_dyn = torch.einsum('bcs,bcks->bck', p_c.detach(), a_identity)  # (B, d_max, K)
+                z_dyn = z_dyn.reshape(B, self.d_max * self.sub_features)  # (B, d_max * K)
+            else:
+                # Standard K=1 centroid_gated
+                a_identity = self.conv_identity(features)
+                a_identity = F.interpolate(a_identity, size=128, mode='linear', align_corners=False)
+                z_dyn = torch.sum(a_identity * p_c.detach(), dim=-1)  # stop-gradient on attention
         else:
             raise ValueError(f"Unknown dyn_readout: {self.dyn_readout}")
         
         return z_coord, z_dyn
 
 
+
+
 class NonParametricJEPASpatial(nn.Module):
     def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
-                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean"):
+                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean",
+                 sub_features=1, dyn_source="spatial"):
         super().__init__()
         self.d_max = d_max
         self.h = h
@@ -690,14 +731,19 @@ class NonParametricJEPASpatial(nn.Module):
         self.sfa_weight = sfa_weight
         self.gdasr_log_only = gdasr_log_only
         self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
         
-        self.encoder = NonParametricEncoder(d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout)
-        self.predictor = DualStreamPredictor(d_max=d_max, h=h)
+        self.encoder = NonParametricEncoder(
+            d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout,
+            sub_features=sub_features, dyn_source=dyn_source
+        )
+        self.predictor = DualStreamPredictor(d_max=d_max, d_dyn=self.encoder.d_dyn, h=h)
         
         # Dynamic state tracking
         self.d_t = 2
         self.steps_since_recruitment = cooldown  # start outside of cooldown
-        self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable periods
+        self.error_buffer = collections.deque(maxlen=500)
         self.ema_error = None
         self.ema_alpha = 0.05
         self.gdasr_growth_points = []
@@ -710,31 +756,10 @@ class NonParametricJEPASpatial(nn.Module):
         return calculate_centroid_and_variance(a_spatial)
 
     def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None):
-        """
-        Args:
-            x_hist (Tensor): shape (B, H, 3, 128)
-            x_target (Tensor): shape (B, 3, 128)
-            sim_weight (float): VICReg invariance loss weight
-            var_weight (float): VICReg variance loss weight
-            cov_weight (float): VICReg covariance loss weight
-            lambda_spatial (float): spatial bottleneck loss weight
-            k_chan (int, optional): channel index to minimize spatial variance on. Defaults to d_t - 1.
-            mask_coord (bool): whether to zero out coordinate history in predictor.
-            ccr_mode (str): CCR mode ('none', 'hinge', 'covariance').
-            ccr_smooth_weight (float): CCR smoothness loss weight.
-            ccr_spatial_weight (float): CCR spatial loss weight.
-            d_t_predict (int or None): Number of dimensions the predictor should predict.
-                If None, defaults to self.d_t (standard behavior). If set to a value
-                less than self.d_t, the predictor only receives/outputs d_t_predict
-                active dimensions, keeping its higher-index dimensions untrained.
-            sfa_weight (float or None): SFA slowness loss weight. If None, uses self.sfa_weight.
-                Only relevant when primary_objective='sfa'.
-        """
-        # Determine effective prediction dimension
         dt_pred = d_t_predict if d_t_predict is not None else self.d_t
-        
-        # Use instance sfa_weight unless overridden at call time
         _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight
+        d_dyn = self.encoder.d_dyn
+        d_t_dyn = self.d_t * self.sub_features
 
         B, H, C, W = x_hist.shape
         x_hist_flat = x_hist.reshape(B * H, C, W)
@@ -742,29 +767,22 @@ class NonParametricJEPASpatial(nn.Module):
         # Encode history
         z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
         z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
-        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, d_dyn)
 
         # Encode target
         z_target_coord, z_target_dyn = self.encoder(x_target)
 
         if self.primary_objective == "sfa":
-            # === SFA MODE: SFA on z_dyn + VICReg as primary representation objective ===
-            # Per M2: SFA shapes z_dyn (identity/appearance stream). z_coord is NOT slowed.
+            # SFA MODE
+            z_prev_dyn = z_hist_dyn[:, -1]  # (B, d_dyn)
 
-            # SFA loss: slowness on z_dyn across timesteps
-            # z_hist_dyn is (B, H, d_max); take last timestep vs target
-            # H=3, so z_hist_dyn[:, -1] is the previous frame's z_dyn
-            z_prev_dyn = z_hist_dyn[:, -1]  # (B, d_max)
-
-            # SFA computed over active dimensions
-            z_target_dyn_active = z_target_dyn[:, :self.d_t]
-            z_prev_dyn_active = z_prev_dyn[:, :self.d_t]
+            z_target_dyn_active = z_target_dyn[:, :d_t_dyn]
+            z_prev_dyn_active = z_prev_dyn[:, :d_t_dyn]
             sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active.detach())
 
-            # VICReg on z_dyn to prevent collapse (variance + covariance)
             def calc_var_loss(x, gamma=1.0, eps=1e-4):
                 mean = x.mean(dim=0)
-                var = torch.mean((x - mean)**2, dim=0)
+                var = torch.mean((x - mean) ** 2, dim=0)
                 std = torch.sqrt(var + eps)
                 return torch.mean(F.relu(gamma - std))
 
@@ -787,7 +805,7 @@ class NonParametricJEPASpatial(nn.Module):
             cov_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
             cov_loss = cov_loss_dyn
 
-            # JEPA as readout with stop-gradient: prediction error trains predictor only
+            # JEPA readout with stop-gradient
             z_target_sfa_dyn = z_target_dyn_active.detach()
             z_hist_sfa_dyn = z_hist_dyn.detach()
             z_hist_sfa_coord = z_hist_coord.detach()
@@ -796,26 +814,21 @@ class NonParametricJEPASpatial(nn.Module):
                 z_hist_sfa_coord,
                 z_hist_sfa_dyn,
                 dt_pred,
-                mask_coord=mask_coord
+                mask_coord=mask_coord,
+                d_t_dyn=dt_pred * self.sub_features
             )
 
+            # Prediction losses on active dims
             z_pred_coord_pred = z_pred_coord[:, :dt_pred]
             z_target_coord_pred_dt = z_target_coord[:, :dt_pred]
-            z_pred_dyn_pred = z_pred_dyn[:, :dt_pred]
-            z_target_dyn_pred = z_target_dyn_active.detach()  # stop-gradient for readout
+            z_pred_dyn_pred = z_pred_dyn[:, :d_t_dyn]
+            z_target_dyn_pred = z_target_dyn_active.detach()
 
-            # Prediction losses (train predictor, not encoder)
             sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
             sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
             sim_loss = sim_loss_coord + sim_loss_dyn
 
-            # Prediction loss does NOT shape encoder representation
             base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
-
-            # Active dims for reporting (full d_t)
-            z_pred_coord_active = z_pred_coord[:, :self.d_t]
-            z_target_coord_active = z_target_coord[:, :self.d_t]
-            z_pred_dyn_active = z_pred_dyn[:, :self.d_t]
 
             # Spatial bottleneck
             if lambda_spatial > 0:
@@ -830,7 +843,7 @@ class NonParametricJEPASpatial(nn.Module):
                 loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
                 loss = base_loss
 
-            # CCR (unchanged)
+            # CCR
             ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
             ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
 
@@ -881,51 +894,42 @@ class NonParametricJEPASpatial(nn.Module):
             }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
 
         else:
-            # === JEPA MODE (default, backward compatible) ===
-
-            # In NonParametricJEPASpatial, there are no stop-gradients/detaches on the coordinate stream
+            # JEPA MODE (default, backward compatible)
             z_hist_coord_pred = z_hist_coord
             z_target_coord_pred = z_target_coord
 
-            # Predict target representations using dt_pred for the predictor's active dim mask
             z_pred_coord, z_pred_dyn = self.predictor(
                 z_hist_coord_pred,
                 z_hist_dyn,
-                dt_pred,  # <-- use dt_pred instead of self.d_t
-                mask_coord=mask_coord
+                dt_pred,
+                mask_coord=mask_coord,
+                d_t_dyn=dt_pred * self.sub_features
             )
 
-            # Compute coordinate/dynamics prediction over dt_pred dimensions
+            # For JEPA mode with K>1, dt_pred dims for coord, dt_pred*K for dyn
+            d_t_pred_dyn = dt_pred * self.sub_features
             z_pred_coord_pred = z_pred_coord[:, :dt_pred]
             z_target_coord_pred_dt = z_target_coord_pred[:, :dt_pred]
 
-            z_pred_dyn_pred = z_pred_dyn[:, :dt_pred]
-            z_target_dyn_pred = z_target_dyn[:, :dt_pred]
+            z_pred_dyn_pred = z_pred_dyn[:, :d_t_pred_dyn]
+            z_target_dyn_pred = z_target_dyn[:, :d_t_pred_dyn]
 
-            # Select all self.d_t active dimensions for variance and covariance losses
             z_pred_coord_active = z_pred_coord[:, :self.d_t]
             z_target_coord_active = z_target_coord[:, :self.d_t]
 
-            z_pred_dyn_active = z_pred_dyn[:, :self.d_t]
-            z_target_dyn_active = z_target_dyn[:, :self.d_t]
+            z_pred_dyn_active = z_pred_dyn[:, :d_t_dyn]
+            z_target_dyn_active = z_target_dyn[:, :d_t_dyn]
 
-            # 1. Similarity (Invariance) Loss — computed only over dt_pred dimensions
             sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
             sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
             sim_loss = sim_loss_coord + sim_loss_dyn
 
-            # 2. Variance Loss — computed over all self.d_t dimensions
             def calc_var_loss(x, gamma=1.0, eps=1e-4):
                 mean = x.mean(dim=0)
-                var = torch.mean((x - mean)**2, dim=0)
+                var = torch.mean((x - mean) ** 2, dim=0)
                 std = torch.sqrt(var + eps)
                 return torch.mean(F.relu(gamma - std))
 
-            var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
-            var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
-            var_loss = var_loss_coord + var_loss_dyn
-
-            # 3. Covariance Loss — computed over all self.d_t dimensions
             def calc_cov_loss(x):
                 Bc, d = x.shape
                 if Bc <= 1 or d <= 1:
@@ -937,13 +941,16 @@ class NonParametricJEPASpatial(nn.Module):
                 off_diag = cov - torch.diag(diag)
                 return (off_diag ** 2).sum() / d
 
+            var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+            var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+            var_loss = var_loss_coord + var_loss_dyn
+
             cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
             cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
             cov_loss = cov_loss_coord + cov_loss_dyn
 
             base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
 
-            # 4. Spatial Bottleneck Loss
             if lambda_spatial > 0:
                 z_target_spatial = self.encoder.forward_spatial(x_target)
                 _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
@@ -956,15 +963,13 @@ class NonParametricJEPASpatial(nn.Module):
                 loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
                 loss = base_loss
 
-            # 5. Contrastive Coordinate Regularization (CCR)
             ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
             ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
 
             if ccr_mode != 'none':
-                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1) # (B, 4, d_max)
-                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0 # (B, 4, d_t)
-
-                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1] # (B, 3, d_t)
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)
+                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0
+                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1]
                 ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
 
                 if ccr_mode == 'hinge':
@@ -980,7 +985,6 @@ class NonParametricJEPASpatial(nn.Module):
                         else:
                             hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
                     ccr_spatial_loss = torch.stack(hinge_losses).mean()
-
                 elif ccr_mode == 'covariance':
                     cov_losses = []
                     for f in range(4):
@@ -1060,7 +1064,9 @@ class NonParametricJEPASpatial(nn.Module):
             primary_objective=self.primary_objective,
             sfa_weight=self.sfa_weight,
             gdasr_log_only=self.gdasr_log_only,
-            dyn_readout=self.dyn_readout
+            dyn_readout=self.dyn_readout,
+            sub_features=self.sub_features,
+            dyn_source=self.dyn_source
         )
         cloned.d_t = self.d_t
         cloned.load_state_dict(self.state_dict())

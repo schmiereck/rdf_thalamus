@@ -1,6 +1,7 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 021
+*   **Iteration:** 022
+*   **Phase:** 21
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
@@ -26,23 +27,65 @@ The three interventions are isolatable and ordered by cost:
     Expected: largest improvement, as this directly addresses the bottleneck.
 
 ## 2. Falsification Criterion
-PRIMARY: If Arm C (K=4 sub-features) fails to achieve mean delta_R2_identity
-≥ 0.10 across 5 seeds at step 5000, the single-scalar bottleneck is NOT the
-primary cause of the disentanglement failure, and the hypothesis is falsified.
 
-SECONDARY (supporting evidence): If Arms A and B show delta_R2_identity
-improvements < 0.05 over Control, this confirms that richer feature sources
-and more spatial channels cannot compensate for the per-channel scalar bottleneck.
+### Directive 1: Unambiguous Falsification Formula
 
-ANCILLARY FALSIFICATION: If Arm C achieves delta_R2_identity ≥ 0.10 but
-delta_R2_color improvement(Arm C - Control) < 0.05, the sub-features are
-not selectively improving identity encoding — they are just adding capacity
-that happens to fit the probe.
+All criteria use IMPROVEMENT-based thresholds: metric(arm) - metric(control).
 
-THRESHOLD CLARIFICATION (resolving Issue 2): All criteria use IMPROVEMENT-based
-thresholds: metric(arm) - metric(control) ≥ threshold. The absolute criterion
-from iter_021 (delta_R2_color(Arm A) ≥ 0.10) was incoherent with the observed
-improvement (+0.124) and is replaced.
+**PRIMARY (C4 — Identity):**
+```
+If mean_over_seeds(delta_R2_identity[Arm_C] - delta_R2_identity[Ctrl]) < 0.10,
+then the single-scalar bottleneck is NOT the primary cause,
+and the hypothesis is falsified.
+```
+
+**SECONDARY (C3 — Color):**
+```
+If mean_over_seeds(delta_R2_color[Arm_C] - delta_R2_color[Ctrl]) < 0.10,
+then sub-features do not selectively improve color encoding
+beyond what the control achieves.
+```
+
+**ANCILLARY (C1 — Collapse):**
+```
+If collapsed_seeds(Ctrl) >= 2 OR collapsed_seeds(Arm_C) >= 2,
+then training instability prevents interpretation.
+```
+
+**ANCILLARY (C2 — Tracking):**
+```
+If mean_over_seeds(centroid_MSE[Arm_C]) > 1.10 * mean_over_seeds(centroid_MSE[Ctrl]),
+then the architectural change degrades coordinate tracking.
+```
+
+### Directive 2: Normalized Temporal Variance
+
+Add to metrics:
+```
+normalized_temporal_var(z) = mean(frame-to-frame Δz²) / mean(z²)
+```
+
+SFA effectiveness criterion:
+```
+SFA_effective = normalized_temporal_var(z_dyn) < normalized_temporal_var(z_coord)
+```
+
+If Arm C passes the identity threshold (C4) BUT
+normalized_dyn_var[Arm_C] ≥ normalized_coord_var[Arm_C],
+the result is interpreted as:
+"capacity enables encoding; SFA is along for the ride"
+— a WEAKER claim than "SFA shapes disentanglement."
+
+### Directive 3: Capacity vs SFA Distinction
+
+Pre-commit:
+If Arm C passes delta_R2_identity ≥ 0.10 improvement over Ctrl
+but per-sub-feature probes show no selective encoding
+(each sub-feature has similar R² across all 4 identity dimensions),
+then report as:
+"capacity enables identity encoding, but SFA does not produce
+disentangled sub-feature specialization"
+— NOT as "SFA shapes disentanglement."
 
 ## 3. Proposed Method
 == EXPERIMENT DESIGN ==
@@ -87,34 +130,54 @@ Arm C (Sub-Features K=4, d_max=8, dyn_source="spatial", CGIR):
 - Adam lr=1e-3, batch=32, replay_buffer=2000
 - JEPA predictor as readout with stop-gradient (M2)
 
-== METRICS IMPROVEMENTS (resolving Issues 1 and 2) ==
+== METRICS ==
 
-1. SLARNESS RESOLUTION (Issue 1):
-   - Report temporal_var(z_dyn) and temporal_var(z_coord) as SEPARATE
-     absolute numbers (mean squared frame-to-frame change per dimension).
-   - Report NORMALIZED temporal variance: temporal_var / (spatial_std²),
-     giving a scale-free measure of "how fast" each stream is relative
-     to its own magnitude. SFA works iff normalized_dyn_var < normalized_coord_var.
-   - Report centroid tracking quality: corr(Δz_coord[c], Δtrue_pos[c])
-     per channel. If z_coord is nearly static (normalized_coord_var ≈ 0)
-     while objects move, this is a tracking failure, not slowness.
-   - Label the slowness ratio convention explicitly: ratio = dyn_delta/coord_delta,
-     where ratio < 1 means SFA succeeded (z_dyn slower than z_coord).
+1. NORMALIZED TEMPORAL VARIANCE:
+   - temporal_var(z) = mean((z[t+1] - z[t])²) over consecutive frames
+   - spatial_var(z) = mean(z²) over all frames (proxy for magnitude)
+   - normalized_var = temporal_var / (spatial_var + 1e-8)
+   - Report separately for z_dyn (active dims only: d_t * K) and z_coord (d_t)
+   - SFA effective iff normalized_dyn_var < normalized_coord_var
 
-2. THRESHOLD CLARIFICATION (Issue 2):
-   - C3 (color): improvement(arm - ctrl) in delta_R2_color ≥ 0.10
-   - C4 (identity): improvement(arm - ctrl) in delta_R2_identity ≥ 0.10
-   - Also report absolute delta_R2 for reference, but improvement is primary.
+2. CENTROID TRACKING QUALITY:
+   - For each channel c, compute corr(Δz_coord[c], Δtrue_pos[matched_obj[c]])
+   - Also compute corr(z_coord[c], true_pos[matched_obj[c]]) (level tracking)
+   - High correlation = good tracking. Low = tracking failure.
+   - Match channels to objects using the same dim_to_obj mapping as semantic probes.
 
-3. PER-DIMENSION PROBES for Arm C (K=4):
-   - For each channel c and sub-feature k, fit R² against [R, G, B, radius]
-     individually to characterize which sub-features encode which identity
-     dimensions. This tests whether disentanglement is emergent (sub-feature k
-     spontaneously encodes R, etc.) or distributed.
+3. PER-SUB-FEATURE IDENTITY PROBES (Arm C with K=4 only):
+   - For each channel c in [0, d_t) and sub-feature k in [0, K):
+     compute R² of z_dyn[c*K+k] against [R, G, B, radius_normalized] individually
+   - Also compute per-sub-feature multivariate R² against the full identity vector
+   - Test: if disentangled, some (c,k) pairs should have high R² for specific identity
+     dimensions. If distributed, all (c,k) have similar R² across all dims.
 
-4. COLLAPSE CHECK: per-dim std < 0.5 in < 2/5 seeds (same as iter_021).
-5. CENTROID MSE: arm MSE ≤ 1.10 × ctrl MSE (no tracking degradation).
-6. GDASR growth-point logging (log-only, per M3).
+4. SEMANTIC PROBES (standard, all arms):
+   - For fair comparison across arms, pool K sub-features per channel:
+     z_dyn_pooled[c] = mean(z_dyn[c*K:(c+1)*K])
+   - Then use z_dyn_pooled[c] for the standard probe, just like the K=1 case
+   - This ensures each arm produces the same number of probed dimensions
+
+5. COLLAPSE CHECK: per-dim std < 0.5 in < 2/5 seeds (same as iter_021).
+6. CENTROID MSE: arm MSE ≤ 1.10 × ctrl MSE (no tracking degradation).
+7. GDASR growth-point logging (log-only, per M3).
+
+== FALSIFICATION AUDIT ==
+
+```
+C1 (Collapse): Ctrl collapsed seeds < 2 AND Arm C collapsed seeds < 2
+C2 (Tracking): Arm C centroid MSE ≤ 1.10 × Ctrl centroid MSE
+C3 (Color):   mean_over_seeds(delta_R2_color[Arm C] - delta_R2_color[Ctrl]) ≥ 0.10
+C4 (Identity): mean_over_seeds(delta_R2_identity[Arm C] - delta_R2_identity[Ctrl]) ≥ 0.10
+C5 (SFA effective, advisory): normalized_dyn_var[Arm C] < normalized_coord_var[Arm C]
+
+OVERALL: C1 AND C2 AND C4 → hypothesis validated
+```
+
+If C4 passes but C5 fails: "capacity enables encoding; SFA is along for the ride."
+If C4 passes but per-sub-feature probes show no selective encoding:
+"capacity enables identity encoding, but SFA does not produce disentangled
+sub-feature specialization."
 
 == CODE CHANGES ==
 
@@ -126,10 +189,12 @@ Arm C (Sub-Features K=4, d_max=8, dyn_source="spatial", CGIR):
    - For sub_features=K: modify conv_identity to output d_max*K channels,
      reshape after interpolation, apply shared centroid attention, produce
      z_dyn of shape (B, d_max*K) when flattened.
-   - Modify NonParametricJEPASpatial to pass K and dyn_source through.
-   - In SFA mode: handle z_dyn shape (B, d_max*K) for SFA, VICReg, predictor.
+   - Add `d_dyn` property to NonParametricEncoder.
    - Modify DualStreamPredictor to accept d_dyn=d_max*K instead of d_max,
      with input H*(d_max + d_dyn) and output d_max + d_dyn.
+   - Modify NonParametricJEPASpatial to pass K and dyn_source through.
+   - In SFA mode: handle z_dyn shape (B, d_max*K) for SFA, VICReg, predictor.
+   - In JEPA mode: handle z_dyn shape (B, d_max*K) for predictor and losses.
 
 2. src/run_phase0_sfa_archceiling.py (NEW):
    - 4 arms × 5 seeds × 5000 steps
@@ -138,6 +203,7 @@ Arm C (Sub-Features K=4, d_max=8, dyn_source="spatial", CGIR):
      quality, per-sub-feature identity probes for Arm C
    - Checkpoint at step 2500 and final at 5000
    - Falsification audit using improvement-based criteria
+   - Output directory: archive/iter_022/results/
 
 3. src/pre_registration.md: Update with this plan.
 
