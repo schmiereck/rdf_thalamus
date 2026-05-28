@@ -738,7 +738,7 @@ class NonParametricJEPASpatial(nn.Module):
             # SFA computed over active dimensions
             z_target_dyn_active = z_target_dyn[:, :self.d_t]
             z_prev_dyn_active = z_prev_dyn[:, :self.d_t]
-            sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active)
+            sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active.detach())
 
             # VICReg on z_dyn to prevent collapse (variance + covariance)
             def calc_var_loss(x, gamma=1.0, eps=1e-4):
