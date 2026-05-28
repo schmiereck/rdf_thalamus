@@ -1,0 +1,1590 @@
+
+[Tool Call: list_dir({'path': '.'})]
+[Tool Result: [DIR] -p
+[DIR] .antigravitycli
+[DIR] .git
+      .gitignore
+[DIR] .pytest_cache
+[DIR] .venv
+[DIR] __pycache__
+      apply_fix.py
+[DIR] archive
+[DIR] cache
+      config.toml
+      current_state.md
+      experiment.log
+      experiment_log.md
+      find_files.py
+      fix_theta.py
+      goal.md
+      hello.py
+      manager_log.md
+      patch_thalamus.py
+      patch_thalamus_sync.py
+[DIR] pictures
+      README.md
+      RESEARCH-RESULT-002.md
+      RESEARCH-RESULT-003.md
+      RESEARCH-RESULT-004.md
+      RESEARCH-RESULT-005.md
+      RESEARCH-RESULT-006.md
+      RESEARCH-RESULT-007.md
+      RESEARCH-RESULT-008.md
+      RESEARCH-RESULT-009.md
+      RESEARCH-RESULT-010.md
+      RESEARCH-RESULT-011.md
+      RESEARCH-RESULT-012.md
+      RESEARCH-RESULT-013.md
+      RESEARCH-RESULT-014.md
+      RESEARCH-RESULT-015.md
+      RESEARCH-RESULT-016.md
+      RESEARCH-RESULT-017.md
+      RESEARCH-RESULT-018.md
+      research_journal.md
+[DIR] src
+      test_models_spatial.py]
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: #!/usr/bin/env python3
+"""
+Phase 0: SFA (Slowness) as Primary Representation Objective.
+
+Evaluates three arms × 5 seeds:
+  Arm A (SFA+VICReg)     : sfa_weight=1.0, var=25, cov=25, pos_encoding='none'
+  Arm B (JEPA+VICReg)    : baseline, sim=25, var=25, cov=25, pos_encoding='none'
+  Arm C (SFA+pos_enc)    : sfa_weight=1.0, var=25, cov=25, pos_encoding='sinusoidal'
+
+Pre-registration: src/pre_registration.md (Iteration 020)
+"""
+
+import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+import warnings
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from scipy import stats as scipy_stats
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import (
+    NonParametricJEPASpatial,
+    calculate_centroid_and_variance,
+    add_positional_encoding,
+)
+
+# ---------------------------------------------------------------------------
+# Replay buffer (same as existing phases)
+# ---------------------------------------------------------------------------
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        x_hist_b, x_target_b = zip(*batch)
+        return np.stack(x_hist_b, axis=0), np.stack(x_target_b, axis=0)
+
+    def clear(self):
+        self.buffer = []
+        self.position = 0
+
+    def __len__(self):
+        return len(self.buffer)
+
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+# ---------------------------------------------------------------------------
+# Helpers: slowness, collapse check, linear probe, centroid MSE, VICReg health
+# ---------------------------------------------------------------------------
+def compute_slowness_metrics(z_dyn_log, z_coord_log):
+    """
+    Both: list of (T, d_t) arrays over N test frames.
+    Returns dict with mean temporal deltas and ratio.
+    """
+    dyn_deltas = []
+    coord_deltas = []
+    for z_dyn, z_coord in zip(z_dyn_log, z_coord_log):
+        # Temporal differences
+        dyn_diff = np.diff(z_dyn, axis=0)  # (T-1, d_t)
+        coord_diff = np.diff(z_coord, axis=0)
+        if len(dyn_diff) > 0:
+            dyn_deltas.append(np.mean(np.sum(dyn_diff ** 2, axis=1)))
+            coord_deltas.append(np.mean(np.sum(coord_diff ** 2, axis=1)))
+    mean_dyn_delta = float(np.mean(dyn_deltas)) if dyn_deltas else 0.0
+    mean_coord_delta = float(np.mean(coord_deltas)) if coord_deltas else 0.0
+    ratio = mean_dyn_delta / (mean_coord_delta + 1e-12)
+    return {
+        "mean_dyn_delta": mean_dyn_delta,
+        "mean_coord_delta": mean_coord_delta,
+        "ratio": ratio,
+    }
+
+
+def check_collapse(z_dyn, d_t, std_threshold=0.5):
+    """
+    Returns has_collapsed (bool) and per-dimension std array.
+    Uses z_dyn of shape (N, d_max) or (N, d_t).
+    """
+    z_active = z_dyn[:, :d_t]
+    per_dim_std = np.std(z_active, axis=0)  # (d_t,)
+    has_collapsed = np.any(per_dim_std < std_threshold)
+    return has_collapsed, per_dim_std
+
+
+def fit_linear_probe(z, y):
+    """Simple linear probe via least squares: y_pred = w * z + b."""
+    Z = np.stack([z, np.ones_like(z)], axis=1)
+    theta = np.linalg.pinv(Z.T @ Z) @ Z.T @ y
+    return theta[0], theta[1]
+
+
+def compute_centroid_mse(model, test_env, test_history, num_samples=200, device="cpu"):
+    """
+    Evaluates centroid-decoding MSE: linear probe on soft-argmax centroids
+    vs. true object positions for all 3 objects.
+    """
+    model.eval()
+    centroids_list = []
+    pos_list = []
+
+    # Collect centroids and positions from passive rollout
+    obs = test_env.reset()
+    test_history.clear()
+    test_history.append(obs)
+
+    for _ in range(4):  # warm up history for H=3
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+
+    collected = 0
+    while collected < num_samples:
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+        if len(test_history) == 4:
+            x_target_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad():
+                z_coord, _ = model.encoder(x_target_t)
+            centroids_list.append(z_coord[:, :model.d_t].cpu().numpy())  # (1, d_t)
+            # True positions (only first d_t objects, pad if fewer)
+            true_pos = np.array(info["positions"][:model.d_t])
+            if len(true_pos) < model.d_t:
+                true_pos = np.pad(true_pos, (0, model.d_t - len(true_pos)), constant_values=np.nan)
+            pos_list.append(true_pos)
+            collected += 1
+
+    centroids_arr = np.concatenate(centroids_list, axis=0)  # (N, d_t)
+    pos_arr = np.array(pos_list)  # (N, d_t)
+
+    mse_per_object = []
+    r_per_object = []
+    for obj_idx in range(model.d_t):
+        mask = ~np.isnan(pos_arr[:, obj_idx])
+        if mask.sum() < 10:
+            mse_per_object.append(float("nan"))
+            r_per_object.append(0.0)
+            continue
+        z_obj = centroids_arr[mask, obj_idx]
+        y_obj = pos_arr[mask, obj_idx]
+        w, b = fit_linear_probe(z_obj, y_obj)
+        y_pred = z_obj * w + b
+        mse = float(np.mean((y_obj - y_pred) ** 2))
+        r = float(np.corrcoef(z_obj, y_obj)[0, 1]) if len(z_obj) > 2 else 0.0
+        if np.isnan(r):
+            r = 0.0
+        mse_per_object.append(mse)
+        r_per_object.append(abs(r))
+
+    return {
+        "mse_per_object": mse_per_object,
+        "mse_mean": float(np.nanmean(mse_per_object)),
+        "r_per_object": r_per_object,
+        "r_mean": float(np.nanmean(r_per_object)),
+    }
+
+
+def compute_vicreg_health(z_dyn, d_t):
+    """
+    Returns per-dimension std and mean absolute correlation between active dimensions.
+    """
+    z_active = z_dyn[:, :d_t]
+    per_dim_std = np.std(z_active, axis=0)
+    if d_t > 1:
+        corr = np.corrcoef(z_active.T)
+        # upper triangle off-diagonal
+        triu = np.triu_indices(d_t, k=1)
+        mean_abs_corr = float(np.mean(np.abs(corr[triu])))
+    else:
+        mean_abs_corr = 0.0
+    return {
+        "per_dim_std": per_dim_std.tolist(),
+        "mean_abs_corr": mean_abs_corr,
+    }
+
+
+def compute_semantic_probes(model, test_env, test_history, num_samples=200,
+                             train_ratio=0.5, device="cpu"):
+    """
+    Semantic disentanglement probes.
+
+    Collects z_dyn, z_coord along with ground-truth positions and colors over
+    num_samples frames.  Matches each latent dimension to the nearest object
+    (by centroid position).  Fits linear probes on the first half and evaluates
+    R² on the second half for two tasks:
+
+      * color  regression  (3-D RGB target → 3 scalar R² values, then mean)
+      * position regression  (1-D scalar target → 1 R² value)
+
+    Probes are fit separately for z_dyn and z_coord, giving four R² scores:
+      R2_dyn_color,  R2_coord_color,  R2_dyn_pos,  R2_coord_pos
+
+    The key disentanglement metric is:
+      delta_R2_color = R2_dyn_color - R2_coord_color
+    If SFA separates identity from position, z_dyn should predict color well
+    and z_coord should predict color poorly, yielding a positive delta.
+    """
+    model.eval()
+
+    # Collect data
+    obs = test_env.reset()
+    test_history.clear()
+    test_history.append(obs)
+
+    # Warm up
+    for _ in range(4):
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+
+    z_dyn_list = []
+    z_coord_list = []
+    pos_list = []  # positions for all N objects
+    colors_list = []  # colors for all N objects
+
+    with torch.no_grad():
+        for _ in range(num_samples):
+            obs, info = test_env.step({"acc": 0.0, "push": False})
+            test_history.append(obs)
+            if len(test_history) == 4:
+                x_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
+                z_c, z_d = model.encoder(x_t)
+                z_dyn_list.append(z_d[0].cpu().numpy())       # (d_max,)
+                z_coord_list.append(z_c[0].cpu().numpy())      # (d_max,)
+                pos_list.append(info["positions"])              # (N,)
+                colors_list.append(info["colors"])              # (N, 3)
+
+    z_dyn_arr = np.array(z_dyn_list)   # (num_samples, d_max)
+    z_coord_arr = np.array(z_coord_list)
+    pos_arr = np.array(pos_list)       # (num_samples, N)
+    colors_arr = np.array(colors_list) # (num_samples, N, 3)
+
+    N = pos_arr.shape[1]  # number of objects
+    d_t = model.d_t
+
+    # Match each latent dimension d in [0, d_t) to the nearest object
+    # by average distance between centroid z_coord and true position.
+    dim_to_obj = {}  # dim_idx -> obj_idx
+    used_objs = set()
+    for d in range(d_t):
+        best_obj = None
+        best_dist = np.inf
+        for o in range(N):
+            if o in used_objs:
+                continue
+            # average absolute distance between centroid and position
+            dist = np.mean(np.abs(z_coord_arr[:, d] - pos_arr[:, o]))
+            if dist < best_dist:
+                best_dist = dist
+                best_obj = o
+        if best_obj is not None:
+            dim_to_obj[d] = best_obj
+            used_objs.add(best_obj)
+
+    # Split into train and test
+    n_train = int(num_samples * train_ratio)
+
+    def fit_probe_r2(z_feature, y_target):
+        """Fit linear probe: y = w*z + b. Return R² on test portion."""
+        z_train = z_feature[:n_train]
+        y_train = y_target[:n_train]
+        z_test = z_feature[n_train:]
+        y_test = y_target[n_train:]
+
+        if z_train.size < 5 or y_train.size < 5:
+            return 0.0
+
+        w, b = fit_linear_probe(z_train, y_train)
+        y_pred = z_test * w + b
+
+        ss_res = np.sum((y_test - y_pred) ** 2)
+        ss_tot = np.sum((y_test - np.mean(y_train)) ** 2)
+        if ss_tot < 1e-12:
+            return 0.0
+        return float(1.0 - ss_res / ss_tot)
+
+    probes = {}
+    r2_per_dim = []
+
+    for d in range(d_t):
+        if d not in dim_to_obj:
+            r2_per_dim.append({"dyn_color": 0.0, "coord_color": 0.0,
+                               "dyn_pos": 0.0, "coord_pos": 0.0})
+            continue
+
+        obj = dim_to_obj[d]
+        z_d = z_dyn_arr[:, d]
+        z_c = z_coord_arr[:, d]
+
+        # Position probe
+        r2_dyn_pos = fit_probe_r2(z_d, pos_arr[:, obj])
+        r2_coord_pos = fit_probe_r2(z_c, pos_arr[:, obj])
+
+        # Color probe (3 channels, average R²)
+        r2_dyn_ch = []
+        r2_coord_ch = []
+        for ch in range(3):
+            r2_dyn_ch.append(fit_probe_r2(z_d, colors_arr[:, obj, ch]))
+            r2_coord_ch.append(fit_probe_r2(z_c, colors_arr[:, obj, ch]))
+        r2_dyn_color = float(np.mean(r2_dyn_ch))
+        r2_coord_color = float(np.mean(r2_coord_ch))
+
+        r2_per_dim.append({
+            "dyn_color": r2_dyn_color,
+            "coord_color": r2_coord_color,
+            "dyn_pos": r2_dyn_pos,
+            "coord_pos": r2_coord_pos,
+        })
+
+    # Averages across matched dimensions
+    r2_dyn_color_all = np.mean([p["dyn_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_color_all = np.mean([p["coord_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_dyn_pos_all = np.mean([p["dyn_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_pos_all = np.mean([p["coord_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    delta_r2_color = float(r2_dyn_color_all - r2_coord_color_all)
+
+    return {
+        "dim_to_obj": dim_to_obj,
+        "r2_per_dim": r2_per_dim,
+        "r2_dyn_color": float(r2_dyn_color_all),
+        "r2_coord_color": float(r2_coord_color_all),
+        "r2_dyn_pos": float(r2_dyn_pos_all),
+        "r2_coord_pos": float(r2_coord_pos_all),
+        "delta_r2_color": delta_r2_color,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Single-run training + evaluation
+# ---------------------------------------------------------------------------
+def run_single(arm_config, seed, device, dry_run=False):
+    """
+    Run one arm × seed experiment.
+
+    Parameters
+    ----------
+    arm_config : dict
+        Keys: 'name', 'primary_objective', 'sfa_weight', 'sim_weight',
+              'var_weight', 'cov_weight', 'pos_encoding', 'd_t'
+    seed : int
+    device : torch.device
+    dry_run : bool  — if True, run only 5 training steps per seed for quick verification.
+
+    Returns
+    -------
+    results : dict  (metrics for this run)
+    """
+    name = arm_config["name"]
+    primary_obj = arm_config["primary_objective"]
+    sfa_weight = arm_config.get("sfa_weight", 1.0)
+    sim_weight = arm_config.get("sim_weight", 25.0)
+    var_weight = arm_config.get("var_weight", 25.0)
+    cov_weight = arm_config.get("cov_weight", 25.0)
+    pos_encoding = arm_config.get("pos_encoding", "none")
+    d_t = arm_config.get("d_t", 3)
+
+    set_seed(seed)
+
+    # Determine total training steps (5 for dry run, 3000 otherwise)
+    total_steps = 5 if dry_run else 3000
+    eval_steps = min(200, total_steps // 2) if dry_run else 200
+
+    # Create model
+    model = NonParametricJEPASpatial(
+        d_max=8,
+        h=3,
+        k=4,
+        cooldown=300,
+        stabilization_period=100,
+        pos_encoding=pos_encoding,
+        primary_objective=primary_obj,
+        sfa_weight=sfa_weight,
+        gdasr_log_only=True,  # log-only mode for Phase 0
+    )
+    model.d_t = d_t  # freeze at 3
+    model = model.to(device)
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    # Environment
+    env = PhysicsSandbox(N=3, seed=seed)
+    obs = env.reset()
+    history = collections.deque(maxlen=4)
+    history.append(obs)
+
+    replay_buffer = ReplayBuffer(capacity=2000)
+
+    # Prefill buffer
+    def _prefill(n):
+        while len(replay_buffer) < n:
+            obs, info = env.step({"acc": 0.0, "push": False})
+            history.append(obs)
+            if len(history) == 4:
+                replay_buffer.push(
+                    np.stack(list(history)[:3], axis=0),
+                    history[3],
+                )
+
+    _prefill(min(100, total_steps))
+
+    # Training loop
+    logs = []
+    gdasr_growth_points = []
+
+    for step in range(1, total_steps + 1):
+        obs, info = env.step({"acc": 0.0, "push": False})
+        history.append(obs)
+        if len(history) == 4:
+            replay_buffer.push(
+                np.stack(list(history)[:3], axis=0),
+                history[3],
+            )
+
+        # Sample batch
+        x_hist_b, x_target_b = replay_buffer.sample(min(32, len(replay_buffer)))
+        x_hist_t = torch.from_numpy(x_hist_b).float().to(device)
+        x_target_t = torch.from_numpy(x_target_b).float().to(device)
+
+        model.train()
+        optimizer.zero_grad()
+
+        loss_dict, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn) = model(
+            x_hist_t,
+            x_target_t,
+            sim_weight=sim_weight,
+            var_weight=var_weight,
+            cov_weight=cov_weight,
+            d_t_predict=d_t,  # predictor always sees d_t dimensions
+        )
+        loss_dict["loss"].backward()
+        optimizer.step()
+
+        # GDASR log-only update
+        sim_loss_val = loss_dict["sim_loss"].item()
+        model.update_recruitment_logic(sim_loss_val, target_dim=d_t, step=step)
+
+        # Log
+        log_entry = {
+            "step": step,
+            "loss": loss_dict["loss"].item(),
+            "sim_loss": sim_loss_val,
+            "sfa_loss": loss_dict.get("sfa_loss", torch.tensor(0.0)).item(),
+            "var_loss": loss_dict["var_loss"].item(),
+            "cov_loss": loss_dict["cov_loss"].item(),
+        }
+        logs.append(log_entry)
+
+        if step % 1000 == 0 or step == total_steps:
+            print(f"  [{name}] seed={seed} step={step:5d}/{total_steps}  "
+                  f"loss={log_entry['loss']:.4f}  sim={log_entry['sim_loss']:.4f}  "
+                  f"sfa={log_entry['sfa_loss']:.4f}")
+
+    # Collect GDASR growth points
+    gdasr_growth_points = list(model.gdasr_growth_points)
+
+    # ---------------------------------------------------------------
+    # Evaluation
+    # ---------------------------------------------------------------
+    model.eval()
+
+    # --- Collapse check ---
+    eval_env = PhysicsSandbox(N=3, seed=seed + 10000)
+    eval_history = collections.deque(maxlen=4)
+    obs = eval_env.reset()
+    eval_history.append(obs)
+    for _ in range(4):
+        obs, _ = eval_env.step({"acc": 0.0, "push": False})
+        eval_history.append(obs)
+
+    z_dyn_all = []
+    z_coord_all = []
+    for _ in range(eval_steps):
+        obs, _ = eval_env.step({"acc": 0.0, "push": False})
+        eval_history.append(obs)
+        if len(eval_history) == 4:
+            x_t = torch.from_numpy(eval_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad():
+                z_coord, z_dyn = model.encoder(x_t)
+            z_dyn_all.append(z_dyn[:, :d_t].cpu().numpy())
+            z_coord_all.append(z_coord[:, :d_t].cpu().numpy())
+
+    z_dyn_arr = np.concatenate(z_dyn_all, axis=0)   # (eval_steps, d_t)
+    z_coord_arr = np.concatenate(z_coord_all, axis=0)
+
+    has_collapsed, per_dim_std = check_collapse(z_dyn_arr, d_t)
+    vh = compute_vicreg_health(z_dyn_arr, d_t)
+
+    # --- Slowness metrics ---
+    # Use the collected z_dyn and z_coord arrays for temporal deltas
+    slowness = compute_slowness_metrics(
+        [z_dyn_arr], [z_coord_arr]
+    )
+
+    # --- Centroid decoding MSE on a separate fresh test set ---
+    test_env = PhysicsSandbox(N=3, seed=seed + 20000)
+    test_history = collections.deque(maxlen=4)
+    obs = test_env.reset()
+    test_history.append(obs)
+    centroid_mse = compute_centroid_mse(model, test_env, test_history,
+                                         num_samples=eval_steps, device=device)
+
+    # --- Semantic disentanglement probes ---
+    semantic = compute_semantic_probes(model, test_env, test_history,
+                                        num_samples=eval_steps, device=device)
+
+    # --- Summary results ---
+    results = {
+        "arm": name,
+        "seed": seed,
+
+        # Collapse
+        "has_collapsed": int(has_collapsed),
+        "per_dim_std": per_dim_std.tolist(),
+        "mean_abs_corr": vh["mean_abs_corr"],
+
+        # Slowness
+        "mean_dyn_delta": slowness["mean_dyn_delta"],
+        "mean_coord_delta": slowness["mean_coord_delta"],
+        "slowness_ratio": slowness["ratio"],
+
+        # Centroid MSE
+        "centroid_mse_mean": centroid_mse["mse_mean"],
+        "centroid_mse_per_object": centroid_mse["mse_per_object"],
+        "centroid_r_mean": centroid_mse["r_mean"],
+        "centroid_r_per_object": centroid_mse["r_per_object"],
+
+        # VICReg health
+        "vicreg_per_dim_std": per_dim_std.tolist(),
+        "vicreg_mean_abs_corr": vh["mean_abs_corr"],
+
+        # Semantic disentanglement probes
+        "r2_dyn_color": semantic["r2_dyn_color"],
+        "r2_coord_color": semantic["r2_coord_color"],
+        "r2_dyn_pos": semantic["r2_dyn_pos"],
+        "r2_coord_pos": semantic["r2_coord_pos"],
+        "delta_r2_color": semantic["delta_r2_color"],
+        "r2_per_dim": semantic["r2_per_dim"],
+        "dim_to_obj": semantic["dim_to_obj"],
+
+        # GDASR
+        "gdasr_growth_point_count": len(gdasr_growth_points),
+        "gdasr_growth_points": gdasr_growth_points,
+
+        # Final training loss
+        "final_train_loss": logs[-1]["loss"],
+        "final_train_sim_loss": logs[-1]["sim_loss"],
+        "final_train_sfa_loss": logs[-1]["sfa_loss"],
+    }
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Arms configuration
+# ---------------------------------------------------------------------------
+ARMS = [
+    {
+        "name": "Arm A (SFA+VICReg)",
+        "primary_objective": "sfa",
+        "sfa_weight": 1.0,
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "none",
+        "d_t": 3,
+    },
+    {
+        "name": "Arm B (JEPA+VICReg)",
+        "primary_objective": "jepa",
+        "sfa_weight": 1.0,  # unused in jepa mode
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "none",
+        "d_t": 3,
+    },
+    {
+        "name": "Arm C (SFA+pos_enc)",
+        "primary_objective": "sfa",
+        "sfa_weight": 1.0,
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "sinusoidal",
+        "d_t": 3,
+    },
+]
+
+SEEDS = [42, 123, 456, 789, 999]
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="Phase 0 SFA Experiment Runner"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run 5 training steps per seed for quick correctness check.",
+    )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Override seed list (default: [42, 123, 456, 789, 999]).",
+    )
+    args = parser.parse_args()
+
+    dry_run = args.dry_run
+    seeds = args.seeds if args.seeds is not None else SEEDS
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"Dry-run mode: {dry_run}")
+    print(f"Seeds: {seeds}")
+    print(f"Arms: {[a['name'] for a in ARMS]}")
+    print()
+
+    suffix = "_dryrun" if dry_run else ""
+    results_dir = "archive/iter_020"
+    runs_dir = os.path.join(results_dir, "runs")
+    figs_dir = os.path.join(results_dir, "figs")
+    os.makedirs(runs_dir, exist_ok=True)
+    os.makedirs(figs_dir, exist_ok=True)
+
+    all_results = []
+
+    for arm in ARMS:
+        name = arm["name"]
+        print(f"{'='*70}")
+        print(f"ARM: {name}")
+        print(f"{'='*70}")
+        for seed in seeds:
+            print(f"\n--- {name}, seed={seed} ---")
+            results = run_single(arm, seed, device, dry_run=dry_run)
+            all_results.append(results)
+
+            # Save per-run CSV with detailed logs
+            run_id = f"{name.lower().replace(' ', '_').replace('(', '').replace(')', '')}_seed{seed}{suffix}"
+            csv_path = os.path.join(runs_dir, f"{run_id}.csv")
+            json_path = os.path.join(runs_dir, f"{run_id}.json")
+
+            # Flatten per-object / per-dimension lists for CSV
+            flat = {k: v for k, v in results.items() if k not in (
+                "gdasr_growth_points", "centroid_mse_per_object",
+                "centroid_r_per_object", "r2_per_dim", "dim_to_obj",
+            )}
+            flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))
+            flat["centroid_mse_obj0"] = results.get("centroid_mse_per_object", [])[0] if len(results.get("centroid_mse_per_object", [])) > 0 else None
+            flat["centroid_mse_obj1"] = results.get("centroid_mse_per_object", [])[1] if len(results.get("centroid_mse_per_object", [])) > 1 else None
+            flat["centroid_mse_obj2"] = results.get("centroid_mse_per_object", [])[2] if len(results.get("centroid_mse_per_object", [])) > 2 else None
+            flat["centroid_r_obj0"] = results.get("centroid_r_per_object", [])[0] if len(results.get("centroid_r_per_object", [])) > 0 else None
+            flat["centroid_r_obj1"] = results.get("centroid_r_per_object", [])[1] if len(results.get("centroid_r_per_object", [])) > 1 else None
+            flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None
+            flat["per_dim_std"] = str(results.get("per_dim_std", []))
+
+            # Semantic probe per-dimension details
+            r2pd = results.get("r2_per_dim", [])
+            dim_map = results.get("dim_to_obj", {})
+            for d_idx, pd in enumerate(r2pd):
+                flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)
+                flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)
+                flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)
+                flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)
+                flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
+            flat["dim_to_obj"] = json.dumps(dim_map, default=str)
+
+            df_row = pd.DataFrame([flat])
+            df_row.to_csv(csv_path, index=False)
+
+            # Save full JSON (includes growth points)
+            with open(json_path, "w") as f:
+                json.dump(results, f, indent=2, default=str)
+
+            print(f"  -> Saved {csv_path}")
+
+    # ------------------------------------------------------------------ #
+    # Compile aggregate results
+    # ------------------------------------------------------------------ #
+    df_all = pd.DataFrame(all_results)
+
+    # Ensure numeric columns
+    for col in [
+        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",
+        "final_train_loss", "final_train_sim_loss", "final_train_sfa_loss",
+        "gdasr_growth_point_count",
+        "r2_dyn_color", "r2_coord_color", "r2_dyn_pos", "r2_coord_pos",
+        "delta_r2_color",
+    ]:
+        if col in df_all.columns:
+            df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+
+    summary_path = os.path.join(results_dir, f"summary_phase0{suffix}.csv")
+    df_all.to_csv(summary_path, index=False)
+    print(f"\nSaved full results to {summary_path}")
+
+    # ------------------------------------------------------------------ #
+    # Aggregated per-arm stats
+    # ------------------------------------------------------------------ #
+    agg_cols = [
+        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",
+        "final_train_loss", "final_train_sim_loss", "gdasr_growth_point_count",
+    ]
+    agg = df_all.groupby("arm")[agg_cols].agg(["mean", "std"]).reset_index()
+    agg_path = os.path.join(results_dir, f"aggregated_phase0{suffix}.csv")
+    agg.to_csv(agg_path)
+    print(f"\nAggregated stats saved to {agg_path}")
+    print("\n" + "=" * 70)
+    print("AGGREGATED RESULTS (mean ± std)")
+    print("=" * 70)
+    for _, row in agg.iterrows():
+        name = row["arm"]
+        print(f"\n--- {name} ---")
+        for col in agg_cols:
+            mean_val = row[(col, "mean")]
+            std_val = row[(col, "std")]
+            print(f"  {col:30s} = {mean_val:.4f} ± {std_val:.4f}")
+
+    # ------------------------------------------------------------------ #
+    # Falsification audit
+    # ------------------------------------------------------------------ #
+    print("\n" + "=" * 70)
+    print("FALSIFICATION AUDIT (per pre-registration)")
+    print("=" * 70)
+
+    # Separate arms
+    arm_a = df_all[df_all["arm"] == "Arm A (SFA+VICReg)"]
+    arm_b = df_all[df_all["arm"] == "Arm B (JEPA+VICReg)"]
+    arm_c = df_all[df_all["arm"] == "Arm C (SFA+pos_enc)"]
+
+    # --- C1: Collapse ---
+    if len(arm_a) > 0:
+        collapsed_a = int(arm_a["has_collapsed"].sum())
+        print(f"\nC1 (Collapse): Arm A collapsed seeds: {collapsed_a} / {len(arm_a)}")
+        c1_pass = collapsed_a < 2  # fail if >= 2 seeds collapsed
+        print(f"  -> {'PASS' if c1_pass else 'FAIL'} (threshold: < 2 collapsed seeds)")
+    else:
+        c1_pass = False
+        print("\nC1: Arm A data missing.")
+
+    # --- C2: Centroid MSE ---
+    if len(arm_a) > 0 and len(arm_b) > 0:
+        mse_a_mean = float(arm_a["centroid_mse_mean"].mean())
+        mse_b_mean = float(arm_b["centroid_mse_mean"].mean())
+        if np.isnan(mse_a_mean) or np.isnan(mse_b_mean):
+            print("  [WARNING] centroid_mse_mean contains NaN — possibly too few eval samples.")
+            c2_pass = False
+        else:
+            threshold = 1.10 * mse_b_mean
+        print(f"\nC2 (Centroid MSE):")
+        print(f"  Arm A (SFA)  MSE = {mse_a_mean:.4f}")
+        print(f"  Arm B (JEPA) MSE = {mse_b_mean:.4f}")
+        print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")
+        c2_pass = mse_a_mean <= threshold
+        print(f"  -> {'PASS' if c2_pass else 'FAIL'} (SFA MSE {'' if c2_pass else 'NOT '}<= 1.10 x JEPA MSE)")
+
+        # Welch's t-test
+        mse_a_vals = arm_a["centroid_mse_mean"].values.astype(float)
+        mse_b_vals = arm_b["centroid_mse_mean"].values.astype(float)
+        if len(mse_a_vals) > 1 and len(mse_b_vals) > 1:
+            t_stat, p_val = scipy_stats.ttest_ind(mse_a_vals, mse_b_vals, equal_var=False)
+            n1, n2 = len(mse_a_vals), len(mse_b_vals)
+            dof = (mse_a_vals.var() / n1 + mse_b_vals.var() / n2) ** 2 / \
+                  ((mse_a_vals.var() / n1) ** 2 / (n1 - 1) + (mse_b_vals.var() / n2) ** 2 / (n2 - 1))
+            cohens_d = (mse_a_mean - mse_b_mean) / np.sqrt(
+                ((n1 - 1) * mse_a_vals.var() + (n2 - 1) * mse_b_vals.var()) / (n1 + n2 - 2)
+            )
+            print(f"  Welch's t({dof:.1f}) = {t_stat:.4f}, p = {p_val:.4f}")
+            print(f"  Cohen's d = {cohens_d:.4f}")
+    else:
+        c2_pass = False
+        print("\nC2: Arm A or Arm B data missing.")
+
+    # --- C3: Slowness separation ---
+    if len(arm_a) > 0:
+        ratios_a = arm_a["slowness_ratio"].values.astype(float)
+        mean_ratio_a = float(np.mean(ratios_a))
+        print(f"\nC3 (Slowness separation):")
+        print(f"  Arm A mean slowness ratio = {mean_ratio_a:.4f}")
+        print(f"  Threshold: ratio < 0.6")
+        c3_pass = mean_ratio_a < 0.6
+        print(f"  -> {'PASS' if c3_pass else 'FAIL'} (ratio {'<' if c3_pass else '>='} 0.6)")
+
+        # One-sample t-test against 0.6
+        if len(ratios_a) > 1:
+            t_stat3, p_val3 = scipy_stats.ttest_1samp(ratios_a, 0.6, alternative="less")
+            print(f"  One-sample t({len(ratios_a)-1}) vs 0.6: t = {t_stat3:.4f}, p = {p_val3:.4f} (one-sided less)")
+    else:
+        c3_pass = False
+        print("\nC3: Arm A data missing.")
+
+    overall = c1_pass and c2_pass and c3_pass
+    print(f"\n{'=' * 70}")
+    print(f"OVERALL: {'VALIDATED' if overall else 'FALSIFIED'}")
+    print(f"{'=' * 70}")
+
+    # ------------------------------------------------------------------ #
+    # Save audit report
+    # ------------------------------------------------------------------ #
+    audit_data = {
+        "c1_collapse_pass": bool(c1_pass),
+        "c1_collapsed_seeds_a": int(collapsed_a) if len(arm_a) > 0 else -1,
+        "c2_mse_pass": bool(c2_pass),
+        "c2_mse_sfa_mean": float(mse_a_mean) if len(arm_a) > 0 else -1.0,
+        "c2_mse_jepa_mean": float(mse_b_mean) if len(arm_b) > 0 else -1.0,
+        "c2_mse_threshold": float(threshold) if len(arm_a) > 0 and len(arm_b) > 0 else -1.0,
+        "c3_slowness_pass": bool(c3_pass),
+        "c3_slowness_ratio_mean": float(mean_ratio_a) if len(arm_a) > 0 else -1.0,
+        "overall_validated": bool(overall),
+    }
+    audit_path = os.path.join(results_dir, f"audit_phase0{suffix}.json")
+    with open(audit_path, "w") as f:
+        json.dump(audit_data, f, indent=2)
+    print(f"\nAudit report saved to {audit_path}")
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()]
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 020
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+On the existing NonParametricJEPASpatial CNN encoder with frozen d_t=3 and no dynamic
+recruitment, replacing the JEPA prediction objective with SFA (slowness) on z_dyn as the
+primary representation objective, combined with batch VICReg on z_dyn, will:
+(1) Train without representation collapse (all per-dimension std >= 0.5, no has_collapsed trigger),
+(2) Achieve centroid-decoding MSE via Arm F (soft-argmax on z_coord) at most 10% higher
+    than the JEPA+VICReg baseline (i.e., MSE_SFA <= 1.10 * MSE_JEPA, where MSE_JEPA ~ 55.6),
+(3) Produce z_dyn representations that are significantly slower (mean ||z_dyn(t) - z_dyn(t-1)||^2
+    at least 40% lower) than z_coord temporal variation, indicating that SFA separates slow
+    identity from fast position by construction.
+
+## 2. Falsification Criterion
+The hypothesis is falsified if ANY of the following hold across the 5-seed sweep:
+C1 (Collapse): SFA+VICReg arm collapses (has_collapsed=True OR any active dimension std < 0.5)
+    in >= 2 out of 5 seeds.
+C2 (Centroid MSE): Mean centroid-decoding MSE of the SFA arm exceeds 1.10 * mean MSE of the
+    JEPA baseline arm (i.e., SFA degrades spatial readout by more than 10%).
+C3 (Slowness separation): The ratio mean(||z_dyn(t)-z_dyn(t-1)||^2) / mean(||z_coord(t)-z_coord(t-1)||^2)
+    is >= 0.6 for the SFA arm (i.e., z_dyn is not substantially slower than z_coord,
+    failing the identity-position separation hypothesis).
+
+## 3. Proposed Method
+Step 1: Create SFA training infrastructure.
+- MODIFY src/models_dual_stream.py: Add an SFA loss computation to NonParametricJEPASpatial.forward()
+  that computes L_sfa = ||z_dyn_target - z_dyn_prev||^2 over the batch, where z_dyn_prev is
+  z_dyn from the previous frame in the history. Also add batch VICReg on z_dyn_target (the 
+  target frame's dynamics representation). The total representation loss becomes:
+  L_repr = sfa_weight * L_sfa + var_weight * VICReg_var(z_dyn) + cov_weight * VICReg_cov(z_dyn)
+  The JEPA sim_loss is retained ONLY as a readout/surprise signal (stop-gradient detached from
+  the representation), not as a training objective for the encoder.
+- Keep the predictor's forward pass for surprise computation, but detach its output from the
+  encoder's gradient path when SFA is the primary objective.
+
+Step 2: Create the Phase 0 experiment runner.
+- CREATE src/run_phase0_sfa.py: A 5-seed sweep comparing three arms:
+  Arm A (SFA+VICReg): Primary objective = SFA on z_dyn + batch VICReg on z_dyn.
+    - sfa_weight=1.0, var_weight=25.0, cov_weight=25.0
+    - Predictor is retained for surprise readout but gradients do NOT flow to encoder from sim_loss.
+    - z_coord is NOT slowed (M2 mandate).
+    - d_t frozen at 3, no recruitment.
+  Arm B (JEPA+VICReg Baseline, B1): Same as current NonParametricJEPASpatial with
+    sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t frozen at 3, no recruitment.
+    This is the direct comparison baseline.
+  Arm C (SFA+VICReg with pos_encoding="sinusoidal"): Same as Arm A but with sinusoidal
+    position encoding added to the input. Tests whether explicit position channels
+    narrow the Spatial Specialization Gap under SFA.
+
+Step 3: Training protocol (shared across arms).
+- Environment: PhysicsSandbox(N=3, seed=seed) for 3000 training steps, batch_size=32.
+- History buffer: deque(maxlen=4) for H=3 history + 1 target.
+- Replay buffer: capacity 2000, prefill 100 transitions.
+- Optimizer: Adam, lr=1e-3.
+- d_t = 3 frozen from start (no recruitment logic).
+- GDASR runs in log-only mode (computes and logs growth-point signals without modifying d_t).
+- Seeds: [42, 123, 456, 789, 999].
+
+Step 4: Evaluation protocol (at step 3000 and checkpoint at 1500).
+- Non-collapse check: has_collapsed criterion + per-dimension std >= 0.5.
+- Centroid decoding MSE: linear probe on soft-argmax centroids vs. true object positions
+  (all 3 objects, report mean and per-object).
+- Slowness metrics: mean ||z_dyn(t) - z_dyn(t-1)||^2 and mean ||z_coord(t) - z_coord(t-1)||^2
+  over 200 test frames, and their ratio.
+- VICReg health: per-dimension std, mean absolute correlation between active dimensions.
+- GDASR growth-point log: count and timing of would-have-recruited events.
+
+Step 5: Statistical analysis.
+- Welch's t-test comparing SFA arm vs JEPA arm on centroid MSE.
+- Welch's t-test comparing SFA arm z_dyn slowness ratio vs 0.6 threshold.
+- Cohen's d for effect sizes.
+- Report with confidence intervals per reporting standards (Section 9).
+
+Step 6: Falsification audit against C1, C2, C3.
+- C1: Count collapsed seeds per arm.
+- C2: Compare mean MSE_SFA vs 1.10 * mean MSE_JEPA.
+- C3: Compute slowness ratio for SFA arm; check >= 0.6.
+
+Files to create/modify:
+- MODIFY: src/models_dual_stream.py (add SFA objective option to NonParametricJEPASpatial.forward)
+- CREATE: src/run_phase0_sfa.py (experiment runner with 3 arms × 5 seeds)
+- UPDATE: src/pre_registration.md (with Phase 0 pre-registration)
+
+---
+*Created automatically by the RDF Orchestrator prior to iteration execution.*
+]
+Now I understand the task. I need to:
+
+1. Add a **semantic C3 criterion** (`delta_R2_color >= 0.10`) to the falsification audit in `run_phase0_sfa.py`
+2. Update `pre_registration.md` to reframe slowness ratio as a sanity check and add the semantic C3 criterion
+3. Run `--dry-run` to verify
+
+Let me make the changes to the Python script first.
+
+
+[Tool Call: edit_file({'path': 'src/run_phase0_sfa.py', 'old_string': '    # --- C3: Slowness separation ---\n    if len(arm_a) > 0:\n        ratios_a = arm_a["slowness_ratio"].values.astype(float)\n        mean_ratio_a = float(np.mean(ratios_a))\n        print(f"\\nC3 (Slowness separation):")\n        print(f"  Arm A mean slowness ratio = {mean_ratio_a:.4f}")\n        print(f"  Threshold: ratio < 0.6")\n        c3_pass = mean_ratio_a < 0.6\n        print(f"  -> {\'PASS\' if c3_pass else \'FAIL\'} (ratio {\'<\' if c3_pass else \'>=\'} 0.6)")\n\n        # One-sample t-test against 0.6\n        if len(ratios_a) > 1:\n            t_stat3, p_val3 = scipy_stats.ttest_1samp(ratios_a, 0.6, alternative="less")\n            print(f"  One-sample t({len(ratios_a)-1}) vs 0.6: t = {t_stat3:.4f}, p = {p_val3:.4f} (one-sided less)")\n    else:\n        c3_pass = False\n        print("\\nC3: Arm A data missing.")\n\n    overall = c1_pass and c2_pass and c3_pass', 'new_string': '    # --- C3 (Slowness separation — sanity check) ---\n    if len(arm_a) > 0:\n        ratios_a = arm_a["slowness_ratio"].values.astype(float)\n        mean_ratio_a = float(np.mean(ratios_a))\n        print(f"\\nC3_sanity (Slowness separation — sanity check):")\n        print(f"  Arm A mean slowness ratio = {mean_ratio_a:.4f}")\n        print(f"  Threshold: ratio < 0.6")\n        c3_sanity_pass = mean_ratio_a < 0.6\n        print(f"  -> {\'PASS\' if c3_sanity_pass else \'FAIL\'} (ratio {\'<\' if c3_sanity_pass else \'>=\'} 0.6)")\n\n        # One-sample t-test against 0.6\n        if len(ratios_a) > 1:\n            t_stat3, p_val3 = scipy_stats.ttest_1samp(ratios_a, 0.6, alternative="less")\n            print(f"  One-sample t({len(ratios_a)-1}) vs 0.6: t = {t_stat3:.4f}, p = {p_val3:.4f} (one-sided less)")\n    else:\n        c3_sanity_pass = False\n        mean_ratio_a = -1.0\n        print("\\nC3_sanity: Arm A data missing.")\n\n    # --- C3 (Semantic disentanglement — delta_R2_color >= 0.10) ---\n    if len(arm_a) > 0:\n        deltas_a = arm_a["delta_r2_color"].values.astype(float)\n        mean_delta_a = float(np.mean(deltas_a))\n        print(f"\\nC3_semantic (Semantic disentanglement — delta_R2_color):")\n        print(f"  Arm A mean delta_R2_color = {mean_delta_a:.4f}")\n        print(f"  Threshold: delta_R2_color >= 0.10")\n        c3_semantic_pass = mean_delta_a >= 0.10\n        print(f"  -> {\'PASS\' if c3_semantic_pass else \'FAIL\'} (delta {\'>= \' if c3_semantic_pass else \'< \'} 0.10)")\n\n        # One-sample t-test against 0.10\n        if len(deltas_a) > 1:\n            t_stat_sem, p_val_sem = scipy_stats.ttest_1samp(deltas_a, 0.10, alternative="greater")\n            print(f"  One-sample t({len(deltas_a)-1}) vs 0.10: t = {t_stat_sem:.4f}, p = {p_val_sem:.4f} (one-sided greater)")\n    else:\n        c3_semantic_pass = False\n        mean_delta_a = -1.0\n        print("\\nC3_semantic: Arm A data missing.")\n\n    overall = c1_pass and c2_pass and c3_sanity_pass and c3_semantic_pass'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+Now update the audit report JSON to include both C3 sub-criteria:
+
+
+[Tool Call: edit_file({'old_string': '    audit_data = {\n        "c1_collapse_pass": bool(c1_pass),\n        "c1_collapsed_seeds_a": int(collapsed_a) if len(arm_a) > 0 else -1,\n        "c2_mse_pass": bool(c2_pass),\n        "c2_mse_sfa_mean": float(mse_a_mean) if len(arm_a) > 0 else -1.0,\n        "c2_mse_jepa_mean": float(mse_b_mean) if len(arm_b) > 0 else -1.0,\n        "c2_mse_threshold": float(threshold) if len(arm_a) > 0 and len(arm_b) > 0 else -1.0,\n        "c3_slowness_pass": bool(c3_pass),\n        "c3_slowness_ratio_mean": float(mean_ratio_a) if len(arm_a) > 0 else -1.0,\n        "overall_validated": bool(overall),\n    }', 'new_string': '    audit_data = {\n        "c1_collapse_pass": bool(c1_pass),\n        "c1_collapsed_seeds_a": int(collapsed_a) if len(arm_a) > 0 else -1,\n        "c2_mse_pass": bool(c2_pass),\n        "c2_mse_sfa_mean": float(mse_a_mean) if len(arm_a) > 0 else -1.0,\n        "c2_mse_jepa_mean": float(mse_b_mean) if len(arm_b) > 0 else -1.0,\n        "c2_mse_threshold": float(threshold) if len(arm_a) > 0 and len(arm_b) > 0 else -1.0,\n        "c3_sanity_slowness_pass": bool(c3_sanity_pass),\n        "c3_sanity_slowness_ratio_mean": float(mean_ratio_a),\n        "c3_semantic_disentanglement_pass": bool(c3_semantic_pass),\n        "c3_semantic_delta_r2_color_mean": float(mean_delta_a),\n        "overall_validated": bool(overall),\n    }', 'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+Now update `pre_registration.md` to reframe slowness ratio as a sanity check and include the semantic C3 criterion:
+
+
+[Tool Call: edit_file({'new_string': '(3) Produce z_dyn representations that are significantly slower (mean ||z_dyn(t) - z_dyn(t-1)||^2\n    at least 40% lower) than z_coord temporal variation, indicating that SFA separates slow\n    identity from fast position by construction.\n(4) Exhibit semantic disentanglement: delta_R2_color = R2_dyn_color - R2_coord_color >= 0.10,\n    indicating that z_dyn predicts object color (identity) better than z_coord, while\n    z_coord remains primarily position-coded.\n\n## 2. Falsification Criterion\nThe hypothesis is falsified if ANY of the following hold across the 5-seed sweep:\nC1 (Collapse): SFA+VICReg arm collapses (has_collapsed=True OR any active dimension std < 0.5)\n    in >= 2 out of 5 seeds.\nC2 (Centroid MSE): Mean centroid-decoding MSE of the SFA arm exceeds 1.10 * mean MSE of the\n    JEPA baseline arm (i.e., SFA degrades spatial readout by more than 10%).\nC3_sanity (Slowness separation — sanity check): The ratio\n    mean(||z_dyn(t)-z_dyn(t-1)||^2) / mean(||z_coord(t)-z_coord(t-1)||^2)\n    is >= 0.6 for the SFA arm. This serves as a sanity check that z_dyn is substantially\n    slower than z_coord, but is not itself a falsification criterion — it confirms the\n    basic slowness property without requiring a specific disentanglement outcome.\nC3_semantic (Semantic disentanglement — primary C3): delta_R2_color < 0.10 for the SFA arm,\n    where delta_R2_color = R2_dyn_color - R2_coord_color is the difference in color-prediction\n    R² between z_dyn and z_coord latent dimensions. A value >= 0.10 confirms that SFA\n    meaningfully pushes identity-related features into z_dyn while keeping them out of z_coord.', 'old_string': '(3) Produce z_dyn representations that are significantly slower (mean ||z_dyn(t) - z_dyn(t-1)||^2\n    at least 40% lower) than z_coord temporal variation, indicating that SFA separates slow\n    identity from fast position by construction.\n\n## 2. Falsification Criterion\nThe hypothesis is falsified if ANY of the following hold across the 5-seed sweep:\nC1 (Collapse): SFA+VICReg arm collapses (has_collapsed=True OR any active dimension std < 0.5)\n    in >= 2 out of 5 seeds.\nC2 (Centroid MSE): Mean centroid-decoding MSE of the SFA arm exceeds 1.10 * mean MSE of the\n    JEPA baseline arm (i.e., SFA degrades spatial readout by more than 10%).\nC3 (Slowness separation): The ratio mean(||z_dyn(t)-z_dyn(t-1)||^2) / mean(||z_coord(t)-z_coord(t-1)||^2)\n    is >= 0.6 for the SFA arm (i.e., z_dyn is not substantially slower than z_coord,\n    failing the identity-position separation hypothesis).', 'path': 'src/pre_registration.md'})]
+[Tool Result: Successfully replaced 1 occurrence in src/pre_registration.md]
+
+[Tool Call: edit_file({'new_string': 'Step 6: Falsification audit against C1, C2, C3_sanity, C3_semantic.\n- C1: Count collapsed seeds per arm.\n- C2: Compare mean MSE_SFA vs 1.10 * mean MSE_JEPA.\n- C3_sanity: Compute slowness ratio for SFA arm; check >= 0.6 (sanity check).\n- C3_semantic: Compute delta_R2_color for SFA arm; check < 0.10 as falsification.', 'old_string': 'Step 6: Falsification audit against C1, C2, C3.\n- C1: Count collapsed seeds per arm.\n- C2: Compare mean MSE_SFA vs 1.10 * mean MSE_JEPA.\n- C3: Compute slowness ratio for SFA arm; check >= 0.6.', 'path': 'src/pre_registration.md'})]
+[Tool Result: Successfully replaced 1 occurrence in src/pre_registration.md]
+Now run the dry-run to verify everything works:
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python src/run_phase0_sfa.py --dry-run', 'timeout_sec': 600})]
+[Tool Result: exit_code: 1
+stdout: Using device: cpu
+CUDA available: False
+Dry-run mode: True
+Seeds: [42, 123, 456, 789, 999]
+Arms: ['Arm A (SFA+VICReg)', 'Arm B (JEPA+VICReg)', 'Arm C (SFA+pos_enc)']
+
+======================================================================
+ARM: Arm A (SFA+VICReg)
+======================================================================
+
+--- Arm A (SFA+VICReg), seed=42 ---
+  [Arm A (SFA+VICReg)] seed=42 step=    5/5  loss=69310.4062  sim=2771.4263  sfa=0.0000
+
+stderr: C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+Traceback (most recent call last):
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 879, in <module>
+    main()
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 704, in main
+    df_row = pd.DataFrame([flat])
+             ^^^^^^^^^^^^
+AttributeError: 'dict' object has no attribute 'DataFrame'
+]
+There's a `pd` variable conflict. Let me find where `pd` is being shadowed.
+
+
+[Tool Call: grep_search({'include_pattern': 'src/run_phase0_sfa.py', 'pattern': '\\bpd='})]
+[Tool Result: No matches found.]
+
+[Tool Call: grep_search({'include_pattern': 'src/run_phase0_sfa.py', 'pattern': '\\bpd\\b'})]
+[Tool Result: src\run_phase0_sfa.py:23: import pandas as pd
+src\run_phase0_sfa.py:696: for d_idx, pd in enumerate(r2pd):
+src\run_phase0_sfa.py:697: flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)
+src\run_phase0_sfa.py:698: flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)
+src\run_phase0_sfa.py:699: flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)
+src\run_phase0_sfa.py:700: flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)
+src\run_phase0_sfa.py:704: df_row = pd.DataFrame([flat])
+src\run_phase0_sfa.py:716: df_all = pd.DataFrame(all_results)
+src\run_phase0_sfa.py:728: df_all[col] = pd.to_numeric(df_all[col], errors="coerce")]
+The loop variable `pd` at line 696 shadows the pandas `pd` import. Let me rename it:
+
+
+[Tool Call: edit_file({'new_string': '    for d_idx, p in enumerate(r2pd):\n        flat[f"r2_dim{d_idx}_dyn_color"] = p.get("dyn_color", None)\n        flat[f"r2_dim{d_idx}_coord_color"] = p.get("coord_color", None)\n        flat[f"r2_dim{d_idx}_dyn_pos"] = p.get("dyn_pos", None)\n        flat[f"r2_dim{d_idx}_coord_pos"] = p.get("coord_pos", None)', 'old_string': '    for d_idx, pd in enumerate(r2pd):\n        flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)\n        flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)\n        flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)\n        flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)', 'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: Error: old_string not found (in src/run_phase0_sfa.py)]
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa.py', 'start_line': 693, 'end_line': 708})]
+[Tool Result: --- lines 693 to 708 of 879 ---
+            # Semantic probe per-dimension details
+            r2pd = results.get("r2_per_dim", [])
+            dim_map = results.get("dim_to_obj", {})
+            for d_idx, pd in enumerate(r2pd):
+                flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)
+                flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)
+                flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)
+                flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)
+                flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
+            flat["dim_to_obj"] = json.dumps(dim_map, default=str)
+
+            df_row = pd.DataFrame([flat])
+            df_row.to_csv(csv_path, index=False)
+
+            # Save full JSON (includes growth points)
+            with open(json_path, "w") as f:]
+
+[Tool Call: read_file({'end_line': 8, 'path': 'src/run_phase0_sfa.py', 'start_line': 1})]
+[Tool Result: --- lines 1 to 8 of 879 ---
+#!/usr/bin/env python3
+"""
+Phase 0: SFA (Slowness) as Primary Representation Objective.
+
+Evaluates three arms × 5 seeds:
+  Arm A (SFA+VICReg)     : sfa_weight=1.0, var=25, cov=25, pos_encoding='none'
+  Arm B (JEPA+VICReg)    : baseline, sim=25, var=25, cov=25, pos_encoding='none'
+  Arm C (SFA+pos_enc)    : sfa_weight=1.0, var=25, cov=25, pos_encoding='sinusoidal']
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python -c "\nwith open(\'src/run_phase0_sfa.py\', \'rb\') as f:\n    data = f.read()\n# Find the exact bytes around \'pd in enumerate\'\nidx = data.find(b\'pd in enumerate\')\nif idx >= 0:\n    print(repr(data[idx-20 : idx+30]))\n"'})]
+[Tool Result: exit_code: 0
+stdout: 
+stderr: ]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && type src\\run_phase0_sfa.py | findstr /n "pd in enumerate"'})]
+[Tool Result: exit_code: 0
+stdout: 1:#!/usr/bin/env python3
+6:  Arm A (SFA+VICReg)     : sfa_weight=1.0, var=25, cov=25, pos_encoding='none'
+7:  Arm B (JEPA+VICReg)    : baseline, sim=25, var=25, cov=25, pos_encoding='none'
+8:  Arm C (SFA+pos_enc)    : sfa_weight=1.0, var=25, cov=25, pos_encoding='sinusoidal'
+20:import warnings
+23:import pandas as pd
+30:warnings.filterwarnings("ignore", category=UserWarning)
+32:sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+38:    add_positional_encoding,
+42:# Replay buffer (same as existing phases)
+45:    def __init__(self, capacity=2000):
+78:    torch.backends.cudnn.deterministic = True
+83:# Helpers: slowness, collapse check, linear probe, centroid MSE, VICReg health
+92:    for z_dyn, z_coord in zip(z_dyn_log, z_coord_log):
+120:def fit_linear_probe(z, y):
+121:    """Simple linear probe via least squares: y_pred = w * z + b."""
+123:    theta = np.linalg.pinv(Z.T @ Z) @ Z.T @ y
+129:    Evaluates centroid-decoding MSE: linear probe on soft-argmax centroids
+141:    for _ in range(4):  # warm up history for H=3
+142:        obs, info = test_env.step({"acc": 0.0, "push": False})
+147:        obs, info = test_env.step({"acc": 0.0, "push": False})
+155:            true_pos = np.array(info["positions"][:model.d_t])
+166:    for obj_idx in range(model.d_t):
+171:            continue
+174:        w, b = fit_linear_probe(z_obj, y_obj)
+200:        triu = np.triu_indices(d_t, k=1)
+211:                             train_ratio=0.5, device="cpu"):
+217:    (by centroid position).  Fits linear probes on the first half and evaluates
+223:    Probes are fit separately for z_dyn and z_coord, giving four R² scores:
+229:    and z_coord should predict color poorly, yielding a positive delta.
+239:    for _ in range(4):
+240:        obs, info = test_env.step({"acc": 0.0, "push": False})
+249:        for _ in range(num_samples):
+250:            obs, info = test_env.step({"acc": 0.0, "push": False})
+257:                pos_list.append(info["positions"])              # (N,)
+258:                colors_list.append(info["colors"])              # (N, 3)
+268:    # Match each latent dimension d in [0, d_t) to the nearest object
+272:    for d in range(d_t):
+274:        best_dist = np.inf
+275:        for o in range(N):
+276:            if o in used_objs:
+277:                continue
+287:    # Split into train and test
+288:    n_train = int(num_samples * train_ratio)
+291:        """Fit linear probe: y = w*z + b. Return R² on test portion."""
+292:        z_train = z_feature[:n_train]
+293:        y_train = y_target[:n_train]
+294:        z_test = z_feature[n_train:]
+295:        y_test = y_target[n_train:]
+297:        if z_train.size < 5 or y_train.size < 5:
+300:        w, b = fit_linear_probe(z_train, y_train)
+304:        ss_tot = np.sum((y_test - np.mean(y_train)) ** 2)
+312:    for d in range(d_t):
+313:        if d not in dim_to_obj:
+316:            continue
+329:        for ch in range(3):
+343:    r2_dyn_color_all = np.mean([p["dyn_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+344:    r2_coord_color_all = np.mean([p["coord_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+345:    r2_dyn_pos_all = np.mean([p["dyn_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+346:    r2_coord_pos_all = np.mean([p["coord_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+361:# Single-run training + evaluation
+363:def run_single(arm_config, seed, device, dry_run=False):
+371:              'var_weight', 'cov_weight', 'pos_encoding', 'd_t'
+372:    seed : int
+374:    dry_run : bool  — if True, run only 5 training steps per seed for quick verification.
+386:    pos_encoding = arm_config.get("pos_encoding", "none")
+391:    # Determine total training steps (5 for dry run, 3000 otherwise)
+393:    eval_steps = min(200, total_steps // 2) if dry_run else 200
+402:        pos_encoding=pos_encoding,
+423:            obs, info = env.step({"acc": 0.0, "push": False})
+431:    _prefill(min(100, total_steps))
+433:    # Training loop
+435:    gdasr_growth_points = []
+437:    for step in range(1, total_steps + 1):
+438:        obs, info = env.step({"acc": 0.0, "push": False})
+447:        x_hist_b, x_target_b = replay_buffer.sample(min(32, len(replay_buffer)))
+451:        model.train()
+465:        # GDASR log-only update
+467:        model.update_recruitment_logic(sim_loss_val, target_dim=d_t, step=step)
+481:            print(f"  [{name}] seed={seed} step={step:5d}/{total_steps}  "
+485:    # Collect GDASR growth points
+486:    gdasr_growth_points = list(model.gdasr_growth_points)
+498:    for _ in range(4):
+504:    for _ in range(eval_steps):
+526:    # --- Centroid decoding MSE on a separate fresh test set ---
+544:        "has_collapsed": int(has_collapsed),
+573:        "gdasr_growth_point_count": len(gdasr_growth_points),
+574:        "gdasr_growth_points": gdasr_growth_points,
+576:        # Final training loss
+577:        "final_train_loss": logs[-1]["loss"],
+578:        "final_train_sim_loss": logs[-1]["sim_loss"],
+579:        "final_train_sfa_loss": logs[-1]["sfa_loss"],
+595:        "pos_encoding": "none",
+601:        "sfa_weight": 1.0,  # unused in jepa mode
+605:        "pos_encoding": "none",
+615:        "pos_encoding": "sinusoidal",
+624:# Main
+626:def main():
+633:        help="Run 5 training steps per seed for quick correctness check.",
+637:        type=int,
+648:    print(f"Using device: {device}")
+649:    print(f"CUDA available: {torch.cuda.is_available()}")
+650:    print(f"Dry-run mode: {dry_run}")
+651:    print(f"Seeds: {seeds}")
+652:    print(f"Arms: {[a['name'] for a in ARMS]}")
+653:    print()
+657:    runs_dir = os.path.join(results_dir, "runs")
+658:    figs_dir = os.path.join(results_dir, "figs")
+664:    for arm in ARMS:
+666:        print(f"{'='*70}")
+667:        print(f"ARM: {name}")
+668:        print(f"{'='*70}")
+669:        for seed in seeds:
+670:            print(f"\n--- {name}, seed={seed} ---")
+671:            results = run_single(arm, seed, device, dry_run=dry_run)
+676:            csv_path = os.path.join(runs_dir, f"{run_id}.csv")
+677:            json_path = os.path.join(runs_dir, f"{run_id}.json")
+680:            flat = {k: v for k, v in results.items() if k not in (
+681:                "gdasr_growth_points", "centroid_mse_per_object",
+684:            flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))
+694:            r2pd = results.get("r2_per_dim", [])
+696:            for d_idx, pd in enumerate(r2pd):
+697:                flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)
+698:                flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)
+699:                flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)
+700:                flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)
+704:            df_row = pd.DataFrame([flat])
+705:            df_row.to_csv(csv_path, index=False)
+707:            # Save full JSON (includes growth points)
+709:                json.dump(results, f, indent=2, default=str)
+711:            print(f"  -> Saved {csv_path}")
+716:    df_all = pd.DataFrame(all_results)
+719:    for col in [
+722:        "final_train_loss", "final_train_sim_loss", "final_train_sfa_loss",
+723:        "gdasr_growth_point_count",
+727:        if col in df_all.columns:
+728:            df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+730:    summary_path = os.path.join(results_dir, f"summary_phase0{suffix}.csv")
+731:    df_all.to_csv(summary_path, index=False)
+732:    print(f"\nSaved full results to {summary_path}")
+740:        "final_train_loss", "final_train_sim_loss", "gdasr_growth_point_count",
+742:    agg = df_all.groupby("arm")[agg_cols].agg(["mean", "std"]).reset_index()
+743:    agg_path = os.path.join(results_dir, f"aggregated_phase0{suffix}.csv")
+745:    print(f"\nAggregated stats saved to {agg_path}")
+746:    print("\n" + "=" * 70)
+747:    print("AGGREGATED RESULTS (mean ± std)")
+748:    print("=" * 70)
+749:    for _, row in agg.iterrows():
+751:        print(f"\n--- {name} ---")
+752:        for col in agg_cols:
+755:            print(f"  {col:30s} = {mean_val:.4f} ± {std_val:.4f}")
+760:    print("\n" + "=" * 70)
+761:    print("FALSIFICATION AUDIT (per pre-registration)")
+762:    print("=" * 70)
+771:        collapsed_a = int(arm_a["has_collapsed"].sum())
+772:        print(f"\nC1 (Collapse): Arm A collapsed seeds: {collapsed_a} / {len(arm_a)}")
+774:        print(f"  -> {'PASS' if c1_pass else 'FAIL'} (threshold: < 2 collapsed seeds)")
+777:        print("\nC1: Arm A data missing.")
+784:            print("  [WARNING] centroid_mse_mean contains NaN — possibly too few eval samples.")
+788:        print(f"\nC2 (Centroid MSE):")
+789:        print(f"  Arm A (SFA)  MSE = {mse_a_mean:.4f}")
+790:        print(f"  Arm B (JEPA) MSE = {mse_b_mean:.4f}")
+791:        print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")
+793:        print(f"  -> {'PASS' if c2_pass else 'FAIL'} (SFA MSE {'' if c2_pass else 'NOT '}<= 1.10 x JEPA MSE)")
+799:            t_stat, p_val = scipy_stats.ttest_ind(mse_a_vals, mse_b_vals, equal_var=False)
+806:            print(f"  Welch's t({dof:.1f}) = {t_stat:.4f}, p = {p_val:.4f}")
+807:            print(f"  Cohen's d = {cohens_d:.4f}")
+810:        print("\nC2: Arm A or Arm B data missing.")
+816:        print(f"\nC3_sanity (Slowness separation — sanity check):")
+817:        print(f"  Arm A mean slowness ratio = {mean_ratio_a:.4f}")
+818:        print(f"  Threshold: ratio < 0.6")
+820:        print(f"  -> {'PASS' if c3_sanity_pass else 'FAIL'} (ratio {'<' if c3_sanity_pass else '>='} 0.6)")
+822:        # One-sample t-test against 0.6
+825:            print(f"  One-sample t({len(ratios_a)-1}) vs 0.6: t = {t_stat3:.4f}, p = {p_val3:.4f} (one-sided less)")
+829:        print("\nC3_sanity: Arm A data missing.")
+835:        print(f"\nC3_semantic (Semantic disentanglement — delta_R2_color):")
+836:        print(f"  Arm A mean delta_R2_color = {mean_delta_a:.4f}")
+837:        print(f"  Threshold: delta_R2_color >= 0.10")
+839:        print(f"  -> {'PASS' if c3_semantic_pass else 'FAIL'} (delta {'>= ' if c3_semantic_pass else '< '} 0.10)")
+841:        # One-sample t-test against 0.10
+844:            print(f"  One-sample t({len(deltas_a)-1}) vs 0.10: t = {t_stat_sem:.4f}, p = {p_val_sem:.4f} (one-sided greater)")
+848:        print("\nC3_semantic: Arm A data missing.")
+851:    print(f"\n{'=' * 70}")
+852:    print(f"OVERALL: {'VALIDATED' if overall else 'FALSIFIED'}")
+853:    print(f"{'=' * 70}")
+860:        "c1_collapsed_seeds_a": int(collapsed_a) if len(arm_a) > 0 else -1,
+871:    audit_path = os.path.join(results_dir, f"audit_phase0{suffix}.json")
+873:        json.dump(audit_data, f, indent=2)
+874:    print(f"\nAudit report saved to {audit_path}")
+875:    print("\nDone.")
+878:if __name__ == "__main__":
+879:    main()
+
+stderr: ]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python -c "\nwith open(\'src/run_phase0_sfa.py\', \'r\', encoding=\'utf-8\') as f:\n    content = f.read()\n\n# Check exact characters around line 696 area\ncontent_lines = content.split(\'\\n\')\nfor i, line in enumerate(content_lines):\n    if \'pd in enumerate\' in line:\n        print(f\'Line {i+1}: {repr(line)}\')"'})]
+[Tool Result: exit_code: 0
+stdout: 
+stderr: ]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python -c "\nwith open(\'src/run_phase0_sfa.py\', \'r\', encoding=\'utf-8\') as f:\n    lines = f.readlines()\nfor i, line in enumerate(lines):\n    if \'enumerate\' in line and i >= 690 and i <= 710:\n        print(f\'Line {i+1}: {repr(line)}\')"'})]
+[Tool Result: exit_code: 0
+stdout: 
+stderr: ]
+
+[Tool Call: read_file({'end_line': 710, 'path': 'src/run_phase0_sfa.py', 'start_line': 690})]
+[Tool Result: --- lines 690 to 710 of 879 ---
+            flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None
+            flat["per_dim_std"] = str(results.get("per_dim_std", []))
+
+            # Semantic probe per-dimension details
+            r2pd = results.get("r2_per_dim", [])
+            dim_map = results.get("dim_to_obj", {})
+            for d_idx, pd in enumerate(r2pd):
+                flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)
+                flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)
+                flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)
+                flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)
+                flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
+            flat["dim_to_obj"] = json.dumps(dim_map, default=str)
+
+            df_row = pd.DataFrame([flat])
+            df_row.to_csv(csv_path, index=False)
+
+            # Save full JSON (includes growth points)
+            with open(json_path, "w") as f:
+                json.dump(results, f, indent=2, default=str)
+]
+The variable `pd` in the loop shadows the pandas import. I need to rename the loop variable.
+
+
+[Tool Call: multi_edit({'path': 'src/run_phase0_sfa.py', 'edits': [{'old_string': '            for d_idx, pd in enumerate(r2pd):\n                flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)\n                flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)\n                flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)\n                flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)', 'new_string': '            for d_idx, probe_d in enumerate(r2pd):\n                flat[f"r2_dim{d_idx}_dyn_color"] = probe_d.get("dyn_color", None)\n                flat[f"r2_dim{d_idx}_coord_color"] = probe_d.get("coord_color", None)\n                flat[f"r2_dim{d_idx}_dyn_pos"] = probe_d.get("dyn_pos", None)\n                flat[f"r2_dim{d_idx}_coord_pos"] = probe_d.get("coord_pos", None)', 'replace_all': False}]})]
+[Tool Result: Applied 1 edits to src/run_phase0_sfa.py (#1x1)]
+Now run the dry-run again:
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python src/run_phase0_sfa.py --dry-run', 'timeout_sec': 600})]
+[Tool Result: exit_code: 1
+stdout: Using device: cpu
+CUDA available: False
+Dry-run mode: True
+Seeds: [42, 123, 456, 789, 999]
+Arms: ['Arm A (SFA+VICReg)', 'Arm B (JEPA+VICReg)', 'Arm C (SFA+pos_enc)']
+
+======================================================================
+ARM: Arm A (SFA+VICReg)
+======================================================================
+
+--- Arm A (SFA+VICReg), seed=42 ---
+  [Arm A (SFA+VICReg)] seed=42 step=    5/5  loss=69310.4062  sim=2771.4263  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed42_dryrun.csv
+
+--- Arm A (SFA+VICReg), seed=123 ---
+  [Arm A (SFA+VICReg)] seed=123 step=    5/5  loss=87233.3047  sim=3488.3438  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed123_dryrun.csv
+
+--- Arm A (SFA+VICReg), seed=456 ---
+  [Arm A (SFA+VICReg)] seed=456 step=    5/5  loss=87268.3906  sim=3489.7456  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed456_dryrun.csv
+
+--- Arm A (SFA+VICReg), seed=789 ---
+  [Arm A (SFA+VICReg)] seed=789 step=    5/5  loss=69166.1719  sim=2765.6570  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed789_dryrun.csv
+
+--- Arm A (SFA+VICReg), seed=999 ---
+  [Arm A (SFA+VICReg)] seed=999 step=    5/5  loss=77538.3984  sim=3100.5459  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_a_sfa+vicreg_seed999_dryrun.csv
+======================================================================
+ARM: Arm B (JEPA+VICReg)
+======================================================================
+
+--- Arm B (JEPA+VICReg), seed=42 ---
+  [Arm B (JEPA+VICReg)] seed=42 step=    5/5  loss=69324.0859  sim=2770.9990  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed42_dryrun.csv
+
+--- Arm B (JEPA+VICReg), seed=123 ---
+  [Arm B (JEPA+VICReg)] seed=123 step=    5/5  loss=87230.8516  sim=3487.3157  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed123_dryrun.csv
+
+--- Arm B (JEPA+VICReg), seed=456 ---
+  [Arm B (JEPA+VICReg)] seed=456 step=    5/5  loss=87297.0469  sim=3489.9160  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed456_dryrun.csv
+
+--- Arm B (JEPA+VICReg), seed=789 ---
+  [Arm B (JEPA+VICReg)] seed=789 step=    5/5  loss=69186.5312  sim=2765.5056  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed789_dryrun.csv
+
+--- Arm B (JEPA+VICReg), seed=999 ---
+  [Arm B (JEPA+VICReg)] seed=999 step=    5/5  loss=77539.3438  sim=3099.6184  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_b_jepa+vicreg_seed999_dryrun.csv
+======================================================================
+ARM: Arm C (SFA+pos_enc)
+======================================================================
+
+--- Arm C (SFA+pos_enc), seed=42 ---
+  [Arm C (SFA+pos_enc)] seed=42 step=    5/5  loss=81459.6328  sim=3257.3953  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed42_dryrun.csv
+
+--- Arm C (SFA+pos_enc), seed=123 ---
+  [Arm C (SFA+pos_enc)] seed=123 step=    5/5  loss=83048.0312  sim=3320.9314  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed123_dryrun.csv
+
+--- Arm C (SFA+pos_enc), seed=456 ---
+  [Arm C (SFA+pos_enc)] seed=456 step=    5/5  loss=69050.3047  sim=2761.0222  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed456_dryrun.csv
+
+--- Arm C (SFA+pos_enc), seed=789 ---
+  [Arm C (SFA+pos_enc)] seed=789 step=    5/5  loss=76568.7109  sim=3061.7583  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed789_dryrun.csv
+
+--- Arm C (SFA+pos_enc), seed=999 ---
+  [Arm C (SFA+pos_enc)] seed=999 step=    5/5  loss=77678.2656  sim=3106.1406  sfa=0.0000
+  -> Saved archive/iter_020\runs\arm_c_sfa+pos_enc_seed999_dryrun.csv
+
+Saved full results to archive/iter_020\summary_phase0_dryrun.csv
+
+Aggregated stats saved to archive/iter_020\aggregated_phase0_dryrun.csv
+
+======================================================================
+AGGREGATED RESULTS (mean � std)
+======================================================================
+
+---     Arm A (SFA+VICReg)
+Name: 0, dtype: str ---
+  has_collapsed                  = 1.0000 � 0.0000
+  mean_dyn_delta                 = 0.0000 � 0.0000
+  mean_coord_delta               = 0.0058 � 0.0078
+  slowness_ratio                 = 0.0007 � 0.0006
+  centroid_mse_mean              = nan � nan
+  centroid_r_mean                = 0.0000 � 0.0000
+  mean_abs_corr                  = 1.0000 � 0.0000
+  final_train_loss               = 78103.3344 � 9011.9674
+  final_train_sim_loss           = 3123.1437 � 360.4791
+  gdasr_growth_point_count       = 0.0000 � 0.0000
+
+---     Arm B (JEPA+VICReg)
+Name: 1, dtype: str ---
+  has_collapsed                  = 1.0000 � 0.0000
+  mean_dyn_delta                 = 0.0000 � 0.0000
+  mean_coord_delta               = 0.0062 � 0.0088
+  slowness_ratio                 = 0.0005 � 0.0005
+  centroid_mse_mean              = nan � nan
+  centroid_r_mean                = 0.0000 � 0.0000
+  mean_abs_corr                  = 1.0000 � 0.0000
+  final_train_loss               = 78115.5719 � 9010.2419
+  final_train_sim_loss           = 3122.6709 � 360.4186
+  gdasr_growth_point_count       = 0.0000 � 0.0000
+
+---     Arm C (SFA+pos_enc)
+Name: 2, dtype: str ---
+  has_collapsed                  = 1.0000 � 0.0000
+  mean_dyn_delta                 = 0.0000 � 0.0000
+  mean_coord_delta               = 0.0011 � 0.0005
+  slowness_ratio                 = 0.0005 � 0.0004
+  centroid_mse_mean              = nan � nan
+  centroid_r_mean                = 0.0000 � 0.0000
+  mean_abs_corr                  = 1.0000 � 0.0000
+  final_train_loss               = 77560.9891 � 5448.3294
+  final_train_sim_loss           = 3101.4496 � 217.9332
+  gdasr_growth_point_count       = 0.0000 � 0.0000
+
+======================================================================
+FALSIFICATION AUDIT (per pre-registration)
+======================================================================
+
+C1 (Collapse): Arm A collapsed seeds: 5 / 5
+  -> FAIL (threshold: < 2 collapsed seeds)
+  [WARNING] centroid_mse_mean contains NaN � possibly too few eval samples.
+
+C2 (Centroid MSE):
+  Arm A (SFA)  MSE = nan
+  Arm B (JEPA) MSE = nan
+
+stderr: C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py:185: RuntimeWarning: Mean of empty slice
+  "mse_mean": float(np.nanmean(mse_per_object)),
+Traceback (most recent call last):
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 879, in <module>
+    main()
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 791, in main
+    print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")
+                                         ^^^^^^^^^
+UnboundLocalError: cannot access local variable 'threshold' where it is not associated with a value
+]
+There are two issues: 1) `threshold` is not defined when `centroid_mse_mean` contains NaN, and 2) the print statement references `threshold` unconditionally. Let me fix the C2 section and also the `c2_mse_threshold` in the audit dict.
+
+
+[Tool Call: read_file({'end_line': 815, 'path': 'src/run_phase0_sfa.py', 'start_line': 778})]
+[Tool Result: --- lines 778 to 815 of 879 ---
+
+    # --- C2: Centroid MSE ---
+    if len(arm_a) > 0 and len(arm_b) > 0:
+        mse_a_mean = float(arm_a["centroid_mse_mean"].mean())
+        mse_b_mean = float(arm_b["centroid_mse_mean"].mean())
+        if np.isnan(mse_a_mean) or np.isnan(mse_b_mean):
+            print("  [WARNING] centroid_mse_mean contains NaN — possibly too few eval samples.")
+            c2_pass = False
+        else:
+            threshold = 1.10 * mse_b_mean
+        print(f"\nC2 (Centroid MSE):")
+        print(f"  Arm A (SFA)  MSE = {mse_a_mean:.4f}")
+        print(f"  Arm B (JEPA) MSE = {mse_b_mean:.4f}")
+        print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")
+        c2_pass = mse_a_mean <= threshold
+        print(f"  -> {'PASS' if c2_pass else 'FAIL'} (SFA MSE {'' if c2_pass else 'NOT '}<= 1.10 x JEPA MSE)")
+
+        # Welch's t-test
+        mse_a_vals = arm_a["centroid_mse_mean"].values.astype(float)
+        mse_b_vals = arm_b["centroid_mse_mean"].values.astype(float)
+        if len(mse_a_vals) > 1 and len(mse_b_vals) > 1:
+            t_stat, p_val = scipy_stats.ttest_ind(mse_a_vals, mse_b_vals, equal_var=False)
+            n1, n2 = len(mse_a_vals), len(mse_b_vals)
+            dof = (mse_a_vals.var() / n1 + mse_b_vals.var() / n2) ** 2 / \
+                  ((mse_a_vals.var() / n1) ** 2 / (n1 - 1) + (mse_b_vals.var() / n2) ** 2 / (n2 - 1))
+            cohens_d = (mse_a_mean - mse_b_mean) / np.sqrt(
+                ((n1 - 1) * mse_a_vals.var() + (n2 - 1) * mse_b_vals.var()) / (n1 + n2 - 2)
+            )
+            print(f"  Welch's t({dof:.1f}) = {t_stat:.4f}, p = {p_val:.4f}")
+            print(f"  Cohen's d = {cohens_d:.4f}")
+    else:
+        c2_pass = False
+        print("\nC2: Arm A or Arm B data missing.")
+
+    # --- C3 (Slowness separation — sanity check) ---
+    if len(arm_a) > 0:
+        ratios_a = arm_a["slowness_ratio"].values.astype(float)
+        mean_ratio_a = float(np.mean(ratios_a))]
+
+[Tool Call: edit_file({'path': 'src/run_phase0_sfa.py', 'old_string': '    # --- C2: Centroid MSE ---\n    if len(arm_a) > 0 and len(arm_b) > 0:\n        mse_a_mean = float(arm_a["centroid_mse_mean"].mean())\n        mse_b_mean = float(arm_b["centroid_mse_mean"].mean())\n        if np.isnan(mse_a_mean) or np.isnan(mse_b_mean):\n            print("  [WARNING] centroid_mse_mean contains NaN — possibly too few eval samples.")\n            c2_pass = False\n        else:\n            threshold = 1.10 * mse_b_mean\n        print(f"\\nC2 (Centroid MSE):")\n        print(f"  Arm A (SFA)  MSE = {mse_a_mean:.4f}")\n        print(f"  Arm B (JEPA) MSE = {mse_b_mean:.4f}")\n        print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")\n        c2_pass = mse_a_mean <= threshold\n        print(f"  -> {\'PASS\' if c2_pass else \'FAIL\'} (SFA MSE {\'\' if c2_pass else \'NOT \'}<= 1.10 x JEPA MSE)")\n\n        # Welch\'s t-test\n        mse_a_vals = arm_a["centroid_mse_mean"].values.astype(float)\n        mse_b_vals = arm_b["centroid_mse_mean"].values.astype(float)\n        if len(mse_a_vals) > 1 and len(mse_b_vals) > 1:\n            t_stat, p_val = scipy_stats.ttest_ind(mse_a_vals, mse_b_vals, equal_var=False)\n            n1, n2 = len(mse_a_vals), len(mse_b_vals)\n            dof = (mse_a_vals.var() / n1 + mse_b_vals.var() / n2) ** 2 / \\\n                  ((mse_a_vals.var() / n1) ** 2 / (n1 - 1) + (mse_b_vals.var() / n2) ** 2 / (n2 - 1))\n            cohens_d = (mse_a_mean - mse_b_mean) / np.sqrt(\n                ((n1 - 1) * mse_a_vals.var() + (n2 - 1) * mse_b_vals.var()) / (n1 + n2 - 2)\n            )\n            print(f"  Welch\'s t({dof:.1f}) = {t_stat:.4f}, p = {p_val:.4f}")\n            print(f"  Cohen\'s d = {cohens_d:.4f}")\n    else:\n        c2_pass = False\n        print("\\nC2: Arm A or Arm B data missing.")', 'new_string': '    # --- C2: Centroid MSE ---\n    if len(arm_a) > 0 and len(arm_b) > 0:\n        mse_a_mean = float(arm_a["centroid_mse_mean"].mean())\n        mse_b_mean = float(arm_b["centroid_mse_mean"].mean())\n        print(f"\\nC2 (Centroid MSE):")\n        print(f"  Arm A (SFA)  MSE = {mse_a_mean:.4f}")\n        print(f"  Arm B (JEPA) MSE = {mse_b_mean:.4f}")\n        if np.isnan(mse_a_mean) or np.isnan(mse_b_mean):\n            print("  [WARNING] centroid_mse_mean contains NaN — possibly too few eval samples.")\n            threshold = None\n            c2_pass = False\n            print(f"  -> FAIL (NaN MSE values)")\n        else:\n            threshold = 1.10 * mse_b_mean\n            print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")\n            c2_pass = mse_a_mean <= threshold\n            print(f"  -> {\'PASS\' if c2_pass else \'FAIL\'} (SFA MSE {\'\' if c2_pass else \'NOT \'}<= 1.10 x JEPA MSE)")\n\n            # Welch\'s t-test\n            mse_a_vals = arm_a["centroid_mse_mean"].values.astype(float)\n            mse_b_vals = arm_b["centroid_mse_mean"].values.astype(float)\n            if len(mse_a_vals) > 1 and len(mse_b_vals) > 1:\n                t_stat, p_val = scipy_stats.ttest_ind(mse_a_vals, mse_b_vals, equal_var=False)\n                n1, n2 = len(mse_a_vals), len(mse_b_vals)\n                dof = (mse_a_vals.var() / n1 + mse_b_vals.var() / n2) ** 2 / \\\n                      ((mse_a_vals.var() / n1) ** 2 / (n1 - 1) + (mse_b_vals.var() / n2) ** 2 / (n2 - 1))\n                cohens_d = (mse_a_mean - mse_b_mean) / np.sqrt(\n                    ((n1 - 1) * mse_a_vals.var() + (n2 - 1) * mse_b_vals.var()) / (n1 + n2 - 2)\n                )\n                print(f"  Welch\'s t({dof:.1f}) = {t_stat:.4f}, p = {p_val:.4f}")\n                print(f"  Cohen\'s d = {cohens_d:.4f}")\n    else:\n        c2_pass = False\n        mse_a_mean = float("nan")\n        mse_b_mean = float("nan")\n        threshold = None\n        print("\\nC2: Arm A or Arm B data missing.")'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+
+
+[NUDGE RESPONSE]
+```yaml
+status: code_error
+artifacts:
+  - src/run_phase0_sfa.py
+  - src/pre_registration.md
+metrics: {}
+log_excerpt: |
+  UnboundLocalError: cannot access local variable 'threshold' where it is not associated with a value
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_phase0_sfa.py", line 791, in main
+    print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")
+experimenter_view: |
+  I completed the following modifications:
+  1. Added C3_semantic (delta_R2_color >= 0.10) falsification criterion to run_phase0_sfa.py audit section
+  2. Reframed C3 slowness ratio as C3_sanity (sanity check) in both the script and pre_registration.md
+  3. Updated pre_registration.md to include hypothesis (4) about semantic disentanglement and
+     separate C3_sanity / C3_semantic falsification criteria
+  4. Fixed pd loop variable shadowing pandas import
+  5. Fixed threshold UnboundLocalError in C2 audit when centroid_mse_mean contains NaN
+  
+  The last fix (threshold UnboundLocalError) was applied as my final edit but was NOT re-tested
+  due to hitting the execution limit. The next executor should run `python src/run_phase0_sfa.py --dry-run`
+  to verify the complete dry-run flow including the updated audit section.
+notes: "Two bug fixes applied in this session; final verification run needed."
+```

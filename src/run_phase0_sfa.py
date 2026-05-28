@@ -693,11 +693,11 @@ def main():
             # Semantic probe per-dimension details
             r2pd = results.get("r2_per_dim", [])
             dim_map = results.get("dim_to_obj", {})
-            for d_idx, pd in enumerate(r2pd):
-                flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)
-                flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)
-                flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)
-                flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)
+            for d_idx, probe_d in enumerate(r2pd):
+                flat[f"r2_dim{d_idx}_dyn_color"] = probe_d.get("dyn_color", None)
+                flat[f"r2_dim{d_idx}_coord_color"] = probe_d.get("coord_color", None)
+                flat[f"r2_dim{d_idx}_dyn_pos"] = probe_d.get("dyn_pos", None)
+                flat[f"r2_dim{d_idx}_coord_pos"] = probe_d.get("coord_pos", None)
                 flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
             flat["dim_to_obj"] = json.dumps(dim_map, default=str)
 
@@ -780,54 +780,79 @@ def main():
     if len(arm_a) > 0 and len(arm_b) > 0:
         mse_a_mean = float(arm_a["centroid_mse_mean"].mean())
         mse_b_mean = float(arm_b["centroid_mse_mean"].mean())
-        if np.isnan(mse_a_mean) or np.isnan(mse_b_mean):
-            print("  [WARNING] centroid_mse_mean contains NaN — possibly too few eval samples.")
-            c2_pass = False
-        else:
-            threshold = 1.10 * mse_b_mean
         print(f"\nC2 (Centroid MSE):")
         print(f"  Arm A (SFA)  MSE = {mse_a_mean:.4f}")
         print(f"  Arm B (JEPA) MSE = {mse_b_mean:.4f}")
-        print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")
-        c2_pass = mse_a_mean <= threshold
-        print(f"  -> {'PASS' if c2_pass else 'FAIL'} (SFA MSE {'' if c2_pass else 'NOT '}<= 1.10 x JEPA MSE)")
+        if np.isnan(mse_a_mean) or np.isnan(mse_b_mean):
+            print("  [WARNING] centroid_mse_mean contains NaN — possibly too few eval samples.")
+            threshold = None
+            c2_pass = False
+            print(f"  -> FAIL (NaN MSE values)")
+        else:
+            threshold = 1.10 * mse_b_mean
+            print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")
+            c2_pass = mse_a_mean <= threshold
+            print(f"  -> {'PASS' if c2_pass else 'FAIL'} (SFA MSE {'' if c2_pass else 'NOT '}<= 1.10 x JEPA MSE)")
 
-        # Welch's t-test
-        mse_a_vals = arm_a["centroid_mse_mean"].values.astype(float)
-        mse_b_vals = arm_b["centroid_mse_mean"].values.astype(float)
-        if len(mse_a_vals) > 1 and len(mse_b_vals) > 1:
-            t_stat, p_val = scipy_stats.ttest_ind(mse_a_vals, mse_b_vals, equal_var=False)
-            n1, n2 = len(mse_a_vals), len(mse_b_vals)
-            dof = (mse_a_vals.var() / n1 + mse_b_vals.var() / n2) ** 2 / \
-                  ((mse_a_vals.var() / n1) ** 2 / (n1 - 1) + (mse_b_vals.var() / n2) ** 2 / (n2 - 1))
-            cohens_d = (mse_a_mean - mse_b_mean) / np.sqrt(
-                ((n1 - 1) * mse_a_vals.var() + (n2 - 1) * mse_b_vals.var()) / (n1 + n2 - 2)
-            )
-            print(f"  Welch's t({dof:.1f}) = {t_stat:.4f}, p = {p_val:.4f}")
-            print(f"  Cohen's d = {cohens_d:.4f}")
+            # Welch's t-test
+            mse_a_vals = arm_a["centroid_mse_mean"].values.astype(float)
+            mse_b_vals = arm_b["centroid_mse_mean"].values.astype(float)
+            if len(mse_a_vals) > 1 and len(mse_b_vals) > 1:
+                t_stat, p_val = scipy_stats.ttest_ind(mse_a_vals, mse_b_vals, equal_var=False)
+                n1, n2 = len(mse_a_vals), len(mse_b_vals)
+                dof = (mse_a_vals.var() / n1 + mse_b_vals.var() / n2) ** 2 / \
+                      ((mse_a_vals.var() / n1) ** 2 / (n1 - 1) + (mse_b_vals.var() / n2) ** 2 / (n2 - 1))
+                cohens_d = (mse_a_mean - mse_b_mean) / np.sqrt(
+                    ((n1 - 1) * mse_a_vals.var() + (n2 - 1) * mse_b_vals.var()) / (n1 + n2 - 2)
+                )
+                print(f"  Welch's t({dof:.1f}) = {t_stat:.4f}, p = {p_val:.4f}")
+                print(f"  Cohen's d = {cohens_d:.4f}")
     else:
         c2_pass = False
+        mse_a_mean = float("nan")
+        mse_b_mean = float("nan")
+        threshold = None
         print("\nC2: Arm A or Arm B data missing.")
 
-    # --- C3: Slowness separation ---
+    # --- C3 (Slowness separation — sanity check) ---
     if len(arm_a) > 0:
         ratios_a = arm_a["slowness_ratio"].values.astype(float)
         mean_ratio_a = float(np.mean(ratios_a))
-        print(f"\nC3 (Slowness separation):")
+        print(f"\nC3_sanity (Slowness separation — sanity check):")
         print(f"  Arm A mean slowness ratio = {mean_ratio_a:.4f}")
         print(f"  Threshold: ratio < 0.6")
-        c3_pass = mean_ratio_a < 0.6
-        print(f"  -> {'PASS' if c3_pass else 'FAIL'} (ratio {'<' if c3_pass else '>='} 0.6)")
+        c3_sanity_pass = mean_ratio_a < 0.6
+        print(f"  -> {'PASS' if c3_sanity_pass else 'FAIL'} (ratio {'<' if c3_sanity_pass else '>='} 0.6)")
 
         # One-sample t-test against 0.6
         if len(ratios_a) > 1:
             t_stat3, p_val3 = scipy_stats.ttest_1samp(ratios_a, 0.6, alternative="less")
             print(f"  One-sample t({len(ratios_a)-1}) vs 0.6: t = {t_stat3:.4f}, p = {p_val3:.4f} (one-sided less)")
     else:
-        c3_pass = False
-        print("\nC3: Arm A data missing.")
+        c3_sanity_pass = False
+        mean_ratio_a = -1.0
+        print("\nC3_sanity: Arm A data missing.")
 
-    overall = c1_pass and c2_pass and c3_pass
+    # --- C3 (Semantic disentanglement — delta_R2_color >= 0.10) ---
+    if len(arm_a) > 0:
+        deltas_a = arm_a["delta_r2_color"].values.astype(float)
+        mean_delta_a = float(np.mean(deltas_a))
+        print(f"\nC3_semantic (Semantic disentanglement — delta_R2_color):")
+        print(f"  Arm A mean delta_R2_color = {mean_delta_a:.4f}")
+        print(f"  Threshold: delta_R2_color >= 0.10")
+        c3_semantic_pass = mean_delta_a >= 0.10
+        print(f"  -> {'PASS' if c3_semantic_pass else 'FAIL'} (delta {'>= ' if c3_semantic_pass else '< '} 0.10)")
+
+        # One-sample t-test against 0.10
+        if len(deltas_a) > 1:
+            t_stat_sem, p_val_sem = scipy_stats.ttest_1samp(deltas_a, 0.10, alternative="greater")
+            print(f"  One-sample t({len(deltas_a)-1}) vs 0.10: t = {t_stat_sem:.4f}, p = {p_val_sem:.4f} (one-sided greater)")
+    else:
+        c3_semantic_pass = False
+        mean_delta_a = -1.0
+        print("\nC3_semantic: Arm A data missing.")
+
+    overall = c1_pass and c2_pass and c3_sanity_pass and c3_semantic_pass
     print(f"\n{'=' * 70}")
     print(f"OVERALL: {'VALIDATED' if overall else 'FALSIFIED'}")
     print(f"{'=' * 70}")
@@ -842,8 +867,10 @@ def main():
         "c2_mse_sfa_mean": float(mse_a_mean) if len(arm_a) > 0 else -1.0,
         "c2_mse_jepa_mean": float(mse_b_mean) if len(arm_b) > 0 else -1.0,
         "c2_mse_threshold": float(threshold) if len(arm_a) > 0 and len(arm_b) > 0 else -1.0,
-        "c3_slowness_pass": bool(c3_pass),
-        "c3_slowness_ratio_mean": float(mean_ratio_a) if len(arm_a) > 0 else -1.0,
+        "c3_sanity_slowness_pass": bool(c3_sanity_pass),
+        "c3_sanity_slowness_ratio_mean": float(mean_ratio_a),
+        "c3_semantic_disentanglement_pass": bool(c3_semantic_pass),
+        "c3_semantic_delta_r2_color_mean": float(mean_delta_a),
         "overall_validated": bool(overall),
     }
     audit_path = os.path.join(results_dir, f"audit_phase0{suffix}.json")
