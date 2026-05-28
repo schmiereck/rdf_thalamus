@@ -1,671 +1,462 @@
-# GOAL: Exploration of a Dynamic, Curiosity-Driven Representation Network — "Thalamus"
+# GOAL: Thalamus — Curiosity-Driven, Decoder-Free Representation Agent (v4, sml-grounded)
+
+## 0. Status and Relationship to `rdf_thalamus_sml`
+
+This is an **evolutionary revision** of the project goal, not a reset. The existing
+machinery is retained: GDASR (dynamic dimension recruitment), Arm F
+(Non-Parametric Soft-Argmax centroid projection), Arm G (CLTS motorics), the
+Watchdog/noise-robustness apparatus, and Pillars A–E. What changes is that three
+findings, validated across an 8-iteration RDF run in the companion project, now
+govern the design as non-negotiable mandates.
+
+**Companion project:** `..\rdf_thalamus_sml\` (HSUN — Hierarchical Sparse Universal
+Nodes). It validated the *representational foundation* on a controlled 1D binary
+toy problem. The implementing agents have filesystem access to that directory and
+**must read its iteration reports** (`RESEARCH-RESULT-001` through `008`) before
+planning Phase 0.
+
+**Scope of transfer (important):** the sml findings transfer at the **objective
+and regularization level** (M1, M2 below), NOT at the architecture level. The sml
+`P3-C` node is a kernel-3, weight-shared universal node on binary input; the
+existing Thalamus encoder is a kernel-5, stride-2 CNN with a soft-argmax centroid
+head (`NonParametricJEPASpatial`). The evolutionary path keeps the existing CNN.
+The sml `P3-C` node is a *reference and comparison arm*, not a drop-in replacement.
+
+These phases are **implementation-scope labels, not iteration numbers**. The iter
+counter continues from 019; the project does not reset. It resumes with a changed
+training objective (M2) and a scope-reduced, fixed-dimensionality regime (M3).
+
+The three mandates (Section 1.1) resolve or sidestep several of this project's
+documented pathologies: the cold-start trilemma (Iter 016–018), the
+representation collapse under decoder-free prediction, and part of the persistent
+Spatial Specialization Gap (Phases 6–11).
+
+---
 
 ## 1. Primary Objective
 
-Design, simulate, and evaluate a novel neural architecture that achieves
-hierarchical abstraction **without generative decoders**. The system must:
-
-- dynamically **allocate new representational dimensions** to encode unexpected
-  inputs,
-- learn **action-conditioned temporal prediction** with **adaptive horizons** in
-  latent space (no backprop-through-time over pixel reconstructions),
-- develop a **thalamic gating mechanism** that focuses plasticity and motor
-  behavior on the epistemically most relevant entities in the scene.
-
-Learning is driven entirely by the minimization of local **temporal prediction
-error ("surprise")**, constrained by anti-collapse and anti-dark-room
-mechanisms, inside a 1D physics environment. **All learning is lifelong and
-continuous (online), with no distinct training and testing phases.**
+Design, simulate, and evaluate a neural architecture that achieves hierarchical
+abstraction **without generative decoders**, learns **temporal structure in
+latent space**, and develops a **thalamic gating mechanism** that focuses
+plasticity and motor behavior on the epistemically most relevant entities in a
+1D physics scene. Learning is driven by local objectives constrained by
+anti-collapse and anti-dark-room mechanisms.
 
 The project name "Thalamus" reflects the central role of the gating mechanism:
-in biological brains the thalamus performs analogous selective routing of
-sensory information and attention.
+selective routing of sensory information and attention, analogous to the
+biological thalamus.
 
-## 2. Research Directives & Managerial Constraints
+### 1.1 Validated Mandates from `rdf_thalamus_sml` (NON-NEGOTIABLE)
 
-- **Novelty over replication:** existing paradigms (JEPA, Active Inference, NGC,
-  Subsumption Architecture, Growing Neural Gas) serve as conceptual starting
-  points only. The aim is to identify novel intersections, not to rebuild them
-  verbatim.
-- **Scientific rigor:** the Manager Agent actively suppresses hyperbolic
-  language (e.g. "breakthrough", "revolutionary", "sensation"). Focus on
-  mathematical stability, computational efficiency, architectural viability,
-  and falsifiable claims.
-- **Active scope management:** the Manager Agent is authorized — and expected —
-  to enact scope reductions when a sub-problem threatens to consume the entire
-  project (e.g. reducing "dynamic dimension creation" to "fixed dimensionality
-  with logged hypothetical growth points" if it blocks all other progress).
-  The Manager Agent also performs review of all Experimenter outputs and
-  rejects results that overstate evidence.
-- **Incremental validation:** Planners decompose the architecture into isolated
-  mathematical proofs and minimal viable code experiments before assembling
-  the full network. See phasing in Section 7.
-- **Pure Online Lifelong Learning (No Offline Phases):** Beginning from Phase 5,
-  the traditional separation between training and inference phases (epochs,
-  evaluation freezes) is completely abolished. The network must operate in a
-  single, continuous, uninterrupted lifetime (Single-Stream Lifelong Learning).
-  Learning, sensory-motor exploration, attention shifts, and structural
-  adaptation must happen concurrently in real-time, driven entirely by the
-  agent's interaction with the streaming environment.
+**M1 — Pooled/batch VICReg is the anti-collapse mechanism, not a candidate.**
+The sml run was, in retrospect, a clean ablation of VICReg across iterations 2–7.
+Without it, every objective (reconstruction, JEPA, SFA, Hebbian) collapsed to
+~44–48% downstream accuracy (near random). With **pooled** VICReg, the same
+objectives reached 61–83%. VICReg applied **locally per timestep fails** due to
+gradient dilution: the per-step gradient is scaled by ~1/28000 versus ~1/64 at the
+pooled-representation level.
+
+**Status in current code: already satisfied.** `calc_var_loss` / `calc_cov_loss`
+in `models_dual_stream.py` are computed over the **batch dimension** on
+single-frame latents `(B, d_t)`, batch=32 — i.e. the pooled/batch regime, gradient
+~1/32, not diluted across timesteps. So M1 is a confirmation, not a code change.
+Therefore:
+- VICReg (variance term enforcing per-dimension std >= 1, plus covariance
+  decorrelation term) is **mandatory** wherever a representation is shaped, and
+  the current batch-level application is the correct form — keep it.
+- The dilution warning is a **forward-looking guard**: if any future variant
+  unfolds the representation over time and applies VICReg per-step, it must pool
+  first. Do not "fix" the current code by moving VICReg per-step.
+- This dilution mechanism is the suspected confound behind the cold-start
+  pathologies (Iter 016–018), whose per-step probationary error signals suffer it.
+
+**M2 — Primary representation objective is SFA + pooled VICReg, applied to the
+slow (identity) stream.**
+On tasks where the class is *temporally stable* (a moving blob stays a blob),
+sml measured SFA+VICReg at 82% and Reconstruction+VICReg at 83%, versus
+JEPA+VICReg at only 61% — a ~20pp gap. SFA is decoder-free and matches
+reconstruction, so it preserves this project's decoder-free principle.
+
+**Stream assignment (critical — do not apply SFA naively).** The encoder produces
+two streams per dimension: `z_coord` (soft-argmax centroid = *where*, position)
+and `z_dyn` (mean activation = *what*, identity/appearance). A naive slowness
+penalty `||z_t - z_{t-1}||^2` on `z_coord` would be **wrong** — object position
+changes legitimately as objects move, and penalizing it would suppress tracking.
+Therefore:
+- **SFA shapes `z_dyn`** (the slow identity/appearance stream): object color,
+  size, identity do not change frame-to-frame, so slowness is the right prior.
+- **`z_coord` stays the soft-argmax readout** (position is allowed to be fast and
+  is read out, not slowed).
+- **Hypothesis (to test in Phase 1, not assumed):** SFA on `z_dyn` may separate
+  slow identity from fast position *by construction*, which is exactly the
+  disentanglement the **Spatial Specialization Gap** (Phases 6–11) has been
+  chasing. If it holds, SFA addresses the gap structurally rather than via an
+  added bottleneck.
+- The slowness term partly exists already (`ccr_smooth_loss`); SFA-primary means
+  promoting a slowness term on `z_dyn` to the main shaper and demoting the JEPA
+  `sim_loss` to a readout.
+
+**JEPA is demoted** from primary objective to (a) Baseline B1 and (b) a dedicated
+comparison arm on *causal-sensitivity* tasks, where transition prediction may
+shape better representations than slowness (the one regime where JEPA could still
+win — test, do not assume).
+
+**The surprise / prediction-error signal survives** as a *readout* (drives
+attention and motor), not as the representation objective. See Pillar B (4.B).
+
+**Distinction from the failed DSDT (Iter 010) — read before implementing.** DSDT
+stop-gradient-decoupled the coordinate stream from the dynamics/prediction
+objective and it collapsed (semantic blindness, 100% collapse) because the
+decoupled stream had *no strong objective of its own*. M2 is different: the
+representation is shaped by **SFA + pooled VICReg**, a validated strong objective.
+The stop-gradient on the prediction-error readout therefore does **not** strand
+the representation — SFA grounds it. Do not pattern-match M2 onto DSDT and reject
+it; the failure mode does not apply here.
+
+**M3 — Fixed dimensionality first; GDASR logs growth points, does not recruit.**
+The cold-start trilemma (encoder cold-start Iter 017, predictor cold-start
+Iter 016, optimization-transient Iter 018) is fundamentally a *probationary
+recruitment evaluation* problem: it only exists because new dimensions must be
+judged during a warm-up window. sml validated the full architecture with **fixed
+dimensionality** and no recruitment, cleanly. Therefore, invoking the Manager
+Agent's scope-reduction authority (Section 2):
+- The working regime for Phases 0–4 **freezes the active dimension count `d_t`**
+  at its target (3 for N=3 objects, 4 for N=4). The CNN backbone is already fixed
+  (Section 4.A); only the recruitment of new active channels is disabled.
+- GDASR is retained but runs in **log-only mode**: it detects *where and when* a
+  recruitment trigger would fire (sustained residual prediction error / variance
+  unexplained by the existing subspace) and **logs these growth points** as data.
+  It does not modify `d_t` or the network.
+- The growth-point logs become the **empirical input** for a properly informed
+  recruitment design in the deferred Phase 5 — at which point the cold-start
+  evaluation can be designed against real data rather than guessed.
+
+**Semantic caution (derived, advisory not absolute).**
+sml Phase 5 found that for low-DOF binary inputs, coordinate semantics
+(Magnitude, Gradient) are largely *structural* — they emerge from random
+projection through tanh, and training adds little (+0.039 cross-layer
+consistency). Hand-designed **anchoring hurt** (0.714 -> 0.700): imposed semantics
+degraded the natural geometry. Implication for this project:
+- The Spatial Specialization Gap may be **partly fundamental** (bounded by input
+  degrees of freedom), not solely a training failure.
+- Structural priors that *impose* disentanglement (e.g. micro-columns,
+  Section 8.4) must be treated as **hypotheses to test, not fixes to assume**.
+  The rule is **measure-before-impose**: characterize the naturally emergent
+  geometry first; only add structural constraints if a measured gap remains.
+- RGB+position inputs carry more DOF than binary, so training *may* play a larger
+  role here than in sml — this is exactly what Phase 0 must measure.
+
+---
+
+## 2. Research Directives and Managerial Constraints
+
+- **Novelty over replication.** Existing paradigms (JEPA, Active Inference, NGC,
+  Subsumption, Growing Neural Gas, SFA) are conceptual starting points. The aim
+  is novel intersections, not verbatim rebuilds.
+- **Scientific rigor.** The Manager Agent suppresses hyperbolic language and
+  rejects results that overstate evidence. Claims are falsifiable and stated
+  relative to baselines (Section 5).
+- **Active scope management.** The Manager Agent is authorized to reduce scope
+  when a sub-problem threatens the whole project. **This authority has already
+  been exercised** for dynamic recruitment (M3): fixed dimensionality first,
+  growth-points logged.
+- **Incremental validation.** Planners decompose into isolated proofs and minimal
+  experiments before integration. Each mandate (M1–M3) carries forward a
+  *validated* result; re-deriving it from scratch is not required, but the
+  objective migration (Phase 0) must re-confirm non-collapse on the existing CNN
+  before building upward.
+
+---
 
 ## 3. Test Environment: 1D Physics Sandbox
 
 - **State space:** 1D array of 128 RGB pixels.
-- **Entities:** 3 distinct objects (varying sizes, colors, gradient edges)
-  moving under fundamental physical laws (mass, velocity, elastic collision).
+- **Entities:** 3 distinct objects (varying sizes, colors, gradient edges) under
+  physical laws (mass, velocity, elastic collision).
 - **Agent interaction:** 1D pointer with left/right acceleration and a "push"
   action.
-- **Environmental variation (mandatory):** during training and evaluation,
-  environments are continuously varied — different object counts, sizes,
-  shapes, colors, masses, and physics parameter ranges. A purely static
-  environment regime is explicitly forbidden. This serves two purposes:
-  - prevents the dark-room collapse (see 4.B),
-  - enables the generalization metrics (see 6).
+- **Environmental variation (mandatory):** object counts, sizes, shapes, colors,
+  masses, and physics parameters are continuously varied. A static regime is
+  forbidden — it is the primary defense against dark-room collapse (Pillar B)
+  and the basis of the generalization metrics (Section 6).
+- **Input format (tested variant, Phase 0):** each pixel `i` in `[0,127]` may carry
+  `[R_i, G_i, B_i, pos_i]`, where `pos_i` is a normalized or sinusoidal position
+  encoding. Whether the explicit position channel narrows the Spatial
+  Specialization Gap is a Phase 0 measurement, not an assumption (semantic
+  caution, Section 1.1).
 
-## 4. Architectural Pillars
+---
 
-### A. Bottom-Up Abstraction via Dynamic Node Merging
+## 4. Architectural Pillars (revised under M1–M3)
 
-Neighboring nodes merge dynamically based on proximity in their latent feature
-space. On merge, spatial resolution decreases while latent depth can increase
-— but new dimensions are **recruited**, not pre-allocated, in response to
-variance/surprise unexplained by the existing subspace.
+### A. Existing CNN Backbone, Frozen Dimensionality (was: dynamic node merging)
 
-**Candidate mechanisms** — Planner must select one or motivate an alternative:
-- Online PCA / residual-subspace tracking: spawn a new dimension when residual
-  norm exceeds threshold for sustained timesteps.
-- Hebbian recruitment: spawn a new unit when local prediction error of a node
-  exceeds threshold across multiple timesteps.
-- Graph-structural growth rules (SOINN, Growing Neural Gas).
-- Mixture-of-Experts with dynamic expert allocation.
+The actual production encoder (`NonParametricJEPASpatial` in
+`models_dual_stream.py`) is retained unchanged:
 
-**Gradient handling:** newly recruited dimensions must integrate without
-disrupting the forward dynamics of stable dimensions (consider stop-gradient
-on stable subspace during recruitment).
+```
+Input:   (B, 3, 128)     RGB pixels (or (B, 4, 128) / (B, 7, 128) with pos-encoding)
+conv1:   Conv1d(C ->  16, k=5, s=2)   -> (B,  16, 64)
+conv2:   Conv1d(16 ->  32, k=5, s=2)  -> (B,  32, 32)
+conv3:   Conv1d(32 ->  64, k=5, s=2)  -> (B,  64, 16)
+conv4:   Conv1d(64 -> 128, k=5, s=2)  -> (B, 128,  8)
+conv_sp: Conv1d(128 -> d_max=8, k=1)  -> (B, d_max, 8)  -> interpolate -> (B, d_max, 128)
+heads:   soft-argmax over space -> z_coord (B, d_max)   [where / position]
+         mean over space        -> z_dyn   (B, d_max)   [what / identity]
+```
 
-*Inspiration:* JEPA, extended by graph-like dimensional growth.
+- `d_max = 8` latent channels maximum; `d_t` active channels (2 -> 3 -> 4 via
+  recruitment historically). A "dimension" is an active latent channel, **not** a
+  hierarchical merge.
+- **Under M3, `d_t` is frozen** at the target (3 for N=3, 4 for N=4); GDASR
+  recruitment is disabled. The CNN itself is already fixed.
+- **GDASR runs in log-only mode** (M3): it computes the residual / EMA-error
+  signals that *would* trigger recruitment and logs them, without changing `d_t`.
+- The soft-argmax centroid head is **Arm F**, the non-parametric spatial readout
+  used for the centroid-decoding-MSE metric.
+- *Deferred (Phase 6, Section 8):* the contracting hierarchical pyramid
+  (`128x3 -> 32x8 -> 8x16 -> 2x32`) with similarity-driven node merging. This was
+  specified in prior planning but **never implemented**; it is a future
+  architecture, not the Phase 0 backbone.
 
-### B. Local Temporal-Prediction Energy (Decoder-less Learning)
+### B. Local SFA Representation + Surprise Readout (was: JEPA energy)
 
-- No traditional decoder. No pixel-space reconstruction loss.
-- Each node/layer continuously predicts its own next latent state from past
-  states. **Surprise** = deviation of observed next latent state from
-  prediction.
-- This surprise signal serves **both** as the local learning gradient **and**
-  as the saliency input to the attention mechanism (Pillar D).
+Two cleanly separated signals (this is the core M2 change):
 
-**Anti-collapse requirement (mandatory):**
-Latent representations must not collapse to trivial constants. Planners must
-specify and justify a chosen anti-collapse mechanism. Candidates:
-- variance/covariance regularization (VICReg-style),
-- asymmetric prediction with stop-gradient (BYOL/JEPA-style),
-- contrastive negatives,
-- predictive coding with explicit error neurons that vanish only when
-  prediction is non-trivial (NGC-style).
+1. **Representation objective (shapes the latent space):**
+   Local Slow Feature Analysis on the **`z_dyn` (identity) stream** under pooled
+   VICReg, applied to the active `d_t` channels:
+   `L_repr = ||z_dyn(t) - z_dyn(t-1)||^2 + lambda_var * VICReg_var(z_dyn) + lambda_cov * VICReg_cov(z_dyn)`
+   computed over the batch (the existing batch-level VICReg form, M1). The variance
+   term (target std >= 1) prevents the trivial constant solution; without it SFA
+   collapses. Start from the existing hyperparameters (`lambda = 25`) and sweep.
+   **`z_coord` is NOT slowed** — position legitimately changes as objects move and
+   is read out via the soft-argmax head (Arm F). Applying slowness to `z_coord`
+   would suppress tracking (M2).
 
-**Anti-dark-room requirement (mandatory):**
-Pure energy minimization permits the trivial "do nothing in a static room"
-solution. The mandated environmental variation (Section 3) is one defense.
-Planners must additionally decide whether to add an explicit epistemic-value /
-novelty term to the objective, and justify the choice.
+2. **Surprise / saliency readout (does NOT shape the representation):**
+   A lightweight next-latent predictor reads out of the (stop-gradient) SFA
+   representation; its prediction error is the **surprise** signal driving
+   attention (Pillar D) and motor (Pillar E) only. The stop-gradient is safe here
+   because SFA+VICReg already grounds the representation — this is the key
+   distinction from the failed DSDT decoupling (M2, Iter 010), where the decoupled
+   stream had no objective and collapsed.
 
-*Inspiration:* Active Inference & Free Energy Principle, with explicit
-collapse-prevention.
+**Anti-dark-room:** mandatory environmental variation (Section 3). Planners
+decide whether an additional explicit epistemic-value term is warranted and
+justify it; default is to rely on variation + the surprise readout first.
 
-### C. Temporal Modeling (was absent in v1; mandatory here)
+### C. Temporal Modeling
 
-Prediction operates **in time**, not on static frames. Each layer maintains an
-internal predictive state that anticipates the next latent representation.
+Prediction operates in time. The existing predictor already consumes an `H=3`
+history `(z_{t-2}, z_{t-1}, z_t)` — structurally the same three-slot temporal
+context that sml validated (P2-D), where it beat locally-trained recurrent and
+feedback variants without explicit memory cells. Keep the `H=3` predictor as the
+saliency readout (Pillar B.2). The sml lesson that transfers is at the objective
+level: temporal context of three slots is sufficient; no recurrent state is
+needed. Note sml refuted *zero-shot* spatial->temporal weight transfer but
+validated *jointly trained* shared weights — relevant only if a future variant
+shares an encoder across both axes.
 
-**Candidate mechanisms** — Planner choice:
-- Predictive coding with prediction and error neurons (Rao-Ballard / NGC).
-- Lightweight recurrent state per node (GRU-like, but locally trained).
-- Delay-line context with linear next-step prediction in latent space.
+### D. Thalamic Gating: Attention and Plasticity (dual-control)
 
-The temporal prediction error feeds both Pillar B (learning) and Pillar D
-(attention gating).
+This pillar maps onto the M2 signal separation. The **Surprise Detector** already
+exists inside `CLTSMotorController` (`motor.py`); the **Categorizer** is the
+recruitment logic (now log-only, M3):
 
-### D. Thalamic Gating: Attention & Plasticity
+- **Surprise Detector (fast, every step, all active channels):** per-channel
+  surprise `s_c = MSE(z_pred_coord_c, z_target_coord_c) + MSE(z_pred_dyn_c,
+  z_target_dyn_c)`, z-score normalized via an **online EMA mean/std per channel**
+  (`mu`, `sigma`, `ema_alpha=0.05`). The Attention Token routes to
+  `argmax(norm_surprise)` with a **15-step attention cooldown**. Does not modify
+  weights. (This is the existing implementation — keep it.)
+- **Categorizer (slow, attended locus only):** the GDASR growth-point logic
+  (log-only under M3) and, when recruitment is re-enabled (Phase 5), the
+  consistency-buffer acceptance test (MDL-style cross-scenario variance
+  reduction). Modifies structure only at the attended locus.
+- **Normalization:** the per-channel z-score above is the working scheme for the
+  flat backbone (all channels share one scale, so no cross-scale issue arises).
+  True cross-scale normalization becomes mandatory only if the hierarchical
+  pyramid (8.6) is built.
+- **Inter-layer coupling stability:** the per-channel EMA + attention cooldown +
+  the frozen-`d_t` regime (M3, which removes recruitment churn) are the current
+  stabilizers. Revisit only if a deeper hierarchy reintroduces drift.
 
-A watchdog monitors local surprise across all layers and routes the
-**Attention Token** to the locus of highest unexplained surprise.
+**Interaction with M2 (watch this):** the surprise above sums `z_coord` and
+`z_dyn` prediction error. Under M2, SFA makes `z_dyn` slow and therefore
+*easy to predict*, so `err_dyn` shrinks and the surprise signal becomes
+**`z_coord`-dominated** — i.e. attention/motor will increasingly track *positional
+unpredictability* (e.g. post-collision motion) rather than appearance change. This
+is plausibly desirable, but it is a behavioral shift the Phase 2 evaluation must
+measure, not assume.
 
-- **Initial regime (training scaffolding):** attention may be primed
-  externally — e.g. by injecting a target descriptor (RGB color, "largest",
-  "moving") as a query signal — to bootstrap meaningful focus before the
-  system can self-attend.
-- **Target regime (emergent):** attention becomes self-generated. The
-  system's own output (selected entity descriptor, predicted trajectory) is
-  recurrently fed back as the next attention query — an **output-as-input
-  loop**. Selectors such as "has moved", "is largest", "is unfamiliar" should
-  emerge as natural attentional criteria over time.
-- **Plasticity gating:** only the layer currently holding the Attention Token
-  activates weight updates and dimension recruitment. All other layers run
-  inference-only.
+### E. Epistemic Motor Control (Subsumption / CLTS)
 
-**Cross-scale normalization (mandatory):**
-Energies from layers of different scales must be normalized before comparison
-for token routing — Planners must specify the normalization scheme.
+Retained as Arm G (`CLTSMotorController`). Motor output is hierarchical:
+- *Reflexive (low):* PD tracking of the attended centroid (`Kp=2.0, Kd=0.5`).
+- *Predictive (mid):* velocity matching to the target's motion (`Kv=0.5`).
+- *Deliberate (high):* a push perturbation, currently triggered when the
+  attended channel's surprise exceeds `mu + sigma` **and** the pointer is within
+  `|error| <= 6.0` of the target — i.e. "probe the surprising object once reached."
+  Note the older `SubsumptionMotorController` triggered push on *boredom* (low
+  error + low ΔE) instead — the Schmidhuber artificial-curiosity framing. Which
+  trigger serves causal-sensitivity better (probe-when-surprised vs.
+  probe-when-bored) is an open comparison for Phase 3, not settled.
 
-**Inter-layer coupling stability (mandatory):**
-If a lower layer is constantly plastic, its outputs drift continuously and
-upper layers can never converge. Planners must specify a stability mechanism
-— e.g. minimum-confidence threshold before a lower layer can update,
-staggered learning rates, or token-holding cooldowns.
+Motor coupling is introduced **progressively**: decoupled random/fixed
+exploration early (the `ablation="random"` path exists), attached once a stable
+representation is detected. Arm F (soft-argmax centroid) remains the `z_coord`
+position readout and the centroid-MSE evaluation metric.
 
-### E. Epistemic Motor Control (Subsumption Motorics)
-
-The agent acts to minimize surprise via active learning (curiosity, play).
-Motor output is hierarchical, with subsumption-style override:
-
-- *Lower layers:* reflexive tracking of edges/colors (PID-like).
-- *Middle layers:* predictive kinematics (velocity tracking).
-- *Upper layers:* deliberate perturbation — intentional collisions to probe
-  unknown dynamics (learning concepts like mass).
-
-**Bootstrapping caveat:**
-Coupling motor primitives to representation layers assumes a hierarchical
-organization that only **emerges through training**. Planners must therefore
-introduce motor coupling **progressively**: in early training, motor is
-decoupled (random / fixed exploratory policy); once a stable layer hierarchy
-is detected, motor primitives are attached layer by layer.
-
-*Inspiration:* Subsumption Architecture (Brooks), Artificial Curiosity
-(Schmidhuber).
-
-### F. Action-Conditioned Predictive Processing & Adaptive Temporal Horizons
-
-The network does not predict sensory transitions in a vacuum. Instead of predicting the next state solely from past observations ($z_t \rightarrow z_{t+1}$), the network accepts the agent's own active actions/motor commands $a_t$ (e.g., pointer acceleration, foveation/gaze velocity) as a conditioning input ("efference copy" or "corollary discharge"):
-$$\hat{z}_{t+1} = f(z_t, a_t)$$
-Since the physical world and foveated sensory input operate under continuous physical laws, motor commands provide a strong prior for predicting state transitions.
-
-#### F.1 Primary Output: Future Prediction
-The core output of each layer/node is a **prediction of a future state** rather than a mere description of the present:
-- At time $t$, each node outputs a prediction $\hat{z}_{t+k}$ for a state at future time $t+k$.
-- When the actual state $z_{t+k}$ arrives, it is compared with the previous prediction $\hat{z}_{t+k}$.
-
-#### F.2 Saliency and Drive: Surprise vs. Boredom
-The discrepancy between the predicted and observed future state defines the local temporal energy:
-$$E_{\text{surprise}}(t+k) = \|z_{t+k} - \hat{z}_{t+k}\|$$
-- **Surprise (Überraschung):** High prediction error indicates that the current representational manifold (categories, dimensions, edges) has failed to capture the causal physics or agency. Surprise triggers local **plasticity, dimension recruitment (GDASR), and attention routing**.
-- **Boredom (Langeweile):** When prediction error approaches zero ($E_{\text{surprise}} \approx 0$), the environment's dynamics are fully predicted. This "boredom" inhibits plasticity, stabilizing the representation and preventing catastrophic forgetting/overfitting.
-
-#### F.3 Decentralized Adaptive Horizon & Multi-Scale Precision Blurring
-Due to chaos and entropy, predicting far into the future ($k > 1$) is inherently uncertain. To maintain predictive utility, the network must adaptively balance prediction distance against the "blurriness" (uncertainty/low-precision) of its representations.
-- **Hierarchical Self-Selection:** Each node/layer independently decides its temporal predictive horizon $k$ and its associated precision.
-- **Lower Layers:** Predict very near-term, high-resolution states (small $k$, high precision, low blurriness). They track immediate physical changes.
-- **Higher Layers:** Predict long-term, abstract states (large $k$, low precision, high blurriness, high semantic abstraction). They track macro-entities and trajectories, ignoring high-frequency sensory noise.
-- **Dynamic Optimization:** The network dynamically optimizes this horizon-precision trade-off, enabling the self-organization of a multi-scale temporal and spatial hierarchy.
-
-*Inspiration:* Predictive Coding (Rao & Ballard), Active Inference (Friston), Efference Copies / Corollary Discharges.
+---
 
 ## 5. Mandatory Comparison Baselines
 
-For scientific rigor, every architectural claim must be validated against at
-least two baselines run on the same 1D environment:
+Every architectural claim is validated against at least two baselines on the same
+environment:
 
-- **B1 — Standard JEPA:** fixed dimensionality, no thalamic gating, no motor.
-- **B2 — Predictive Coding network** (ngclearn-style NGC) of comparable
-  parameter count.
-- **Optional B3 —** vanilla CNN + MSE pixel reconstruction.
+- **B1 — Standard JEPA** (fixed dimensionality, no gating, no motor). Per M2, B1
+  also serves as the **causal-probe arm**: the one regime where JEPA's
+  transition-prediction may beat SFA must be measured here.
+- **B2 — Predictive Coding (NGC-style)** of comparable parameter count.
+- **B3 (optional) — vanilla CNN + MSE pixel reconstruction.** Note: sml showed
+  Reconstruction+VICReg is strong (83%); if B3 is run, it must include pooled
+  VICReg to be a fair upper-bound reference rather than a strawman.
 
-The Manager Agent rejects performance claims that are not stated relative to
-these baselines.
+The Manager Agent rejects performance claims not stated relative to these.
+
+---
 
 ## 6. Evaluation Metrics
 
-Beyond per-layer "boredom" (convergence to E ≈ 0 within a stable environment),
-report:
-
+- **Non-collapse check (gate for every trained model):** use the existing
+  `has_collapsed` criterion in `evaluate_branch` (`e_a_dim >= 0.1*e_a_all` and
+  `std_x_mean > 5.0`), augmented with the per-dimension std of the batch
+  representation staying clear of zero. A collapsed model is reported as failed,
+  not tuned silently.
 - **Sample efficiency** vs. baselines on identical environments.
-- **Generalization:** after training with N=3 objects, introduce a 4th unseen
-  object — measure time-to-recruit-new-dimension and prediction accuracy on
-  the novel object.
-- **Causal sensitivity:** alter a hidden parameter (e.g. object mass) and
-  measure whether predictions adapt accordingly (probing whether mass was
-  actually represented vs. spuriously correlated).
-- **Compute / memory profile:** parameter count, FLOPs/timestep, recruited-
-  dimension count over training — to substantiate the "local & frugal"
-  claim.
-- **Plasticity-token traces:** log which layer held the token over time —
-  does the system show a meaningful curriculum (lower layers stabilize before
-  higher ones)?
-- **Attention emergence:** track the transition from externally primed
-  attention to self-generated attention; quantify when (if ever) the system
-  no longer requires an external query.
+- **Generalization:** train with N=3 objects, introduce a 4th unseen object;
+  measure prediction accuracy on the novel object and (in log-only mode) whether
+  a growth point is logged at the right time.
+- **Causal sensitivity:** alter a hidden parameter (e.g. mass); measure whether
+  predictions adapt — probing genuine representation vs. spurious correlation.
+  This is the primary battleground for the JEPA-vs-SFA comparison (M2).
+- **Spatial specialization:** centroid decoding MSE via Arm F (Phase-12 reference
+  points: CLTS 85.85, WUP-MDL clean 57.34). Report whether explicit position
+  encoding (Section 3) narrows the gap.
+- **Compute / memory profile:** parameter count, FLOPs/step, and — in log-only
+  mode — the *count and timing* of logged growth points over training.
+- **Plasticity-token traces:** which layer holds the token over time; does a
+  curriculum emerge (lower layers stabilize before higher)?
+
+---
 
 ## 7. Phased Implementation Scope
 
-Work is phased to prevent Experimenters from racing to the most exciting
-motor experiments before the representation base is sound.
+**Phase 0 — Objective Migration and Non-Collapse Re-confirmation (bridge phase).**
+- On the **existing** `NonParametricJEPASpatial` CNN (Section 4.A), switch the
+  representation objective from JEPA to **SFA on `z_dyn` + batch VICReg**
+  (Pillar B), with `d_t` frozen at 3 (N=3) and GDASR in log-only mode.
+- Keep Arm F (soft-argmax) as the `z_coord` position readout unchanged.
+- **Gate:** representation must not collapse (Section 6 non-collapse check, which
+  already exists as `has_collapsed` in `evaluate_branch`) and must reach a
+  centroid-decoding MSE at least comparable to the JEPA baseline Arm P (~55.6).
+- Also run RGB-only vs. RGB+position (the `pos_encoding` already in the encoder)
+  as a measured comparison (semantic caution) — recall Iter 013 found position
+  encoding *hurt* under JEPA; re-test under SFA.
+- Deliverable: confirmation that SFA+VICReg trains the existing CNN without
+  collapse, plus a first characterization of whether SFA on `z_dyn` separates
+  identity from position (the Spatial-Gap hypothesis, M2).
+- The sml `P3-C` node may optionally be run as an alternative-encoder comparison
+  arm, but is **not** required and is not the default backbone.
 
-**Phase 1 — Representation Base (Pillars A, B, C, environment):**
-- passive-observation regime (no motor action),
-- validate dynamic dimension recruitment,
-- validate non-collapsing latent prediction,
-- compare against Baseline B1 on sample efficiency.
+**Phase 1 — Frozen-Dim Representation Base (Pillars A, B, C; passive observation).**
+- No motor action. Validate non-collapsing SFA representation, log-only GDASR
+  growth points, sample efficiency vs. B1/B2.
+- Run the JEPA-vs-SFA causal-sensitivity comparison (M2) — this is where the
+  decision to demote JEPA gets empirically tested, not just assumed.
 
-**Phase 2 — Thalamic Gating (Pillar D):**
-- add attention-token routing and per-layer plasticity gating,
-- start with externally primed attention queries; measure transition to
-  self-generated queries,
-- validate cross-layer stability (no input-drift collapse).
+**Phase 2 — Thalamic Gating (Pillar D).**
+- Add Detector/Categorizer dual-control, token routing, per-layer plasticity
+  gating, cross-scale normalization, inter-layer stability.
+- Start with externally primed attention queries; measure the transition to
+  self-generated queries (output-as-input loop).
 
-**Phase 3 — Motor & Closed Loop (Pillar E):**
-- attach progressive subsumption motor,
-- measure curiosity-driven exploration vs. random baseline,
-- run full causal-sensitivity battery.
+**Phase 3 — Motor and Closed Loop (Pillar E, CLTS).**
+- Attach progressive subsumption motor; measure curiosity-driven exploration vs.
+  random baseline; run the full causal-sensitivity battery.
 
-**Phase 4 — Generalization & Reporting:**
-- full metrics battery (Section 6) against all baselines from Section 5,
-- honest reporting including failure modes and negative results.
+**Phase 4 — Generalization and Reporting.**
+- Full metric battery (Section 6) against all baselines; honest reporting of
+  failure modes and negative results.
 
-## 8. Planner Milestones (initial breakdown)
+**Phase 5 — (DEFERRED) Reactivate Dynamic Recruitment.**
+- Using the Phase 0–4 growth-point logs as data, design a recruitment-evaluation
+  scheme that avoids the cold-start trilemma (Iter 016–018). Candidate directions
+  the trilemma analysis left open: warm-start predictors (eliminate Phase-A
+  transient by construction), Phase-B-only trend gating, pre-trained proposal
+  evaluators, or Bayesian model comparison. Only enter this phase once the
+  fixed-dim foundation is solid.
 
-1. **Math / algorithm design:** specify exact mechanisms for dynamic dimension
-   creation, anti-collapse, and temporal prediction. Provide an isolated
-   mathematical or toy-code proof of stability for each before integration.
-2. **Environment code:** implement the 1D PyTorch physics sandbox with
-   parameterizable environmental variation.
-3. **Surprise metric:** formalize local temporal-prediction energy and
-   cross-scale normalization for token routing.
-4. **Baseline implementations:** implement B1 (JEPA) and B2 (NGC) on the
-   same environment for fair comparison.
-5. **Phase 1 integration:** Pillars A + B + C, no motor.
-6. **Phase 2 integration:** add Pillar D.
-7. **Phase 3 integration:** add Pillar E with progressive motor coupling.
-8. **Phase 4 evaluation:** run full metric battery; document negative
-   results explicitly.
+**Phase 6 — (DEFERRED) Extensions, each gated on measure-before-impose.**
+See Section 8.
+
+---
+
+## 8. Deferred Extensions (preserved; gated)
+
+Each is retained from prior planning but sequenced after the validated
+foundation, and each carries the semantic-caution guardrail (Section 1.1):
+characterize the emergent baseline before adding the structural prior.
+
+**8.1 RGB + explicit position encoding.** Linear, sinusoidal, or learnable
+position channels. Already pulled forward into Phase 0 as a measured comparison.
+
+**8.2 Gaze direction / foveated attention.** A gaze pointer controlling a
+foveated receptive field (full resolution at fixation, downsampled periphery),
+making the externally-primed -> self-generated attention transition operational.
+Subsumption extension: reflexive saccade (low), smooth pursuit (mid), deliberate
+gaze shifts (high). Metrics: fixation stability, saccade efficiency, information
+gain under reduced bandwidth.
+
+**8.3 Graph topology of layer-nodes.** Replace the linear stack with a DAG:
+lateral connections within a level, top-down predictive-coding projections,
+surprise-modulated edges, skip connections. Initialize as the linear chain
+(backward compatible), recruit/prune edges by information contribution, cap
+fan-in (e.g. K=4), keep the forward pass acyclic (recurrence via t-1 delay).
+Motivated by Iter 004 (tracking lag) and Iter 010 (DSDT semantic blindness).
+
+**8.4 Micro-columns (treat as hypothesis, not fix).** Lightweight sub-networks
+per node specializing on color/texture, motion/velocity, position, each with its
+own surprise signal. **Caution (Section 1.1):** sml showed imposed anchoring
+degraded natural geometry. Micro-columns must be validated against the measured
+emergent baseline; if the monolithic layer already separates these aspects
+naturally, the added structure is rejected. Note that **M2's SFA-on-`z_dyn` is the
+first, cheaper attempt** at the same disentanglement (slow identity vs. fast
+position); micro-columns are only justified if SFA leaves a measured gap.
+
+**8.5 Interactive demo application.** Standalone Python app (PyGame / Matplotlib
+animation / lightweight web frontend) rendering the environment, per-layer latent
+state, attention-token trace, motor output, and prediction-vs-reality overlay in
+real time (>=10 fps). Human controls: add/remove objects, change properties,
+inject noise/Noisy-TV, pause/step/resume, toggle motor modes. Inspection via
+observer hooks only — no modification of core `src/thalamus.py` / `src/motor.py`.
+
+**8.6 Contracting hierarchical pyramid (future backbone).** The
+`128x3 -> 32x8 -> 8x16 -> 2x32` schedule with similarity-driven node merging,
+specified in prior planning (old Section 13.2) but never implemented. This is the
+long-term move toward V1->IT-style spatial contraction with rising feature
+dimensionality. Deferred until the frozen-dim flat backbone + SFA foundation is
+validated; introducing it earlier would confound the M2/M3 evaluation.
+
+---
 
 ## 9. Reporting Standards
 
 - All quantitative results stated with run-to-run variance or confidence
-  intervals; single-seed results are not accepted as evidence.
-- Failure modes and dead ends are **first-class deliverables**, not
-  embarrassments.
-- The Manager Agent rejects any phrasing of the form "we have shown / proven /
-  discovered" unless backed by reproducible quantitative evidence against the
-  baselines from Section 5.
-
-## 10. Phase 5 — Extended Input Model: RGB + Pixel-Position
-
-### 10.1 Motivation
-
-The current input to the network is a raw 1D array of 128 RGB pixel values. Each
-pixel is identified only by its position in the array (implicit in the
-convolutional receptive field). Extending the input to explicitly include
-**pixel-position encodings** alongside RGB values provides the network with a
-richer, spatially grounded input that may improve coordinate extraction and
-spatial specialization — addressing the persistent "Spatial Specialization Gap"
-observed in Phases 6–11.
-
-### 10.2 Input Format
-
-Each pixel `i` (where `i ∈ [0, 127]`) provides an input vector:
-
-```
-input[i] = [R_i, G_i, B_i, pos_i]
-```
-
-where `pos_i` is a normalized position encoding (e.g., `pos_i = i / 127.0` for
-linear encoding, or a sinusoidal positional embedding analogous to Transformer
-position encodings).
-
-**Candidate position encodings** — Planner must select one or motivate an
-alternative:
-- Linear normalized: `pos_i = i / (N-1)`.
-- Sinusoidal: `pos_i = [sin(i/10000^{2k/d}), cos(i/10000^{2k/d})]` for
-  multiple frequencies.
-- Learnable: a trainable embedding per spatial position (though this
-  contradicts the "no-supervision" philosophy).
-
-### 10.3 Architectural Impact
-
-- The convolutional backbone input channels increase from 3 (RGB) to 4 (RGB+pos)
-  or more (for sinusoidal encodings).
-- The Non-Parametric Soft-Argmax projection (Arm F) should become more accurate
-  because the backbone receives explicit position information, potentially
-  reducing the Active-Perception Drift Penalty observed in Phase 12.
-- **Hypothesis:** explicit position encoding will improve the centroid decoding
-  MSE from 85.85 (current CLTS) to below 75.0, eliminating the representation
-  drift under active control.
-
-### 10.4 Evaluation
-
-- Compare the extended-input model against the current RGB-only model on all
-  Phase 4 metrics (Section 6).
-- Specifically measure whether the Spatial Specialization Gap narrows: do
-  recruited dimensions show higher correlation with individual object positions
-  when position information is explicitly provided?
-- Control for the additional parameter count introduced by the position channel.
-
-## 11. Phase 5 — Gaze Direction Control (Foveated Attention)
-
-### 11.1 Motivation
-
-The current architecture perceives the full 1D pixel array simultaneously. In
-biological vision, the **fovea** provides high-resolution input only at the
-fixation point, with peripheral resolution falling off sharply. Introducing a
-gaze-direction mechanism forces the system to actively decide **where to look**,
-making the transition from externally primed to self-generated attention
-(Section 4.D, "Target Regime") an operational necessity rather than an optional
-emergent property.
-
-### 11.2 Mechanism: Eye / Head Rotation
-
-- **Gaze pointer:** analogous to the existing motor pointer, but controlling
-  **sensory input** rather than physical interaction. The gaze pointer
-  determines the center of a **foveated receptive field**.
-- **Foveated input:** pixels near the gaze center are sampled at full resolution;
-  pixels in the periphery are downsampled or blurred. This creates an
-  information gradient that rewards accurate gaze control.
-- **Gaze motor commands:** left/right acceleration of the gaze pointer (similar
-  to the existing pointer mechanics), plus a potential "saccade" action for
-  rapid re-fixation.
-- **Objective:** the system must learn to keep a "target object" (the entity with
-  highest surprise, or the entity currently tracked by the Attention Token)
-  **centered in the fovea**. This is analogous to the biological oculomotor
-  reflex of maintaining fixation on an object of interest.
-
-### 11.3 Relationship to Existing Architecture
-
-- The foveated input feeds into the same convolutional backbone as the current
-  full-field input — but the effective information content depends on gaze
-  position.
-- The **Thalamic Gating mechanism** (Pillar D) must now coordinate two motor
-  systems: the physical pointer (Pillar E) and the gaze pointer.
-- **Subsumption hierarchy extension:**
-  - *Lowest layer:* reflexive gaze tracking of high-contrast edges (saccade to
-    motion onset).
-  - *Middle layer:* smooth pursuit — maintain fixation on a moving object.
-  - *Upper layer:* deliberate gaze shifts — look away from the currently
-    tracked object to explore peripheral surprises.
-
-### 11.4 Evaluation Criteria
-
-- **Fixation stability:** measure the fraction of time the target object is
-  within the foveal region.
-- **Saccade efficiency:** compare the system's saccade latency and accuracy
-  against a random-gaze baseline.
-- **Information gain:** compare the temporal prediction error under foveated
-  input vs. full-field input — the system should achieve comparable prediction
-  quality with lower total input bandwidth if gaze is well-directed.
-
-## 12. Phase 5 — Interactive Demo Application
-
-Building on the validated Phase 4 architecture (Arm F Non-Parametric Projection +
-Arm G CLTS Motorics), an **interactive demo application** must be developed that
-allows a human user to observe the Thalamus network during live operation.
-
-### 12.1 Visualization Requirements
-
-The demo must render the following in real time:
-
-- **Environment view:** the 1D (or 2D, if extended) physics sandbox with all
-  objects, the agent's pointer position, and push actions.
-- **Latent space view:** the current latent representation of each layer /
-  graph node, including dynamically recruited dimensions.
-- **Attention token trace:** which layer currently holds the Attention Token, and
-  the surprise values driving the routing decision.
-- **Motor output:** the active subsumption layer, pointer acceleration vector,
-  push commands, and (if implemented) gaze pointer position.
-- **Prediction vs. reality:** overlay of predicted next-step latent states
-  against actual observed states (temporal prediction error visualization).
-
-### 12.2 Human Interaction Capabilities
-
-The human user must be able to:
-
-- **Add / remove objects** from the environment at runtime (triggering the N→N+1
-  generalization dynamics and dimension recruitment).
-- **Change object properties** (mass, velocity, color, size) to observe the
-  system's adaptation response.
-- **Inject noise** (global Gaussian noise, Noisy-TV distractors) to test the
-  watchdog's noise robustness in real time.
-- **Pause / step / resume** the simulation for detailed frame-by-frame analysis.
-- **Toggle motor modes** (passive observation, random babbling, CLTS active
-  probing) to compare behaviors live.
-
-### 12.3 Implementation Constraints
-
-- The demo should run as a standalone Python application (e.g., using PyGame,
-  Matplotlib animation, or a lightweight web frontend via Flask/FastAPI +
-  HTML/JS).
-- Frame rate must be sufficient for perceptual continuity (≥ 10 fps render,
-  simulation can run faster internally).
-- All internal state must be inspectable without modifying the core
-  `src/thalamus.py` or `src/motor.py` architecture — use observer hooks or
-  logging callbacks.
-
-## 13. Phase 6 — Dimension-Width Trade-off: Aggressive Spatial Compression
-
-### 13.1 Motivation
-
-Phase 4 revealed that the "Spatial Specialization Gap" persists: recruited
-dimensions do not self-organize into semantically meaningful channels because
-each node has too many spatial positions and too few latent dimensions to
-simultaneously encode position, color, velocity, and object identity. The
-current architecture maintains near-constant spatial width across layers.
-
-The biological cortex does the opposite: spatial resolution **decreases sharply**
-from V1 to IT, while the number of feature dimensions (receptive field
-complexity) **increases dramatically**. This section mandates implementing this
-trade-off explicitly.
-
-### 13.2 Mechanism
-
-Each layer in the hierarchy aggressively reduces spatial width while expanding
-latent dimensionality:
-
-```
-Layer 0: [128 nodes ×  3 dim]  — raw pixel input (RGB)
-Layer 1: [ 32 nodes ×  8 dim]  — edge / color features
-Layer 2: [  8 nodes × 16 dim]  — object-level features
-Layer 3: [  2 nodes × 32 dim]  — scene-level abstractions
-```
-
-**Merging rule:** neighboring nodes merge when their latent representations are
-sufficiently similar (cosine similarity > threshold). On merge:
-- Spatial resolution halves (or reduces by the merge factor).
-- The merged node inherits the union of latent dimensions from both parents.
-- New dimensions may be recruited (via GDASR) if the merged representation
-  leaves significant residual prediction error unexplained.
-
-**Candidate merging strategies** — Planner must select one:
-- Fixed pooling strides (deterministic, like CNNs).
-- Surprise-driven adaptive merging: nodes merge only when local prediction
-  error is below a stability threshold, indicating that their individual
-  representations have converged.
-- Competitive merging: only the pair with highest similarity merges per
-  timestep (avoids catastrophic simultaneous merging).
-
-### 13.3 Sub-Layers (Micro-Columns)
-
-A single node at any level of the hierarchy may internally contain **multiple
-micro-columns** — lightweight sub-networks that specialize on different aspects
-of the same spatial input:
-
-- Micro-column A: color / texture features.
-- Micro-column B: motion / velocity features.
-- Micro-column C: spatial position encoding.
-
-Each micro-column contributes its own prediction to the temporal prediction
-error. The **surprise signal is computed per micro-column**, allowing the
-Thalamic Gating mechanism to selectively activate plasticity in the
-micro-column with the highest unexplained error.
-
-This addresses the Phase 6–11 finding that unsupervised prediction error
-distributes coordinate information across the entire latent manifold: by
-providing structurally separated micro-columns, the optimization landscape
-naturally encourages disentanglement without explicit supervision.
-
-### 13.4 Evaluation
-
-- Measure whether the Spatial Specialization Gap narrows: do individual
-  micro-columns show higher single-dimension correlation with specific physical
-  properties (position, velocity, color) than the current monolithic layers?
-- Compare the dimension-compressed architecture against the current flat
-  architecture on all Phase 4 metrics.
-- Track the adaptive merging dynamics: do lower layers stabilize before upper
-  layers (validating the expected curriculum)?
-
-## 14. Phase 6 — Graph Topology: Layer-Nodes as a Network
-
-### 14.1 Motivation
-
-The current architecture is a strict linear stack: Layer 0 → Layer 1 → Layer 2.
-Information flows bottom-up only, with no lateral connections, no skip
-connections, and no top-down feedback (except through the Attention Token
-routing). This is biologically implausible: the cortex is a heavily recurrent
-network with lateral connections within layers and top-down projections from
-higher areas.
-
-Phase 4 findings that motivate this change:
-- **Iter 004 (Tracking Lag):** the rigid stack forces all information through
-  every layer, even when a low-level surprise could directly drive motor action.
-- **Iter 010 (DSDT Failure):** stop-gradient decoupling between streams caused
-  semantic blindness because there was no alternative information pathway.
-
-### 14.2 Mechanism
-
-Replace the linear stack with a **directed graph** of layer-nodes:
-
-- Each node is a computational unit with its own latent dimensions, temporal
-  predictor, and surprise signal (as defined in Pillars A–C).
-- **Edges** between nodes carry latent projections. Edge weights are modulated
-  by surprise: a high-surprise edge strengthens its connection (amplifying
-  information flow from the source of unexplained error).
-- **Lateral connections:** nodes at the same abstraction level can exchange
-  information (e.g., a "color" node and a "motion" node at the same spatial
-  scale can mutually inform).
-- **Top-down connections:** higher-level nodes can send predictions back to
-  lower-level nodes, enabling predictive coding (Rao-Ballard style).
-- **Skip connections:** a low-level node may directly project to the motor
-  output or to a high-level node, bypassing intermediate layers when the
-  surprise signal indicates that the intermediate processing is not needed.
-
-### 14.3 Graph Construction Rules
-
-The graph is **not** fully connected. Connections are governed by:
-
-- **Initial topology:** at initialization, the graph starts as a simple linear
-  chain (identical to the current architecture). This ensures backward
-  compatibility and provides a stable starting point.
-- **Edge recruitment:** new edges are spawned when a node's prediction error
-  remains high despite its current inputs — indicating that it needs information
-  from a source it is not currently connected to.
-- **Edge pruning:** edges whose information contribution (measured by gradient
-  magnitude or mutual information) falls below a threshold for sustained
-  timesteps are pruned.
-- **Node spawning:** a new node may be created when no existing node can reduce
-  the prediction error at a particular spatial scale — this extends the GDASR
-  dimension recruitment to the graph level.
-
-### 14.4 Stability Constraints
-
-- **Cycle detection:** the graph must remain a DAG (directed acyclic graph)
-  for the forward pass, with recurrence handled through temporal delay (t-1
-  states fed back, not instantaneous loops).
-- **Maximum fan-in:** each node may receive inputs from at most K other nodes
-  (e.g., K=4) to prevent information overload and maintain computational
-  tractability.
-- **Incremental introduction:** start with a linear chain + one lateral
-  connection per layer. Gradually relax constraints as stability is validated.
-
-### 14.5 Evaluation
-
-- Compare the graph architecture against the linear stack on all Phase 4
-  metrics.
-- Track graph evolution over training: does the system discover useful skip
-  connections? Do lateral connections emerge where expected (between nodes
-  processing complementary features)?
-- Measure information flow: which edges carry the most gradient magnitude?
-  Does the graph topology converge to a stable structure or remain chaotic?
-
-## 15. Phase 6 — Dual Control: Surprise Detector vs. Categorizer
-
-### 15.1 Motivation
-
-In the current architecture, the temporal prediction error ("surprise") serves
-simultaneously as:
-1. the **learning signal** (Pillar B — weight updates minimize surprise),
-2. the **attention routing signal** (Pillar D — Attention Token goes to highest
-   surprise),
-3. the **motor drive** (Pillar E — motor acts to reduce surprise).
-
-This triple role creates competitive optimization dynamics, as demonstrated by
-the DSMC failure (Iter 009): coupling surprise to regularization parameters
-caused the learning signal and the attention signal to interfere destructively.
-
-Phase 6 mandates a **clean separation** of two distinct control mechanisms.
-
-### 15.2 Mechanism: Two Controllers
-
-**Controller 1 — Surprise Detector (fast, reactive):**
-- Operates on **all nodes in parallel**, every timestep.
-- Computes local temporal prediction error at each node.
-- Output: a **saliency map** across all nodes, indicating where unexplained
-  variance is highest.
-- Drives: Attention Token routing (Pillar D) and gaze direction (Section 11).
-- **Does NOT directly modify weights.** It only decides where to look and
-  where to focus plasticity.
-
-**Controller 2 — Categorizer (slow, deliberative):**
-- Operates only on the **node(s) currently holding the Attention Token**.
-- Goal: reduce the surprise at the attended node by forming **new categories,
-  dimensions, or connections** that generalize across multiple scenarios.
-- A new category/dimension is "accepted" only if it reduces surprise across
-  a **validation buffer** of diverse past states — not just the current
-  timestep. This prevents overfitting to transient noise.
-- Drives: dimension recruitment (GDASR), micro-column specialization
-  (Section 13.3), and edge recruitment (Section 14.3).
-- **Modifies weights and structure**, but only at the attended locus.
-
-### 15.3 Interaction Protocol
-
-```
-Every timestep:
-  1. All nodes compute forward pass and temporal prediction.
-  2. Surprise Detector computes saliency map.
-  3. Attention Token routes to highest-saliency node.
-  4. Categorizer activates at the attended node:
-     a. If current dimensions explain the surprise → weight update only.
-     b. If residual surprise persists across validation buffer →
-        recruit new dimension or micro-column.
-     c. If no local improvement possible → propose new graph edge
-        (Section 14.3) to import information from elsewhere.
-  5. Motor systems (physical pointer + gaze) act based on saliency map
-     and current Categorizer state.
-```
-
-### 15.4 Anti-Chaos Constraint: Consistency Loss
-
-To address the "Chaos Reduction" objective — ensuring that representations are
-not just locally predictive but globally consistent — the Categorizer maintains
-a **consistency buffer**: a rolling window of latent states from diverse
-environmental configurations.
-
-A new dimension or category is accepted only if it **reduces variance** across
-this consistency buffer. This implements a form of **Minimum Description Length**
-(MDL): the system prefers representations that compress many different scenarios
-into fewer, more general categories over representations that overfit to a
-single scenario.
-
-Formally:
-```
-L_consistency = Var_{scenarios}[z_new] / Var_{scenarios}[z_old]
-```
-A new dimension is accepted only if `L_consistency < 1.0` (i.e., it reduces
-cross-scenario variance rather than increasing it).
-
-### 15.5 Evaluation
-
-- Measure whether the dual-control separation resolves the DSMC competitive
-  optimization failure (Iter 009).
-- Track the Categorizer's acceptance rate: what fraction of proposed dimensions
-  pass the consistency buffer validation?
-- Compare the representation quality (cross-dimension correlation, spatial
-  specialization) against the single-controller baseline.
-- Verify that the Surprise Detector's saliency map remains responsive to novel
-  stimuli while the Categorizer operates on a slower timescale.
-
+  intervals over >=5 seeds. Single-seed results are not evidence.
+- Failure modes and dead ends are **first-class deliverables**.
+- The Manager Agent rejects "we have shown / proven / discovered" phrasing unless
+  backed by reproducible quantitative evidence against the Section 5 baselines.
+- Where a result reproduces or contradicts an `rdf_thalamus_sml` finding, the
+  report states which and why — cross-project consistency is itself evidence.
