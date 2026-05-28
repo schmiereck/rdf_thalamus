@@ -801,3 +801,68 @@ C1 (Collapse): PASS — Arm A (CGIR+SFA+CCR) has 1/5 collapsed seeds, same
 
 **Notes:** CGIR hypothesis falsified on C3; partial directional effect (+0.124) but insufficient for 0.10 threshold.
 
+
+---
+```yaml
+cached_tokens: 3318800
+campaign: Thalamus
+cost_usd: 1.4126
+hypothesis: 'phase-22: single-scalar bottleneck falsified as primary cause; SFA objective
+  itself non-functional at current hyperparameters (sfa_weight=0.1 vs var_weight=25)'
+input_tokens: 5007974
+iter: 21
+metrics:
+  arm_a_collapsed_seeds: 3
+  arm_a_delta_r2_color: 0.09
+  arm_a_delta_r2_identity: -0.017
+  arm_b_collapsed_seeds: 1
+  arm_b_delta_r2_color: 0.13
+  arm_b_delta_r2_identity: -0.027
+  arm_c_collapsed_seeds: 5
+  arm_c_delta_r2_color: 0.1
+  arm_c_delta_r2_identity: -0.055
+  arm_c_normalized_coord_var: 1.9e-05
+  arm_c_normalized_dyn_var: 0.01771
+  c1_collapse_pass: false
+  c2_mse_pass: true
+  c3_color_improvement: 0.05
+  c4_identity_improvement: -0.021
+  c5_sfa_effective: false
+  ctrl_collapsed_seeds: 1
+  ctrl_delta_r2_color: 0.05
+  ctrl_delta_r2_identity: -0.035
+  ctrl_normalized_coord_var: 1.74e-05
+  ctrl_normalized_dyn_var: 0.00856
+  overall_validated: false
+  total_runs: 20
+  training_steps_per_run: 5000
+output_tokens: 145622
+status: ok
+```
+
+## iter_021: phase-22: single-scalar bottleneck falsified as primary cause; SFA objective itself non-functional at current hyperparameters (sfa_weight=0.1 vs var_weight=25)
+
+**Analysis:** This phase tested the hypothesis that single-scalar z_dyn bottleneck is the
+primary cause of semantic disentanglement failure. Three isolable interventions
+(conv4 source, expanded d_max, K=4 sub-features) were compared against the
+CGIR+SFA+CCR control.
+
+The hypothesis is FALSIFIED on all criteria:
+- C1: Arm C collapsed 5/5 (FAIL)
+- C2: Arm C MSE 112.5 ≤ 1.10×Ctrl 129.6 (PASS)
+- C3: Color improveme
+
+**Status:** ok
+
+**Metrics:** `{'ctrl_collapsed_seeds': 1, 'ctrl_delta_r2_color': 0.05, 'ctrl_delta_r2_identity': -0.035, 'ctrl_normalized_dyn_var': 0.00856, 'ctrl_normalized_coord_var': 1.74e-05, 'arm_a_collapsed_seeds': 3, 'arm_a_delta_r2_color': 0.09, 'arm_a_delta_r2_identity': -0.017, 'arm_b_collapsed_seeds': 1, 'arm_b_delta_r2_color': 0.13, 'arm_b_delta_r2_identity': -0.027, 'arm_c_collapsed_seeds': 5, 'arm_c_delta_r2_color': 0.1, 'arm_c_delta_r2_identity': -0.055, 'arm_c_normalized_dyn_var': 0.01771, 'arm_c_normalized_coord_var': 1.9e-05, 'c1_collapse_pass': False, 'c2_mse_pass': True, 'c3_color_improvement': 0.05, 'c4_identity_improvement': -0.021, 'c5_sfa_effective': False, 'overall_validated': False, 'total_runs': 20, 'training_steps_per_run': 5000}`
+
+**Experimenter view:** The Architectural Ceiling experiment ran 4 arms × 5 seeds × 5000 steps. All
+three interventions (conv4 source, expanded d_max=16, sub-features K=4) were
+tested against the CGIR+SFA+CCR control. The hypothesis that single-scalar
+z_dyn bottleneck is the primary cause of disentanglement failure is FALSIFIED.
+
+ARM C (K=4 sub-features): Collapsed 100% (5/5 seeds). VICReg with 12 active
+features at batc
+
+**Notes:** Architecture ceiling hypothesis falsified. SFA not effective in any arm. K=4 collapses 100%.
+
