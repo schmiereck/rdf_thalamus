@@ -866,7 +866,7 @@ def main():
         "c2_mse_pass": bool(c2_pass),
         "c2_mse_sfa_mean": float(mse_a_mean) if len(arm_a) > 0 else -1.0,
         "c2_mse_jepa_mean": float(mse_b_mean) if len(arm_b) > 0 else -1.0,
-        "c2_mse_threshold": float(threshold) if len(arm_a) > 0 and len(arm_b) > 0 else -1.0,
+        "c2_mse_threshold": float(threshold) if threshold is not None else -1.0,
         "c3_sanity_slowness_pass": bool(c3_sanity_pass),
         "c3_sanity_slowness_ratio_mean": float(mean_ratio_a),
         "c3_semantic_disentanglement_pass": bool(c3_semantic_pass),
