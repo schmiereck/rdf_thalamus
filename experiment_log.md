@@ -716,3 +716,30 @@ power. ρ is universally near-zero (max 0.006 for genui
 
 **Notes:** EG-MDL hypothesis falsified; cold-start optimization transient discovered as third distinct cold-start pathology
 
+
+---
+```yaml
+cached_tokens: 4385526
+cost_usd: 2.02313
+hypothesis: strategy_error
+input_tokens: 8746156
+iter: 20
+metrics: {}
+output_tokens: 134565
+status: code_error
+```
+
+## iter_020: strategy_error
+
+**Analysis:** Client error '403 Forbidden' for url 'https://openrouter.ai/api/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
+
+**Status:** code_error
+
+**Metrics:** `{}`
+
+**Experimenter view:** 
+
+**Notes:** Planner call failed: Client error '403 Forbidden' for url 'https://openrouter.ai/api/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/403
+

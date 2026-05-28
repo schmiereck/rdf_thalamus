@@ -1,0 +1,509 @@
+I need to understand the current codebase and the approved plan before executing. Let me first read the key files and understand the existing architecture.
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+      train_thalamus.py]
+
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: iter | status          | hypothesis
+-----|-----------------|----------
+002  | ok              | phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
+003  | ok              | phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
+004  | ok              | phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
+005  | ok              | phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
+006  | ok              | phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
+007  | ok              | phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
+008  | ok              | phase-8: evaluate unsupervised spatial bottlenecks and close...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_...]
+
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 020
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+On the existing NonParametricJEPASpatial CNN encoder with frozen d_t=3 and no dynamic
+recruitment, replacing the JEPA prediction objective with SFA (slowness) on z_dyn as the
+primary representation objective, combined with batch VICReg on z_dyn, will:
+(1) Train without representation collapse (all per-dimension std >= 0.5, no has_collapsed trigger),
+(2) Achieve centroid-decoding MSE via Arm F (soft-argmax on z_coord) at most 10% higher
+    than the JEPA+VICReg baseline (i.e., MSE_SFA <= 1.10 * MSE_JEPA, where MSE_JEPA ~ 55.6),
+(3) Produce z_dyn representations that are significantly slower (mean ||z_dyn(t) - z_dyn(t-1)||^2
+    at least 40% lower) than z_coord temporal variation, indicating that SFA separates slow
+    identity from fast position by construction.
+
+## 2. Falsification Criterion
+The hypothesis is falsified if ANY of the following hold across th...]
+
+
+[Tool Call: read_file({'path': 'src/train_thalamus.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import pandas as pd
+
+# Set threads to prevent CPU thrashing
+torch.set_num_threads(2)
+
+# Ensure src directory is in path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import FixedJEPA
+from src.thalamus import ThalamusNet, NonGatedControlNet
+
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target, color_0, pos_0):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target, color_0, pos_0)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        bat...]
+
+Let me read the environment and recent experiment runner to understand the training patterns:
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_b...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase18_experiments.py'})]
+
+[Tool Result: import os
+import sys
+import json
+import copy
+import random
+import collections
+import numpy as np
+import pandas as pd
+import torch
+import torch.optim as optim
+import torch.nn.functional as F
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from scipy import stats
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import NonParametricJEPASpatial
+from src.motor import CLTSMotorController
+
+
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, min(batch_size, len(self.bu...]
+
+Now I have a thorough understanding of the codebase. Let me plan the Phase 0 execution carefully.
+
+**Phase 0 Analysis:**
+The approved plan requires switching the representation objective from JEPA to SFA on z_dyn + batch VICReg. The Manager's critical notes require:
+1. Reframe claim (3) as a sanity check (not empirical evidence of disentanglement)
+2. Add semantic disentanglement linear probes (identity from z_dyn vs z_coord, position from z_coord vs z_dyn)
+3. Augment C3 with semantic probe criterion
+
+**Sub-goals:**
+1. **019.1** (planner): Implement SFA model infrastructure, create experiment runner with all 3 arms + semantic probes, update pre-registration, execute full 5-seed sweep
+2. **019.2** (medium): Statistical analysis, falsification audit, and final report
+
+Let me start with the main implementation + execution sub-goal:
+
+[Tool Call: run_agent({'complexity': 'planner', 'estimated_runtime_sec': 3600, 'iter_id': '019.1', 'task': '\n# Phase 0 — Objective Migration: SFA on z_dyn + VICReg\n\n## Pre-Registration File\nYou MUST read `src/pre_registration.md` first and adhere to its hypotheses and falsification criteria. Also read the Manager\'s notes in the task description carefully — there are CRITICAL modifications to the pre-registration that you must implement.\n\n## Manager\'s Critical Modifications (MUST IMPLEMENT)\n\n1. **Reframe claim (3) as a sanity check**: The slowness ratio (||Δz_dyn||² / ||Δz_coord||²) merely verifies that the SFA objective is active and VICReg prevents collapse. It does NOT constitute evidence of semantic disentanglement. State this explicitly in the pre-registration update.\n\n2. **Add semantic disentanglement probes**: Linear probes predicting object identity (color as a 3D regression target) from z_dyn vs z_coord, and object centroid position from z_coord vs z_dyn. If SFA creates semantic separation, z_dyn should predict color well and position poorly, and vice versa for z_coord.\n\n3. **Augment C3 with semantic probe criterion**: "C3 is falsified if the linear-probe R² for object color from z_dyn does not exceed that from z_coord by at least 0.10 (10 percentage points in R²)." The original slowness-ratio C3 becomes a sanity check, not the main falsification criterion.\n\n## CRITICAL: Architecture Context\n\nRead `src/models_dual_stream.py` carefully. The `NonParametricEncoder` computes BOTH z_coord and z_dyn from a single shared `a_spatial = self.forward_spatial(x)`:\n- `z_coord = soft_argmax(a_spatial)` — centroids (position)\n- `z_dyn = a_spatial.mean(dim=-1)` — mean activation (identity)\n\nSince both streams share the same spatial feature map, SFA gradients on z_dyn flow through a_spatial → conv_spatial → conv1-4, indirectly shaping z_coord too. This is the structural basis for testing whether SFA on z_dyn produces good z_coord readouts.\n\n## Step 1: Modify src/models_dual_stream.py\n\nAdd SFA mode to `NonParametricJEPASpatial`:\n\n1. Add `primary_objective` parameter to `__init__()` (default "jepa" for backward compat). Valid values: "jepa", "sfa".\n\n2. Add `sfa_weight` parameter to `__init__()` (default 1.0).\n\n3. Add `gdasr_log_only` parameter to `__init__()` (default False). When True, `update_recruitment_logic()` computes and logs growth-point signals but NEVER modifies `d_t`.\n\n4. In `forward()`, when `primary_objective == "sfa"`:\n   a. **SFA loss**: `L_sfa = F.mse_loss(z_target_dyn[:, :self.d_t], z_hist_dyn[:, -1, :self.d_t].detach())`\n      - `z_hist_dyn[:, -1, :]` is the most recent history frame (z at time t)\n      - `z_target_dyn` is z at time t+1\n      - `.detach()` on z_hist_dyn[:, -1, :] ensures SFA pushes z(t+1) toward z(t) without also pulling z(t) — cleaner gradient\n   b. **VICReg on z_dyn ONLY** (not z_coord): compute var_loss and cov_loss on `z_target_dyn[:, :self.d_t]` only\n   c. **Predictor for surprise readout**: Use detached encoder outputs:\n      - `z_hist_coord.detach()`, `z_hist_dyn.detach()` as predictor inputs\n      - `z_target_coord.detach()` as prediction target for coord\n      - But `z_target_dyn` (NOT detached) for the dynamics prediction target — actually, for the surprise readout, detach BOTH. The sim_loss should train the predictor only, not the encoder.\n      - `sim_loss = F.mse_loss(z_pred_coord[:, :dt_pred], z_target_coord[:, :dt_pred].detach()) + F.mse_loss(z_pred_dyn[:, :dt_pred], z_target_dyn[:, :dt_pred].detach())`\n   d. **Total loss**: `sfa_weight * L_sfa + var_weight * var_loss_dyn + cov_weight * cov_loss_dyn + sim_weight * sim_loss`\n      - SFA + VICReg terms have gradients to encoder only\n      - sim_loss has gradients to predictor only (encoder outputs are detached)\n   e. Return the same dict structure but add `sfa_loss` key. Set `sim_loss_coord`, `sim_loss_dyn` from the detached computation.\n   f. Do NOT apply var_loss or cov_loss to z_coord under SFA mode.\n\n5. When `primary_objective == "jepa"`: keep existing behavior exactly as-is (backward compatible).\n\n6. Modify `update_recruitment_logic()` to respect `gdasr_log_only`: when True, compute and print growth-point detection signals but never change `d_t`. Log the would-have-recruited events.\n\n## Step 2: Create src/run_phase0_sfa.py\n\nFull experiment runner with 3 arms × 5 seeds:\n\n### Arms:\n- **Arm A (SFA+VICReg)**: `NonParametricJEPASpatial(primary_objective="sfa", pos_encoding="none", sfa_weight=1.0, gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.\n- **Arm B (JEPA+VICReg Baseline, B1)**: `NonParametricJEPASpatial(primary_objective="jepa", pos_encoding="none", gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.\n- **Arm C (SFA+VICReg+pos_encoding)**: Same as Arm A but `pos_encoding="sinusoidal"`. Tests whether explicit position channels help under SFA.\n\n### Training Protocol (shared):\n- Seeds: [42, 123, 456, 789, 999]\n- Environment: PhysicsSandbox(N=3, seed=seed) for 3000 steps\n- Passive observation only (no motor, action={"acc": 0.0, "push": False})\n- History: deque(maxlen=4) for H=3 history + 1 target\n- Replay buffer: capacity 2000, prefill 100 transitions\n- Optimizer: Adam, lr=1e-3\n- d_t = 3 frozen from start\n- GDASR in log-only mode\n- Batch size: 32\n- CCR mode: \'none\' for this phase (clean SFA vs JEPA comparison without confounds)\n\n### Evaluation Protocol (at step 3000, checkpoint at 1500):\n\n1. **Non-collapse check** (C1):\n   - `has_collapsed` criterion: `e_a_dim >= 0.1 * e_a_all` AND `std_x_mean > 5.0`\n   - Per-dimension std: `torch.std(z_dyn, dim=0)` — all active dims must have std >= 0.5\n   - Report: collapsed (bool), per-dim stds\n\n2. **Centroid decoding MSE** (C2):\n   - Use 200 test frames from a separate test environment (seed+10000)\n   - For each of 3 objects: linear probe on soft-argmax centroids vs true object positions\n   - Report mean MSE across objects, and per-object MSE\n   - Also compute for the last dimension (target_dim_idx = 2) specifically\n\n3. **Slowness metrics** (sanity check, NOT primary falsification):\n   - Over 200 test frames, compute:\n     - `slow_dyn = mean(||z_dyn(t) - z_dyn(t-1)||^2)`\n     - `slow_coord = mean(||z_coord(t) - z_coord(t-1)||^2)`\n     - `slowness_ratio = slow_dyn / slow_coord`\n   - Report for each arm\n\n4. **Semantic disentanglement probes** (primary C3):\n   - Over 200 test frames, for each frame:\n     a. Get z_coord (B, d_t) and z_dyn (B, d_t) from the encoder\n     b. Get ground-truth positions (3,) and colors (3, 3) for each object\n   - For each dimension d in [0, d_t):\n     a. Match dimension d to the nearest object by centroid position (z_coord[d] vs true positions)\n     b. This establishes a dimension-object pairing\n   - Linear regression probes (train on first 100 frames, test on last 100):\n     a. **z_dyn → color**: R² for predicting matched object\'s color (3 channels, separate R² per channel, report mean)\n     b. **z_coord → color**: Same prediction from z_coord\n     c. **z_coord → position**: R² for predicting matched object\'s position from z_coord[d]\n     d. **z_dyn → position**: Same prediction from z_dyn\n   - Also compute a pooled version: concatenate all dimensions\' z_dyn as features → predict all objects\' colors\n   - **Key metric**: `delta_R2_color = R2(z_dyn → color) - R2(z_coord → color)`. C3 fails if delta_R2_color < 0.10\n\n5. **VICReg health**:\n   - Per-dimension std of z_dyn across the batch\n   - Mean absolute off-diagonal correlation between active z_dyn dimensions\n\n6. **GDASR growth-point log**:\n   - Count and timing of would-have-recruited events during training\n   - Final EMA error value\n\n7. **Prediction error (surprise)**:\n   - sim_loss on test frames (predictor quality)\n   - Per-dimension prediction error breakdown\n\n### Output:\nSave results to `archive/iter_019/results/`:\n- `phase0_raw_results.json`: Full results for each arm × seed combination\n- `phase0_summary.csv`: Summary table with key metrics\n- `phase0_training_curves.csv`: Training loss curves (sampled every 100 steps)\n\n## Step 3: Update src/pre_registration.md\n\nUpdate the pre-registration with:\n- Modified hypothesis (claim 3 reframed as sanity check)\n- New C3 with semantic probe criterion\n- All other details from the approved plan\n\n## Step 4: Execute and Save Results\n\nRun the full sweep. Save all results to the archive directory.\n\n## Important Notes:\n- The sfa_weight=1.0 is a starting point. If the first run shows SFA is too weak or too strong, adjusting it is legitimate but MUST be documented with rationale in the output.\n- Do NOT silently tune after viewing results.\n- Report both directions honestly: if MSE_SFA < MSE_JEPA, note it; if MSE_SFA > MSE_JEPA but within 10%, that\'s a successful bridge.\n- Use CPU (torch device "cpu") unless CUDA is available.\n- Set torch.set_num_threads(2) to prevent CPU thrashing.\n- Each training run (3000 steps) should take ~2-5 minutes on CPU.\n'})]
+
+[Tool Result: {"error": "Wrong iter_id '019.1' for iteration 20. Use ids like '20.1', '20.2', etc. (not numbers from a previous or future iteration)."}]
+
+
+[Tool Call: run_agent({'complexity': 'planner', 'estimated_runtime_sec': 3600, 'iter_id': '020.1', 'task': '\n# Phase 0 — Objective Migration: SFA on z_dyn + VICReg\n\n## Pre-Registration File\nYou MUST read `src/pre_registration.md` first and adhere to its hypotheses and falsification criteria. Also read the Manager\'s notes below carefully — there are CRITICAL modifications to the pre-registration that you must implement.\n\n## Manager\'s Critical Modifications (MUST IMPLEMENT)\n\n1. **Reframe claim (3) as a sanity check**: The slowness ratio (||Δz_dyn||² / ||Δz_coord||²) merely verifies that the SFA objective is active and VICReg prevents collapse. It does NOT constitute evidence of semantic disentanglement. State this explicitly in the pre-registration update.\n\n2. **Add semantic disentanglement probes**: Linear probes predicting object identity (color as a 3D regression target) from z_dyn vs z_coord, and object centroid position from z_coord vs z_dyn. If SFA creates semantic separation, z_dyn should predict color well and position poorly, and vice versa for z_coord.\n\n3. **Augment C3 with semantic probe criterion**: "C3 is falsified if the linear-probe R² for object color from z_dyn does not exceed that from z_coord by at least 0.10 (10 percentage points in R²)." The original slowness-ratio C3 becomes a sanity check, not the main falsification criterion.\n\n## CRITICAL: Architecture Context\n\nRead `src/models_dual_stream.py` carefully. The `NonParametricEncoder` computes BOTH z_coord and z_dyn from a single shared `a_spatial = self.forward_spatial(x)`:\n- `z_coord = soft_argmax(a_spatial)` — centroids (position)\n- `z_dyn = a_spatial.mean(dim=-1)` — mean activation (identity)\n\nSince both streams share the same spatial feature map, SFA gradients on z_dyn flow through a_spatial → conv_spatial → conv1-4, indirectly shaping z_coord too. This is the structural basis for testing whether SFA on z_dyn produces good z_coord readouts.\n\n## Step 1: Modify src/models_dual_stream.py\n\nAdd SFA mode to `NonParametricJEPASpatial`:\n\n1. Add `primary_objective` parameter to `__init__()` (default "jepa" for backward compat). Valid values: "jepa", "sfa".\n\n2. Add `sfa_weight` parameter to `__init__()` (default 1.0).\n\n3. Add `gdasr_log_only` parameter to `__init__()` (default False). When True, `update_recruitment_logic()` computes and logs growth-point signals but NEVER modifies `d_t`.\n\n4. In `forward()`, when `primary_objective == "sfa"`:\n   a. **SFA loss**: `L_sfa = F.mse_loss(z_target_dyn[:, :self.d_t], z_hist_dyn[:, -1, :self.d_t].detach())`\n      - `z_hist_dyn[:, -1, :]` is the most recent history frame (z at time t)\n      - `z_target_dyn` is z at time t+1\n      - `.detach()` on z_hist_dyn[:, -1, :] ensures SFA pushes z(t+1) toward z(t) without also pulling z(t) — cleaner gradient\n   b. **VICReg on z_dyn ONLY** (not z_coord): compute var_loss and cov_loss on `z_target_dyn[:, :self.d_t]` only\n   c. **Predictor for surprise readout**: Use detached encoder outputs:\n      - `z_hist_coord.detach()`, `z_hist_dyn.detach()` as predictor inputs\n      - sim_loss computed as: `F.mse_loss(z_pred_coord[:, :dt_pred], z_target_coord[:, :dt_pred].detach()) + F.mse_loss(z_pred_dyn[:, :dt_pred], z_target_dyn[:, :dt_pred].detach())`\n      - This trains the predictor ONLY, not the encoder\n   d. **Total loss**: `sfa_weight * L_sfa + var_weight * var_loss_dyn + cov_weight * cov_loss_dyn + sim_weight * sim_loss`\n      - SFA + VICReg terms have gradients to encoder only\n      - sim_loss has gradients to predictor only (encoder outputs are detached)\n   e. Return the same dict structure but add `sfa_loss` key. Set `sim_loss_coord`, `sim_loss_dyn` from the detached computation.\n   f. Do NOT apply var_loss or cov_loss to z_coord under SFA mode.\n\n5. When `primary_objective == "jepa"`: keep existing behavior exactly as-is (backward compatible).\n\n6. Modify `update_recruitment_logic()` to respect `gdasr_log_only`: when True, compute and print growth-point detection signals but never change `d_t`. Log the would-have-recruited events.\n\n## Step 2: Create src/run_phase0_sfa.py\n\nFull experiment runner with 3 arms × 5 seeds:\n\n### Arms:\n- **Arm A (SFA+VICReg)**: `NonParametricJEPASpatial(primary_objective="sfa", pos_encoding="none", sfa_weight=1.0, gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.\n- **Arm B (JEPA+VICReg Baseline, B1)**: `NonParametricJEPASpatial(primary_objective="jepa", pos_encoding="none", gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.\n- **Arm C (SFA+VICReg+pos_encoding)**: Same as Arm A but `pos_encoding="sinusoidal"`. Tests whether explicit position channels help under SFA.\n\n### Training Protocol (shared):\n- Seeds: [42, 123, 456, 789, 999]\n- Environment: PhysicsSandbox(N=3, seed=seed) for 3000 steps\n- Passive observation only (no motor, action={"acc": 0.0, "push": False})\n- History: deque(maxlen=4) for H=3 history + 1 target\n- Replay buffer: capacity 2000, prefill 100 transitions\n- Optimizer: Adam, lr=1e-3\n- d_t = 3 frozen from start\n- GDASR in log-only mode\n- Batch size: 32\n- CCR mode: \'none\' for this phase (clean SFA vs JEPA comparison without confounds)\n\n### Evaluation Protocol (at step 3000, checkpoint at 1500):\n\n1. **Non-collapse check** (C1):\n   - `has_collapsed` criterion: `e_a_dim >= 0.1 * e_a_all` AND `std_x_mean > 5.0`\n   - Per-dimension std: `torch.std(z_dyn, dim=0)` — all active dims must have std >= 0.5\n   - Report: collapsed (bool), per-dim stds\n\n2. **Centroid decoding MSE** (C2):\n   - Use 200 test frames from a separate test environment (seed+10000)\n   - For each of 3 objects: linear probe on soft-argmax centroids vs true object positions\n   - Report mean MSE across objects, and per-object MSE\n   - Also compute for the last dimension (target_dim_idx = 2) specifically\n\n3. **Slowness metrics** (sanity check, NOT primary falsification):\n   - Over 200 test frames, compute:\n     - `slow_dyn = mean(||z_dyn(t) - z_dyn(t-1)||^2)`\n     - `slow_coord = mean(||z_coord(t) - z_coord(t-1)||^2)`\n     - `slowness_ratio = slow_dyn / slow_coord`\n   - Report for each arm\n\n4. **Semantic disentanglement probes** (primary C3):\n   - Over 200 test frames, for each frame:\n     a. Get z_coord (B, d_t) and z_dyn (B, d_t) from the encoder\n     b. Get ground-truth positions (3,) and colors (3, 3) for each object\n   - For each dimension d in [0, d_t):\n     a. Match dimension d to the nearest object by centroid position (z_coord[d] vs true positions)\n     b. This establishes a dimension-object pairing\n   - Linear regression probes (train on first 100 frames, test on last 100):\n     a. **z_dyn → color**: R² for predicting matched object\'s color (3 channels, separate R² per channel, report mean)\n     b. **z_coord → color**: Same prediction from z_coord\n     c. **z_coord → position**: R² for predicting matched object\'s position from z_coord[d]\n     d. **z_dyn → position**: Same prediction from z_dyn\n   - **Key metric**: `delta_R2_color = R2(z_dyn → color) - R2(z_coord → color)`. C3 fails if delta_R2_color < 0.10\n\n5. **VICReg health**:\n   - Per-dimension std of z_dyn across the batch\n   - Mean absolute off-diagonal correlation between active z_dyn dimensions\n\n6. **GDASR growth-point log**:\n   - Count and timing of would-have-recruited events during training\n   - Final EMA error value\n\n7. **Prediction error (surprise)**:\n   - sim_loss on test frames (predictor quality)\n   - Per-dimension prediction error breakdown\n\n### Output:\nSave results to `archive/iter_020/results/`:\n- `phase0_raw_results.json`: Full results for each arm × seed combination\n- `phase0_summary.csv`: Summary table with key metrics\n- `phase0_training_curves.csv`: Training loss curves (sampled every 100 steps)\n\n## Step 3: Update src/pre_registration.md\n\nUpdate the pre-registration with:\n- Modified hypothesis (claim 3 reframed as sanity check)\n- New C3 with semantic probe criterion (delta_R2_color >= 0.10)\n- Keep C1 and C2 as originally specified\n- All other details from the approved plan\n\n## Step 4: Execute and Save Results\n\nRun the full sweep. Save all results to the archive directory.\n\n## Important Notes:\n- The sfa_weight=1.0 is a starting point. If the first run shows SFA is too weak or too strong, adjusting it is legitimate but MUST be documented with rationale in the output.\n- Do NOT silently tune after viewing results.\n- Report both directions honestly: if MSE_SFA < MSE_JEPA, note it; if MSE_SFA > MSE_JEPA but within 10%, that\'s a successful bridge.\n- Use CPU (torch device "cpu") unless CUDA is available.\n- Set torch.set_num_threads(2) to prevent CPU thrashing.\n- Each training run (3000 steps) should take ~2-5 minutes on CPU.\n'})]
+
+[Tool Result: {"error": "Wrong iter_id '020.1' for iteration 20. Use ids like '20.1', '20.2', etc. (not numbers from a previous or future iteration)."}]
+
+
+[Tool Call: run_agent({'complexity': 'planner', 'estimated_runtime_sec': 3600, 'iter_id': '20.1', 'task': '\n# Phase 0 — Objective Migration: SFA on z_dyn + VICReg\n\n## Pre-Registration File\nYou MUST read `src/pre_registration.md` first and adhere to its hypotheses and falsification criteria. Also read the Manager\'s notes below carefully — there are CRITICAL modifications to the pre-registration that you must implement.\n\n## Manager\'s Critical Modifications (MUST IMPLEMENT)\n\n1. **Reframe claim (3) as a sanity check**: The slowness ratio (||Δz_dyn||² / ||Δz_coord||²) merely verifies that the SFA objective is active and VICReg prevents collapse. It does NOT constitute evidence of semantic disentanglement. State this explicitly in the pre-registration update.\n\n2. **Add semantic disentanglement probes**: Linear probes predicting object identity (color as a 3D regression target) from z_dyn vs z_coord, and object centroid position from z_coord vs z_dyn. If SFA creates semantic separation, z_dyn should predict color well and position poorly, and vice versa for z_coord.\n\n3. **Augment C3 with semantic probe criterion**: "C3 is falsified if the linear-probe R² for object color from z_dyn does not exceed that from z_coord by at least 0.10 (10 percentage points in R²)." The original slowness-ratio C3 becomes a sanity check, not the main falsification criterion.\n\n## CRITICAL: Architecture Context\n\nRead `src/models_dual_stream.py` carefully. The `NonParametricEncoder` computes BOTH z_coord and z_dyn from a single shared `a_spatial = self.forward_spatial(x)`:\n- `z_coord = soft_argmax(a_spatial)` — centroids (position)\n- `z_dyn = a_spatial.mean(dim=-1)` — mean activation (identity)\n\nSince both streams share the same spatial feature map, SFA gradients on z_dyn flow through a_spatial → conv_spatial → conv1-4, indirectly shaping z_coord too. This is the structural basis for testing whether SFA on z_dyn produces good z_coord readouts.\n\n## Step 1: Modify src/models_dual_stream.py\n\nAdd SFA mode to `NonParametricJEPASpatial`:\n\n1. Add `primary_objective` parameter to `__init__()` (default "jepa" for backward compat). Valid values: "jepa", "sfa".\n\n2. Add `sfa_weight` parameter to `__init__()` (default 1.0).\n\n3. Add `gdasr_log_only` parameter to `__init__()` (default False). When True, `update_recruitment_logic()` computes and logs growth-point signals but NEVER modifies `d_t`.\n\n4. In `forward()`, when `primary_objective == "sfa"`:\n   a. **SFA loss**: `L_sfa = F.mse_loss(z_target_dyn[:, :self.d_t], z_hist_dyn[:, -1, :self.d_t].detach())`\n      - `z_hist_dyn[:, -1, :]` is the most recent history frame (z at time t)\n      - `z_target_dyn` is z at time t+1\n      - `.detach()` on z_hist_dyn[:, -1, :] ensures SFA pushes z(t+1) toward z(t) without also pulling z(t) — cleaner gradient\n   b. **VICReg on z_dyn ONLY** (not z_coord): compute var_loss and cov_loss on `z_target_dyn[:, :self.d_t]` only\n   c. **Predictor for surprise readout**: Use detached encoder outputs:\n      - `z_hist_coord.detach()`, `z_hist_dyn.detach()` as predictor inputs\n      - sim_loss computed as: `F.mse_loss(z_pred_coord[:, :dt_pred], z_target_coord[:, :dt_pred].detach()) + F.mse_loss(z_pred_dyn[:, :dt_pred], z_target_dyn[:, :dt_pred].detach())`\n      - This trains the predictor ONLY, not the encoder\n   d. **Total loss**: `sfa_weight * L_sfa + var_weight * var_loss_dyn + cov_weight * cov_loss_dyn + sim_weight * sim_loss`\n      - SFA + VICReg terms have gradients to encoder only\n      - sim_loss has gradients to predictor only (encoder outputs are detached)\n   e. Return the same dict structure but add `sfa_loss` key. Set `sim_loss_coord`, `sim_loss_dyn` from the detached computation.\n   f. Do NOT apply var_loss or cov_loss to z_coord under SFA mode.\n\n5. When `primary_objective == "jepa"`: keep existing behavior exactly as-is (backward compatible).\n\n6. Modify `update_recruitment_logic()` to respect `gdasr_log_only`: when True, compute and print growth-point detection signals but never change `d_t`. Log the would-have-recruited events.\n\n## Step 2: Create src/run_phase0_sfa.py\n\nFull experiment runner with 3 arms × 5 seeds:\n\n### Arms:\n- **Arm A (SFA+VICReg)**: `NonParametricJEPASpatial(primary_objective="sfa", pos_encoding="none", sfa_weight=1.0, gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.\n- **Arm B (JEPA+VICReg Baseline, B1)**: `NonParametricJEPASpatial(primary_objective="jepa", pos_encoding="none", gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.\n- **Arm C (SFA+VICReg+pos_encoding)**: Same as Arm A but `pos_encoding="sinusoidal"`. Tests whether explicit position channels help under SFA.\n\n### Training Protocol (shared):\n- Seeds: [42, 123, 456, 789, 999]\n- Environment: PhysicsSandbox(N=3, seed=seed) for 3000 steps\n- Passive observation only (no motor, action={"acc": 0.0, "push": False})\n- History: deque(maxlen=4) for H=3 history + 1 target\n- Replay buffer: capacity 2000, prefill 100 transitions\n- Optimizer: Adam, lr=1e-3\n- d_t = 3 frozen from start\n- GDASR in log-only mode\n- Batch size: 32\n- CCR mode: \'none\' for this phase (clean SFA vs JEPA comparison without confounds)\n\n### Evaluation Protocol (at step 3000, checkpoint at 1500):\n\n1. **Non-collapse check** (C1):\n   - `has_collapsed` criterion: `e_a_dim >= 0.1 * e_a_all` AND `std_x_mean > 5.0`\n   - Per-dimension std: `torch.std(z_dyn, dim=0)` — all active dims must have std >= 0.5\n   - Report: collapsed (bool), per-dim stds\n\n2. **Centroid decoding MSE** (C2):\n   - Use 200 test frames from a separate test environment (seed+10000)\n   - For each of 3 objects: linear probe on soft-argmax centroids vs true object positions\n   - Report mean MSE across objects, and per-object MSE\n   - Also compute for the last dimension (target_dim_idx = 2) specifically\n\n3. **Slowness metrics** (sanity check, NOT primary falsification):\n   - Over 200 test frames, compute:\n     - `slow_dyn = mean(||z_dyn(t) - z_dyn(t-1)||^2)`\n     - `slow_coord = mean(||z_coord(t) - z_coord(t-1)||^2)`\n     - `slowness_ratio = slow_dyn / slow_coord`\n   - Report for each arm\n\n4. **Semantic disentanglement probes** (primary C3):\n   - Over 200 test frames, for each frame:\n     a. Get z_coord (1, d_t) and z_dyn (1, d_t) from the encoder\n     b. Get ground-truth positions (3,) and colors (3, 3) for each object\n   - For each dimension d in [0, d_t):\n     a. Match dimension d to the nearest object by centroid position (z_coord[d] vs true positions)\n     b. This establishes a dimension-object pairing\n   - Linear regression probes (train on first 100 frames, test on last 100):\n     a. **z_dyn → color**: R² for predicting matched object\'s color (3 channels, separate R² per channel, report mean)\n     b. **z_coord → color**: Same prediction from z_coord\n     c. **z_coord → position**: R² for predicting matched object\'s position from z_coord[d]\n     d. **z_dyn → position**: Same prediction from z_dyn\n   - **Key metric**: `delta_R2_color = R2(z_dyn → color) - R2(z_coord → color)`. C3 fails if delta_R2_color < 0.10\n\n5. **VICReg health**:\n   - Per-dimension std of z_dyn across the batch\n   - Mean absolute off-diagonal correlation between active z_dyn dimensions\n\n6. **GDASR growth-point log**:\n   - Count and timing of would-have-recruited events during training\n   - Final EMA error value\n\n7. **Prediction error (surprise)**:\n   - sim_loss on test frames (predictor quality)\n   - Per-dimension prediction error breakdown\n\n### Output:\nSave results to `archive/iter_020/results/`:\n- `phase0_raw_results.json`: Full results for each arm × seed combination\n- `phase0_summary.csv`: Summary table with key metrics\n- `phase0_training_curves.csv`: Training loss curves (sampled every 100 steps)\n\n## Step 3: Update src/pre_registration.md\n\nUpdate the pre-registration with:\n- Modified hypothesis (claim 3 reframed as sanity check)\n- New C3 with semantic probe criterion (delta_R2_color >= 0.10)\n- Keep C1 and C2 as originally specified\n- All other details from the approved plan\n\n## Step 4: Execute and Save Results\n\nRun the full sweep. Save all results to the archive directory.\n\n## Important Notes:\n- The sfa_weight=1.0 is a starting point. If the first run shows SFA is too weak or too strong, adjusting it is legitimate but MUST be documented with rationale in the output.\n- Do NOT silently tune after viewing results.\n- Report both directions honestly: if MSE_SFA < MSE_JEPA, note it; if MSE_SFA > MSE_JEPA but within 10%, that\'s a successful bridge.\n- Use CPU (torch device "cpu") unless CUDA is available.\n- Set torch.set_num_threads(2) to prevent CPU thrashing.\n- Each training run (3000 steps) should take ~2-5 minutes on CPU.\n'})]
+
+[Tool Result: {"started": true, "iter_id": "20.1", "done": true, "final_result": {"status": "token_limit", "metrics": {}, "experimenter_view": "The execution limit was reached before Phase 0 (SFA on z_dyn + VICReg) could be executed or any tools could be run.\n", "notes": "Execution limit reached, terminating as requested.", "analysis": "", "state_update": ""}, "intermediate_state": "=== files in iter_20.1/ ===\n  checkpoint.yaml (9,521 B)\n  iter_001/result.yaml (1,531 B)\n  iter_001/stderr.txt (0 B)\n  iter_001/stdout.txt (167,842 B)\n  iter_001/task.md (415 B)\n  iter_002/result.yaml (1,219 B)\n  iter_002/stderr.txt (0 B)\n  iter_002/stdout.txt (31,676 B)\n  iter_002/task.md (77 B)\n  iter_003/result.yaml (1,488 B)\n  iter_003/stderr.txt (0 B)\n  iter_003/stdout.txt (100,753 B)\n  iter_003/task.md (415 B)\n  iter_004/result.yaml (471 B)\n  iter_004/stderr.txt (0 B)\n  iter_004/stdout.txt (84,424 B)\n  iter_004/task.md (222 B)\n  iter_005/result.yaml (471 B)\n  iter_005/stderr.txt (0 B)\n  iter_00...]
+
+The planner hit a token limit. Let me check what was accomplished and then continue with a more direct approach.
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py', 'start_line': 1, 'end_line': 5})]
+
+[Tool Result: --- lines 1 to 5 of 1049 ---
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections]
+
+
+[Tool Call: grep_search({'include_pattern': '*.py', 'pattern': 'primary_objective'})]
+
+[Tool Result: src\models_dual_stream.py:661: primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True):
+src\models_dual_stream.py:669: self.primary_objective = primary_objective
+src\models_dual_stream.py:710: Only relevant when primary_objective='sfa'.
+src\models_dual_stream.py:729: if self.primary_objective == "sfa":
+src\models_dual_stream.py:1039: primary_objective=self.primary_objective,
+src\run_phase0_sfa.py:411: Keys: 'name', 'primary_objective', 'sfa_weight', 'sim_weight',
+src\run_phase0_sfa.py:422: primary_obj = arm_config["primary_objective"]
+src\run_phase0_sfa.py:444: primary_objective=primary_obj,
+src\run_phase0_sfa.py:632: "primary_objective": "sfa",
+src\run_phase0_sfa.py:642: "primary_objective": "jepa",
+src\run_phase0_sfa.py:652: "primary_objective": "sfa",
+src\test_models_dual_stream.py:318: assert model.primary_objective == "jepa", f"Default primary_objective should be 'jepa', got {model.primary_objective}"
+src\test_models_dual_stream.py:331: model = NonParametricJEPASpatial(d_m...]
+
+Good, the planner made code changes. Let me check the current state of the modified files and whether any experiments completed:
+
+[Tool Call: read_file({'end_line': 50, 'path': 'src/models_dual_stream.py', 'start_line': 650})]
+
+[Tool Result: --- lines 650 to 50 of 1049 ---
+]
+
+
+[Tool Call: grep_search({'include_pattern': '*.py', 'pattern': 'run_phase0_sfa'})]
+
+[Tool Result: No matches found.]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py', 'start_line': 650, 'end_line': 800})]
+
+[Tool Result: --- lines 650 to 800 of 1049 ---
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations computed as mean of a_spatial over spatial dim, shape (B, d_max)
+        """
+        a_spatial = self.forward_spatial(x)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        z_dyn = a_spatial.mean(dim=-1)
+        return z_coord, z_dyn
+
+
+class NonParametricJEPASpatial(nn.Module):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
+                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True):
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        self.pos_encoding = pos_encoding
+        self.primary_objective = primary_objective
+        self.sfa_weight = sfa_weight
+        self.gdasr_log_only = gdasr_log_only
+        
+        self.encoder = NonPa...]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_sfa.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+      train_thalamus.py]
+
+
+[Tool Call: read_file({'end_line': 900, 'path': 'src/models_dual_stream.py', 'start_line': 800})]
+
+[Tool Result: --- lines 800 to 900 of 1049 ---
+            if lambda_spatial > 0:
+                z_target_spatial = self.encoder.forward_spatial(x_target)
+                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+                if k_chan is None:
+                    k_chan = self.d_t - 1
+                var_k = var_all[:, k_chan]
+                loss_spatial = lambda_spatial * var_k.mean()
+                loss = base_loss + loss_spatial
+            else:
+                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+                loss = base_loss
+
+            # CCR (unchanged)
+            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            if ccr_mode != 'none':
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)
+                z_all_norm = z_all_coord[:, :, :sel...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa.py'})]
+
+[Tool Result: #!/usr/bin/env python3
+"""
+Phase 0: SFA (Slowness) as Primary Representation Objective.
+
+Evaluates three arms × 5 seeds:
+  Arm A (SFA+VICReg)     : sfa_weight=1.0, var=25, cov=25, pos_encoding='none'
+  Arm B (JEPA+VICReg)    : baseline, sim=25, var=25, cov=25, pos_encoding='none'
+  Arm C (SFA+pos_enc)    : sfa_weight=1.0, var=25, cov=25, pos_encoding='sinusoidal'
+
+Pre-registration: src/pre_registration.md (Iteration 020)
+"""
+
+import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+import warnings
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from scipy import stats as scipy_stats
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import (
+    NonParametricJEPASpatial,
+    calculate_centroid_and_variance,
+ ...]
+
+Good - both files have been created. Let me check if experiments were actually run and look at the GDASR log-only modification:
+
+[Tool Call: list_dir({'path': 'archive/iter_020'})]
+
+[Tool Result:       aggregated_phase0.csv
+      audit_phase0.json
+[DIR] checkpoints
+[DIR] figs
+[DIR] iter_001
+      manager_log.md
+      planner_plan_prompt.txt
+      planner_plan_response.txt
+      planner_prompt.txt
+      planner_prompt_turn_1.txt
+      proposed_plan.yaml
+[DIR] runs
+      summary_phase0.csv]
+
+
+[Tool Call: read_file({'end_line': 1060, 'path': 'src/models_dual_stream.py', 'start_line': 980})]
+
+[Tool Result: --- lines 980 to 1060 of 1049 ---
+                "var_loss_dyn": var_loss_dyn,
+                "cov_loss": cov_loss,
+                "cov_loss_coord": cov_loss_coord,
+                "cov_loss_dyn": cov_loss_dyn,
+                "loss_spatial": loss_spatial,
+                "ccr_smooth_loss": ccr_smooth_loss,
+                "ccr_spatial_loss": ccr_spatial_loss
+            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def update_recruitment_logic(self, error_val, target_dim=None, step=None):
+        if target_dim is None:
+            target_dim = self.d_t
+
+        if self.ema_error is None:
+            self.ema_error = error_val
+        else:
+            self.ema_error = self.ema_alpha * error_val + (1.0 - self.ema_alpha) * self.ema_error
+            
+        self.steps_since_recruitment += 1
+        
+        if self.d_t == target_dim:
+            self.error_buffer.append(self.ema_error)
+
+        # Log-only mode (M3): detect growth points without changing d_t
+    ...]
+
+Results exist. Let me check the actual experiment results:
+
+[Tool Call: read_file({'path': 'archive/iter_020/audit_phase0.json'})]
+
+[Tool Result: {
+  "c1_collapse_pass": false,
+  "c1_collapsed_seeds_a": 2,
+  "c2_mse_pass": true,
+  "c2_mse_sfa_mean": 121.37465701037812,
+  "c2_mse_jepa_mean": 111.69712798452649,
+  "c2_mse_threshold": 122.86684078297915,
+  "c3_sanity_slowness_pass": false,
+  "c3_sanity_slowness_ratio_mean": 805.2062227785104,
+  "c3_semantic_disentanglement_pass": false,
+  "c3_semantic_delta_r2_color_mean": -0.08701662258544504,
+  "overall_validated": false
+}]
+
+
+[Tool Call: read_file({'path': 'archive/iter_020/summary_phase0.csv'})]
+
+[Tool Result: arm,seed,has_collapsed,per_dim_std,mean_abs_corr,mean_dyn_delta,mean_coord_delta,slowness_ratio,centroid_mse_mean,centroid_mse_per_object,centroid_r_mean,centroid_r_per_object,vicreg_per_dim_std,vicreg_mean_abs_corr,r2_dyn_color,r2_coord_color,r2_dyn_pos,r2_coord_pos,delta_r2_color,r2_per_dim,dim_to_obj,gdasr_growth_point_count,gdasr_growth_points,final_train_loss,final_train_sim_loss,final_train_sfa_loss
+Arm A (SFA+VICReg),42,1,"[0.005537154618650675, 0.005628956016153097, 0.006307235453277826]",0.9874330546732933,4.978755896445364e-06,0.006464132573455572,0.0007702125287652673,44.11182615805915,"[63.9876359670812, 31.316832479514087, 37.03101002758217]",0.7247154499343399,"[0.6395370468743746, 0.8647269732015912, 0.6698823297270542]","[0.005537154618650675, 0.005628956016153097, 0.006307235453277826]",0.9874330546732933,-0.0733297095719521,-0.10865656910506626,0.08524085404382815,0.034832903837118866,0.03532685953311415,"[{'dyn_color': -0.04020727405780178, 'coord_color': -0.13804747...]
+
+The experiment was completed but the results are concerning. Let me analyze:
+
+- **C1 FAIL**: 2/5 SFA seeds collapsed (std < 0.5)
+- **C2 PASS (marginally)**: SFA MSE 121.37 vs JEPA 111.70 (threshold 122.87)
+- **C3 Sanity FAIL**: Slowness ratio 805.2 (way above 0.6)
+- **C3 Semantic FAIL**: delta_R2_color = -0.087 (need >= 0.10)
+
+Critically, the JEPA baseline itself has 4/5 seeds with per-dim std < 0.5 — the simplified regime (no CCR, 3000 steps, d_t frozen) is too weak for BOTH objectives. Also, the SFA implementation doesn't detach z_prev_dyn (gradient flows through both target and history, effectively doubling SFA strength). I need a recovery experiment.
+
+Let me run a focused recovery with adjusted parameters:
+
+[Tool Call: run_agent({'complexity': 'high', 'estimated_runtime_sec': 2400, 'iter_id': '20.2', 'task': '\n# Phase 0 Recovery: Fix SFA Implementation and Re-run with Adjusted Parameters\n\n## Context\nThe initial Phase 0 experiment (run_phase0_sfa.py) produced results showing:\n- 2/5 SFA seeds collapsed (per-dim std < 0.5)  \n- JEPA baseline also unhealthy (4/5 seeds with per-dim std < 0.5)\n- Slowness ratio extremely high (805.2) in SFA arm — z_dyn collapsed to constant, making ratio meaningless\n- Semantic probes showed negative R² (worse than mean prediction)\n\nRoot cause analysis identified TWO issues:\n1. **SFA implementation bug**: z_prev_dyn is NOT detached in the SFA loss, causing gradient to flow through BOTH z_target and z_prev, effectively doubling the SFA gradient signal. Fix: add `.detach()` on z_prev_dyn_active.\n2. **Training regime too simplified**: No CCR, only 3000 steps, no recruitment — this is insufficient even for the JEPA baseline. The prior successful baselines used 5000 steps + CCR covariance mode.\n\n## Task: Fix, Adjust, and Re-run\n\n### Step 1: Fix the SFA implementation in src/models_dual_stream.py\n\nIn the SFA branch of `NonParametricJEPASpatial.forward()`, find this line:\n```python\nsfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active)\n```\n\nChange it to:\n```python\nsfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active.detach())\n```\n\nThis ensures the SFA gradient only flows through z_target (pushing it toward z_prev), not also through z_prev (which would double the effective SFA gradient strength).\n\n### Step 2: Create src/run_phase0_sfa_recovery.py\n\nA new experiment runner with these adjustments:\n\n**Recovery arms (4 arms × 5 seeds):**\n- **Arm A1 (SFA w=0.1)**: sfa_weight=0.1, 5000 steps, CCR covariance mode (smooth=10, spatial=10), pos_encoding="none", d_t=3, gdasr_log_only=True\n- **Arm A2 (SFA w=1.0 fixed)**: sfa_weight=1.0, 5000 steps, CCR covariance mode, pos_encoding="none", d_t=3, gdasr_log_only=True — this tests whether the detach fix alone resolves collapse\n- **Arm B (JEPA+CCR baseline)**: primary_objective="jepa", 5000 steps, CCR covariance mode, pos_encoding="none", d_t=3, gdasr_log_only=True — same extended regime for fair comparison\n- **Arm C (SFA w=0.1+pos)**: sfa_weight=0.1, 5000 steps, CCR covariance mode, pos_encoding="sinusoidal", d_t=3\n\n**Training protocol:**\n- Seeds: [42, 123, 456, 789, 999]\n- Environment: PhysicsSandbox(N=3, seed=seed) for 5000 steps (increased from 3000)\n- Passive observation only (no motor)\n- History: deque(maxlen=4)\n- Replay buffer: capacity 2000, prefill 100\n- Optimizer: Adam, lr=1e-3\n- d_t=3 frozen, GDASR log-only\n- CCR mode: \'covariance\', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0\n- sim_weight=25.0, var_weight=25.0, cov_weight=25.0 (same as before)\n\n**Evaluation protocol (same as original, at step 5000 and checkpoint at 2500):**\n1. Non-collapse check: has_collapsed + per-dim std >= 0.5\n2. Centroid decoding MSE (200 test frames, 3 objects)\n3. Slowness metrics (sanity check)\n4. Semantic disentanglement probes (linear probes for color R² from z_dyn vs z_coord)\n5. VICReg health (per-dim std, mean abs correlation)\n6. GDASR growth-point log\n7. Prediction error\n\n**Key comparison:** \n- C1: SFA arm A1 collapse rate vs original A collapse rate (2/5)\n- C2: MSE_A1 vs MSE_B (need MSE_A1 <= 1.10 * MSE_B)\n- C3 semantic: delta_R2_color for A1 >= 0.10\n\n### Step 3: Run the experiment\n\nExecute `python src/run_phase0_sfa_recovery.py` and save all results to `archive/iter_020/results/`.\n\n### Step 4: Generate comparison report\n\nAfter all runs complete, output a clear comparison between the original Phase 0 results and the recovery results, including:\n- Per-arm mean ± std for: centroid_mse_mean, slowness_ratio, delta_R2_color, per_dim_std\n- Falsification audit for each SFA arm against C1, C2, C3\n- Whether the detach fix and/or sfa_weight reduction resolved the collapse\n\n### Important:\n- Use CPU (torch device "cpu") unless CUDA is available\n- Set torch.set_num_threads(2) to prevent CPU thrashing\n- The evaluation functions (compute_centroid_mse, compute_semantic_probes, etc.) from run_phase0_sfa.py can be reused\n- Document any parameter adjustments and their rationale in the output\n'})]
+
+[Tool Result: {"started": true, "iter_id": "20.2", "done": false, "final_result": null, "intermediate_state": "=== stdout (last 2000 chars) ===\njustments:\")\\n    print(\"  1. Fixed .detach() bug on z_prev in SFA loss: prevents doubled gradient signal\")\\n    print(\"  2. Increased steps 3000 -> 5000: more training time for convergence\")\\n    print(\"  3. Added CCR covariance mode: prevents coordinate collapse / inter-dim correlation\")\\n    print(\"  4. Reduced sfa_weight 1.0 -> 0.1 (A1, C): weaker slowness regularization\")\\n    print(\"  5. Arm A2 keeps sfa_weight=1.0: isolate effect of detach fix alone\")\\n    print(\"-\" * 70)\\n\\n    # Save audit report\\n    audit_data = {\\n        \"c1_collapse_pass\": bool(c1_pass),\\n        \"c1_collapsed_seeds_a1\": int(audit_a1[\"collapsed\"]) if audit_a1 else -1,\\n        \"c2_mse_pass\": bool(c2_pass),\\n        \"c2_mse_a1_mean\": float(audit_a1[\"mse_mean\"]) if audit_a1 else -1.0,\\n        \"c2_mse_b_mean\": float(audit_b[\"mse_mean\"])...]
+
+The agent is still running the experiment. Let me poll it:
+
+[Tool Call: poll_agent({'iter_id': '20.2'})]
+
+[Tool Result: {"done": true, "final_result": {"status": "ok", "artifacts": ["src/evolve_glider.py", "archive/iter_215/results/champion.json"], "metrics": {"max_fitness": 0.942, "generations": 50, "stable_steps": 1000}, "experimenter_view": "The evolutionary search successfully discovered a sub-light speed glider.\nThe particle maintains a stable structure of 6 cells and moves with a\nvelocity of approximately 0.25c. Bit conservation is perfect over 1000 steps.\n", "notes": "Sub-light glider found and verified."}, "intermediate_state": "=== stdout (last 2000 chars) ===\ncreates a cross-trajectory slowness signal that color must represent.\\n\\n2. **Add explicit color bottleneck**: Introduce a small projection layer in z_dyn path that is trained with a cross-entropy or contrastive objective on color labels, either supervised or via a temporal contrast (same object, different colors across resets).\\n\\n3. **Reduce VICReg weight on z_dyn stream**: When primary_objective=\\'sfa\\', consider lowering var...]
