@@ -1,0 +1,4 @@
+1. Define `collect_multitraj_eval_data(model, num_samples=200, base_seed=30000, device="cpu")` to collect independent transitions from randomized environments across different seeds. This ensures the target colors have non-zero variance.
+2. In `compute_semantic_probes()`, use `collect_multitraj_eval_data` to get the target positions and colors.
+3. Add checkpoint saving: at the end of training, save the model's state dict to `archive/iter_020/checkpoints/{run_id}.pt`.
+4. Run python src/run_phase0_sfa.py --dry-run to verify everything is 100% correct, then run the full sweep python src/run_phase0_sfa.py to train all 15 runs. Ensure that it saves all output files in the correct places.
