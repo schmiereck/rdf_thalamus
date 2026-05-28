@@ -207,6 +207,156 @@ def compute_vicreg_health(z_dyn, d_t):
     }
 
 
+def compute_semantic_probes(model, test_env, test_history, num_samples=200,
+                             train_ratio=0.5, device="cpu"):
+    """
+    Semantic disentanglement probes.
+
+    Collects z_dyn, z_coord along with ground-truth positions and colors over
+    num_samples frames.  Matches each latent dimension to the nearest object
+    (by centroid position).  Fits linear probes on the first half and evaluates
+    R² on the second half for two tasks:
+
+      * color  regression  (3-D RGB target → 3 scalar R² values, then mean)
+      * position regression  (1-D scalar target → 1 R² value)
+
+    Probes are fit separately for z_dyn and z_coord, giving four R² scores:
+      R2_dyn_color,  R2_coord_color,  R2_dyn_pos,  R2_coord_pos
+
+    The key disentanglement metric is:
+      delta_R2_color = R2_dyn_color - R2_coord_color
+    If SFA separates identity from position, z_dyn should predict color well
+    and z_coord should predict color poorly, yielding a positive delta.
+    """
+    model.eval()
+
+    # Collect data
+    obs = test_env.reset()
+    test_history.clear()
+    test_history.append(obs)
+
+    # Warm up
+    for _ in range(4):
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+
+    z_dyn_list = []
+    z_coord_list = []
+    pos_list = []  # positions for all N objects
+    colors_list = []  # colors for all N objects
+
+    with torch.no_grad():
+        for _ in range(num_samples):
+            obs, info = test_env.step({"acc": 0.0, "push": False})
+            test_history.append(obs)
+            if len(test_history) == 4:
+                x_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
+                z_c, z_d = model.encoder(x_t)
+                z_dyn_list.append(z_d[0].cpu().numpy())       # (d_max,)
+                z_coord_list.append(z_c[0].cpu().numpy())      # (d_max,)
+                pos_list.append(info["positions"])              # (N,)
+                colors_list.append(info["colors"])              # (N, 3)
+
+    z_dyn_arr = np.array(z_dyn_list)   # (num_samples, d_max)
+    z_coord_arr = np.array(z_coord_list)
+    pos_arr = np.array(pos_list)       # (num_samples, N)
+    colors_arr = np.array(colors_list) # (num_samples, N, 3)
+
+    N = pos_arr.shape[1]  # number of objects
+    d_t = model.d_t
+
+    # Match each latent dimension d in [0, d_t) to the nearest object
+    # by average distance between centroid z_coord and true position.
+    dim_to_obj = {}  # dim_idx -> obj_idx
+    used_objs = set()
+    for d in range(d_t):
+        best_obj = None
+        best_dist = np.inf
+        for o in range(N):
+            if o in used_objs:
+                continue
+            # average absolute distance between centroid and position
+            dist = np.mean(np.abs(z_coord_arr[:, d] - pos_arr[:, o]))
+            if dist < best_dist:
+                best_dist = dist
+                best_obj = o
+        if best_obj is not None:
+            dim_to_obj[d] = best_obj
+            used_objs.add(best_obj)
+
+    # Split into train and test
+    n_train = int(num_samples * train_ratio)
+
+    def fit_probe_r2(z_feature, y_target):
+        """Fit linear probe: y = w*z + b. Return R² on test portion."""
+        z_train = z_feature[:n_train]
+        y_train = y_target[:n_train]
+        z_test = z_feature[n_train:]
+        y_test = y_target[n_train:]
+
+        if z_train.size < 5 or y_train.size < 5:
+            return 0.0
+
+        w, b = fit_linear_probe(z_train, y_train)
+        y_pred = z_test * w + b
+
+        ss_res = np.sum((y_test - y_pred) ** 2)
+        ss_tot = np.sum((y_test - np.mean(y_train)) ** 2)
+        if ss_tot < 1e-12:
+            return 0.0
+        return float(1.0 - ss_res / ss_tot)
+
+    probes = {}
+    r2_per_dim = []
+
+    for d in range(d_t):
+        if d not in dim_to_obj:
+            r2_per_dim.append({"dyn_color": 0.0, "coord_color": 0.0,
+                               "dyn_pos": 0.0, "coord_pos": 0.0})
+            continue
+
+        obj = dim_to_obj[d]
+        z_d = z_dyn_arr[:, d]
+        z_c = z_coord_arr[:, d]
+
+        # Position probe
+        r2_dyn_pos = fit_probe_r2(z_d, pos_arr[:, obj])
+        r2_coord_pos = fit_probe_r2(z_c, pos_arr[:, obj])
+
+        # Color probe (3 channels, average R²)
+        r2_dyn_ch = []
+        r2_coord_ch = []
+        for ch in range(3):
+            r2_dyn_ch.append(fit_probe_r2(z_d, colors_arr[:, obj, ch]))
+            r2_coord_ch.append(fit_probe_r2(z_c, colors_arr[:, obj, ch]))
+        r2_dyn_color = float(np.mean(r2_dyn_ch))
+        r2_coord_color = float(np.mean(r2_coord_ch))
+
+        r2_per_dim.append({
+            "dyn_color": r2_dyn_color,
+            "coord_color": r2_coord_color,
+            "dyn_pos": r2_dyn_pos,
+            "coord_pos": r2_coord_pos,
+        })
+
+    # Averages across matched dimensions
+    r2_dyn_color_all = np.mean([p["dyn_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_color_all = np.mean([p["coord_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_dyn_pos_all = np.mean([p["dyn_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_pos_all = np.mean([p["coord_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    delta_r2_color = float(r2_dyn_color_all - r2_coord_color_all)
+
+    return {
+        "dim_to_obj": dim_to_obj,
+        "r2_per_dim": r2_per_dim,
+        "r2_dyn_color": float(r2_dyn_color_all),
+        "r2_coord_color": float(r2_coord_color_all),
+        "r2_dyn_pos": float(r2_dyn_pos_all),
+        "r2_coord_pos": float(r2_coord_pos_all),
+        "delta_r2_color": delta_r2_color,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Single-run training + evaluation
 # ---------------------------------------------------------------------------
@@ -381,6 +531,10 @@ def run_single(arm_config, seed, device, dry_run=False):
     centroid_mse = compute_centroid_mse(model, test_env, test_history,
                                          num_samples=eval_steps, device=device)
 
+    # --- Semantic disentanglement probes ---
+    semantic = compute_semantic_probes(model, test_env, test_history,
+                                        num_samples=eval_steps, device=device)
+
     # --- Summary results ---
     results = {
         "arm": name,
@@ -405,6 +559,15 @@ def run_single(arm_config, seed, device, dry_run=False):
         # VICReg health
         "vicreg_per_dim_std": per_dim_std.tolist(),
         "vicreg_mean_abs_corr": vh["mean_abs_corr"],
+
+        # Semantic disentanglement probes
+        "r2_dyn_color": semantic["r2_dyn_color"],
+        "r2_coord_color": semantic["r2_coord_color"],
+        "r2_dyn_pos": semantic["r2_dyn_pos"],
+        "r2_coord_pos": semantic["r2_coord_pos"],
+        "delta_r2_color": semantic["delta_r2_color"],
+        "r2_per_dim": semantic["r2_per_dim"],
+        "dim_to_obj": semantic["dim_to_obj"],
 
         # GDASR
         "gdasr_growth_point_count": len(gdasr_growth_points),
@@ -513,8 +676,11 @@ def main():
             csv_path = os.path.join(runs_dir, f"{run_id}.csv")
             json_path = os.path.join(runs_dir, f"{run_id}.json")
 
-            # Flatten per-object lists for CSV
-            flat = {k: v for k, v in results.items() if k != "gdasr_growth_points"}
+            # Flatten per-object / per-dimension lists for CSV
+            flat = {k: v for k, v in results.items() if k not in (
+                "gdasr_growth_points", "centroid_mse_per_object",
+                "centroid_r_per_object", "r2_per_dim", "dim_to_obj",
+            )}
             flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))
             flat["centroid_mse_obj0"] = results.get("centroid_mse_per_object", [])[0] if len(results.get("centroid_mse_per_object", [])) > 0 else None
             flat["centroid_mse_obj1"] = results.get("centroid_mse_per_object", [])[1] if len(results.get("centroid_mse_per_object", [])) > 1 else None
@@ -523,6 +689,17 @@ def main():
             flat["centroid_r_obj1"] = results.get("centroid_r_per_object", [])[1] if len(results.get("centroid_r_per_object", [])) > 1 else None
             flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None
             flat["per_dim_std"] = str(results.get("per_dim_std", []))
+
+            # Semantic probe per-dimension details
+            r2pd = results.get("r2_per_dim", [])
+            dim_map = results.get("dim_to_obj", {})
+            for d_idx, pd in enumerate(r2pd):
+                flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)
+                flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)
+                flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)
+                flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)
+                flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
+            flat["dim_to_obj"] = json.dumps(dim_map, default=str)
 
             df_row = pd.DataFrame([flat])
             df_row.to_csv(csv_path, index=False)
@@ -544,6 +721,8 @@ def main():
         "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",
         "final_train_loss", "final_train_sim_loss", "final_train_sfa_loss",
         "gdasr_growth_point_count",
+        "r2_dyn_color", "r2_coord_color", "r2_dyn_pos", "r2_coord_pos",
+        "delta_r2_color",
     ]:
         if col in df_all.columns:
             df_all[col] = pd.to_numeric(df_all[col], errors="coerce")

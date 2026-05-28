@@ -1,0 +1,3194 @@
+
+[Tool Call: list_dir({'path': '.'})]
+[Tool Result: [DIR] -p
+[DIR] .antigravitycli
+[DIR] .git
+      .gitignore
+[DIR] .pytest_cache
+[DIR] .venv
+[DIR] __pycache__
+      apply_fix.py
+[DIR] archive
+[DIR] cache
+      config.toml
+      current_state.md
+      experiment.log
+      experiment_log.md
+      find_files.py
+      fix_theta.py
+      goal.md
+      hello.py
+      manager_log.md
+      patch_thalamus.py
+      patch_thalamus_sync.py
+[DIR] pictures
+      README.md
+      RESEARCH-RESULT-002.md
+      RESEARCH-RESULT-003.md
+      RESEARCH-RESULT-004.md
+      RESEARCH-RESULT-005.md
+      RESEARCH-RESULT-006.md
+      RESEARCH-RESULT-007.md
+      RESEARCH-RESULT-008.md
+      RESEARCH-RESULT-009.md
+      RESEARCH-RESULT-010.md
+      RESEARCH-RESULT-011.md
+      RESEARCH-RESULT-012.md
+      RESEARCH-RESULT-013.md
+      RESEARCH-RESULT-014.md
+      RESEARCH-RESULT-015.md
+      RESEARCH-RESULT-016.md
+      RESEARCH-RESULT-017.md
+      RESEARCH-RESULT-018.md
+      research_journal.md
+[DIR] src
+      test_models_spatial.py]
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: #!/usr/bin/env python3
+"""
+Phase 0: SFA (Slowness) as Primary Representation Objective.
+
+Evaluates three arms × 5 seeds:
+  Arm A (SFA+VICReg)     : sfa_weight=1.0, var=25, cov=25, pos_encoding='none'
+  Arm B (JEPA+VICReg)    : baseline, sim=25, var=25, cov=25, pos_encoding='none'
+  Arm C (SFA+pos_enc)    : sfa_weight=1.0, var=25, cov=25, pos_encoding='sinusoidal'
+
+Pre-registration: src/pre_registration.md (Iteration 020)
+"""
+
+import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+import warnings
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from scipy import stats as scipy_stats
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import (
+    NonParametricJEPASpatial,
+    calculate_centroid_and_variance,
+    add_positional_encoding,
+)
+
+# ---------------------------------------------------------------------------
+# Replay buffer (same as existing phases)
+# ---------------------------------------------------------------------------
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        x_hist_b, x_target_b = zip(*batch)
+        return np.stack(x_hist_b, axis=0), np.stack(x_target_b, axis=0)
+
+    def clear(self):
+        self.buffer = []
+        self.position = 0
+
+    def __len__(self):
+        return len(self.buffer)
+
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+# ---------------------------------------------------------------------------
+# Helpers: slowness, collapse check, linear probe, centroid MSE, VICReg health
+# ---------------------------------------------------------------------------
+def compute_slowness_metrics(z_dyn_log, z_coord_log):
+    """
+    Both: list of (T, d_t) arrays over N test frames.
+    Returns dict with mean temporal deltas and ratio.
+    """
+    dyn_deltas = []
+    coord_deltas = []
+    for z_dyn, z_coord in zip(z_dyn_log, z_coord_log):
+        # Temporal differences
+        dyn_diff = np.diff(z_dyn, axis=0)  # (T-1, d_t)
+        coord_diff = np.diff(z_coord, axis=0)
+        if len(dyn_diff) > 0:
+            dyn_deltas.append(np.mean(np.sum(dyn_diff ** 2, axis=1)))
+            coord_deltas.append(np.mean(np.sum(coord_diff ** 2, axis=1)))
+    mean_dyn_delta = float(np.mean(dyn_deltas)) if dyn_deltas else 0.0
+    mean_coord_delta = float(np.mean(coord_deltas)) if coord_deltas else 0.0
+    ratio = mean_dyn_delta / (mean_coord_delta + 1e-12)
+    return {
+        "mean_dyn_delta": mean_dyn_delta,
+        "mean_coord_delta": mean_coord_delta,
+        "ratio": ratio,
+    }
+
+
+def check_collapse(z_dyn, d_t, std_threshold=0.5):
+    """
+    Returns has_collapsed (bool) and per-dimension std array.
+    Uses z_dyn of shape (N, d_max) or (N, d_t).
+    """
+    z_active = z_dyn[:, :d_t]
+    per_dim_std = np.std(z_active, axis=0)  # (d_t,)
+    has_collapsed = np.any(per_dim_std < std_threshold)
+    return has_collapsed, per_dim_std
+
+
+def fit_linear_probe(z, y):
+    """Simple linear probe via least squares: y_pred = w * z + b."""
+    Z = np.stack([z, np.ones_like(z)], axis=1)
+    theta = np.linalg.pinv(Z.T @ Z) @ Z.T @ y
+    return theta[0], theta[1]
+
+
+def compute_centroid_mse(model, test_env, test_history, num_samples=200, device="cpu"):
+    """
+    Evaluates centroid-decoding MSE: linear probe on soft-argmax centroids
+    vs. true object positions for all 3 objects.
+    """
+    model.eval()
+    centroids_list = []
+    pos_list = []
+
+    # Collect centroids and positions from passive rollout
+    obs = test_env.reset()
+    test_history.clear()
+    test_history.append(obs)
+
+    for _ in range(4):  # warm up history for H=3
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+
+    collected = 0
+    while collected < num_samples:
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+        if len(test_history) == 4:
+            x_target_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad():
+                z_coord, _ = model.encoder(x_target_t)
+            centroids_list.append(z_coord[:, :model.d_t].cpu().numpy())  # (1, d_t)
+            # True positions (only first d_t objects, pad if fewer)
+            true_pos = np.array(info["positions"][:model.d_t])
+            if len(true_pos) < model.d_t:
+                true_pos = np.pad(true_pos, (0, model.d_t - len(true_pos)), constant_values=np.nan)
+            pos_list.append(true_pos)
+            collected += 1
+
+    centroids_arr = np.concatenate(centroids_list, axis=0)  # (N, d_t)
+    pos_arr = np.array(pos_list)  # (N, d_t)
+
+    mse_per_object = []
+    r_per_object = []
+    for obj_idx in range(model.d_t):
+        mask = ~np.isnan(pos_arr[:, obj_idx])
+        if mask.sum() < 10:
+            mse_per_object.append(float("nan"))
+            r_per_object.append(0.0)
+            continue
+        z_obj = centroids_arr[mask, obj_idx]
+        y_obj = pos_arr[mask, obj_idx]
+        w, b = fit_linear_probe(z_obj, y_obj)
+        y_pred = z_obj * w + b
+        mse = float(np.mean((y_obj - y_pred) ** 2))
+        r = float(np.corrcoef(z_obj, y_obj)[0, 1]) if len(z_obj) > 2 else 0.0
+        if np.isnan(r):
+            r = 0.0
+        mse_per_object.append(mse)
+        r_per_object.append(abs(r))
+
+    return {
+        "mse_per_object": mse_per_object,
+        "mse_mean": float(np.nanmean(mse_per_object)),
+        "r_per_object": r_per_object,
+        "r_mean": float(np.nanmean(r_per_object)),
+    }
+
+
+def compute_vicreg_health(z_dyn, d_t):
+    """
+    Returns per-dimension std and mean absolute correlation between active dimensions.
+    """
+    z_active = z_dyn[:, :d_t]
+    per_dim_std = np.std(z_active, axis=0)
+    if d_t > 1:
+        corr = np.corrcoef(z_active.T)
+        # upper triangle off-diagonal
+        triu = np.triu_indices(d_t, k=1)
+        mean_abs_corr = float(np.mean(np.abs(corr[triu])))
+    else:
+        mean_abs_corr = 0.0
+    return {
+        "per_dim_std": per_dim_std.tolist(),
+        "mean_abs_corr": mean_abs_corr,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Single-run training + evaluation
+# ---------------------------------------------------------------------------
+def run_single(arm_config, seed, device, dry_run=False):
+    """
+    Run one arm × seed experiment.
+
+    Parameters
+    ----------
+    arm_config : dict
+        Keys: 'name', 'primary_objective', 'sfa_weight', 'sim_weight',
+              'var_weight', 'cov_weight', 'pos_encoding', 'd_t'
+    seed : int
+    device : torch.device
+    dry_run : bool  — if True, run only 5 training steps per seed for quick verification.
+
+    Returns
+    -------
+    results : dict  (metrics for this run)
+    """
+    name = arm_config["name"]
+    primary_obj = arm_config["primary_objective"]
+    sfa_weight = arm_config.get("sfa_weight", 1.0)
+    sim_weight = arm_config.get("sim_weight", 25.0)
+    var_weight = arm_config.get("var_weight", 25.0)
+    cov_weight = arm_config.get("cov_weight", 25.0)
+    pos_encoding = arm_config.get("pos_encoding", "none")
+    d_t = arm_config.get("d_t", 3)
+
+    set_seed(seed)
+
+    # Determine total training steps (5 for dry run, 3000 otherwise)
+    total_steps = 5 if dry_run else 3000
+    eval_steps = min(200, total_steps // 2) if dry_run else 200
+
+    # Create model
+    model = NonParametricJEPASpatial(
+        d_max=8,
+        h=3,
+        k=4,
+        cooldown=300,
+        stabilization_period=100,
+        pos_encoding=pos_encoding,
+        primary_objective=primary_obj,
+        sfa_weight=sfa_weight,
+        gdasr_log_only=True,  # log-only mode for Phase 0
+    )
+    model.d_t = d_t  # freeze at 3
+    model = model.to(device)
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    # Environment
+    env = PhysicsSandbox(N=3, seed=seed)
+    obs = env.reset()
+    history = collections.deque(maxlen=4)
+    history.append(obs)
+
+    replay_buffer = ReplayBuffer(capacity=2000)
+
+    # Prefill buffer
+    def _prefill(n):
+        while len(replay_buffer) < n:
+            obs, info = env.step({"acc": 0.0, "push": False})
+            history.append(obs)
+            if len(history) == 4:
+                replay_buffer.push(
+                    np.stack(list(history)[:3], axis=0),
+                    history[3],
+                )
+
+    _prefill(min(100, total_steps))
+
+    # Training loop
+    logs = []
+    gdasr_growth_points = []
+
+    for step in range(1, total_steps + 1):
+        obs, info = env.step({"acc": 0.0, "push": False})
+        history.append(obs)
+        if len(history) == 4:
+            replay_buffer.push(
+                np.stack(list(history)[:3], axis=0),
+                history[3],
+            )
+
+        # Sample batch
+        x_hist_b, x_target_b = replay_buffer.sample(min(32, len(replay_buffer)))
+        x_hist_t = torch.from_numpy(x_hist_b).float().to(device)
+        x_target_t = torch.from_numpy(x_target_b).float().to(device)
+
+        model.train()
+        optimizer.zero_grad()
+
+        loss_dict, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn) = model(
+            x_hist_t,
+            x_target_t,
+            sim_weight=sim_weight,
+            var_weight=var_weight,
+            cov_weight=cov_weight,
+            d_t_predict=d_t,  # predictor always sees d_t dimensions
+        )
+        loss_dict["loss"].backward()
+        optimizer.step()
+
+        # GDASR log-only update
+        sim_loss_val = loss_dict["sim_loss"].item()
+        model.update_recruitment_logic(sim_loss_val, target_dim=d_t, step=step)
+
+        # Log
+        log_entry = {
+            "step": step,
+            "loss": loss_dict["loss"].item(),
+            "sim_loss": sim_loss_val,
+            "sfa_loss": loss_dict.get("sfa_loss", torch.tensor(0.0)).item(),
+            "var_loss": loss_dict["var_loss"].item(),
+            "cov_loss": loss_dict["cov_loss"].item(),
+        }
+        logs.append(log_entry)
+
+        if step % 1000 == 0 or step == total_steps:
+            print(f"  [{name}] seed={seed} step={step:5d}/{total_steps}  "
+                  f"loss={log_entry['loss']:.4f}  sim={log_entry['sim_loss']:.4f}  "
+                  f"sfa={log_entry['sfa_loss']:.4f}")
+
+    # Collect GDASR growth points
+    gdasr_growth_points = list(model.gdasr_growth_points)
+
+    # ---------------------------------------------------------------
+    # Evaluation
+    # ---------------------------------------------------------------
+    model.eval()
+
+    # --- Collapse check ---
+    eval_env = PhysicsSandbox(N=3, seed=seed + 10000)
+    eval_history = collections.deque(maxlen=4)
+    obs = eval_env.reset()
+    eval_history.append(obs)
+    for _ in range(4):
+        obs, _ = eval_env.step({"acc": 0.0, "push": False})
+        eval_history.append(obs)
+
+    z_dyn_all = []
+    z_coord_all = []
+    for _ in range(eval_steps):
+        obs, _ = eval_env.step({"acc": 0.0, "push": False})
+        eval_history.append(obs)
+        if len(eval_history) == 4:
+            x_t = torch.from_numpy(eval_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad():
+                z_coord, z_dyn = model.encoder(x_t)
+            z_dyn_all.append(z_dyn[:, :d_t].cpu().numpy())
+            z_coord_all.append(z_coord[:, :d_t].cpu().numpy())
+
+    z_dyn_arr = np.concatenate(z_dyn_all, axis=0)   # (eval_steps, d_t)
+    z_coord_arr = np.concatenate(z_coord_all, axis=0)
+
+    has_collapsed, per_dim_std = check_collapse(z_dyn_arr, d_t)
+    vh = compute_vicreg_health(z_dyn_arr, d_t)
+
+    # --- Slowness metrics ---
+    # Use the collected z_dyn and z_coord arrays for temporal deltas
+    slowness = compute_slowness_metrics(
+        [z_dyn_arr], [z_coord_arr]
+    )
+
+    # --- Centroid decoding MSE on a separate fresh test set ---
+    test_env = PhysicsSandbox(N=3, seed=seed + 20000)
+    test_history = collections.deque(maxlen=4)
+    obs = test_env.reset()
+    test_history.append(obs)
+    centroid_mse = compute_centroid_mse(model, test_env, test_history,
+                                         num_samples=eval_steps, device=device)
+
+    # --- Summary results ---
+    results = {
+        "arm": name,
+        "seed": seed,
+
+        # Collapse
+        "has_collapsed": int(has_collapsed),
+        "per_dim_std": per_dim_std.tolist(),
+        "mean_abs_corr": vh["mean_abs_corr"],
+
+        # Slowness
+        "mean_dyn_delta": slowness["mean_dyn_delta"],
+        "mean_coord_delta": slowness["mean_coord_delta"],
+        "slowness_ratio": slowness["ratio"],
+
+        # Centroid MSE
+        "centroid_mse_mean": centroid_mse["mse_mean"],
+        "centroid_mse_per_object": centroid_mse["mse_per_object"],
+        "centroid_r_mean": centroid_mse["r_mean"],
+        "centroid_r_per_object": centroid_mse["r_per_object"],
+
+        # VICReg health
+        "vicreg_per_dim_std": per_dim_std.tolist(),
+        "vicreg_mean_abs_corr": vh["mean_abs_corr"],
+
+        # GDASR
+        "gdasr_growth_point_count": len(gdasr_growth_points),
+        "gdasr_growth_points": gdasr_growth_points,
+
+        # Final training loss
+        "final_train_loss": logs[-1]["loss"],
+        "final_train_sim_loss": logs[-1]["sim_loss"],
+        "final_train_sfa_loss": logs[-1]["sfa_loss"],
+    }
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Arms configuration
+# ---------------------------------------------------------------------------
+ARMS = [
+    {
+        "name": "Arm A (SFA+VICReg)",
+        "primary_objective": "sfa",
+        "sfa_weight": 1.0,
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "none",
+        "d_t": 3,
+    },
+    {
+        "name": "Arm B (JEPA+VICReg)",
+        "primary_objective": "jepa",
+        "sfa_weight": 1.0,  # unused in jepa mode
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "none",
+        "d_t": 3,
+    },
+    {
+        "name": "Arm C (SFA+pos_enc)",
+        "primary_objective": "sfa",
+        "sfa_weight": 1.0,
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "sinusoidal",
+        "d_t": 3,
+    },
+]
+
+SEEDS = [42, 123, 456, 789, 999]
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="Phase 0 SFA Experiment Runner"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run 5 training steps per seed for quick correctness check.",
+    )
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Override seed list (default: [42, 123, 456, 789, 999]).",
+    )
+    args = parser.parse_args()
+
+    dry_run = args.dry_run
+    seeds = args.seeds if args.seeds is not None else SEEDS
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    print(f"Dry-run mode: {dry_run}")
+    print(f"Seeds: {seeds}")
+    print(f"Arms: {[a['name'] for a in ARMS]}")
+    print()
+
+    suffix = "_dryrun" if dry_run else ""
+    results_dir = "archive/iter_020"
+    runs_dir = os.path.join(results_dir, "runs")
+    figs_dir = os.path.join(results_dir, "figs")
+    os.makedirs(runs_dir, exist_ok=True)
+    os.makedirs(figs_dir, exist_ok=True)
+
+    all_results = []
+
+    for arm in ARMS:
+        name = arm["name"]
+        print(f"{'='*70}")
+        print(f"ARM: {name}")
+        print(f"{'='*70}")
+        for seed in seeds:
+            print(f"\n--- {name}, seed={seed} ---")
+            results = run_single(arm, seed, device, dry_run=dry_run)
+            all_results.append(results)
+
+            # Save per-run CSV with detailed logs
+            run_id = f"{name.lower().replace(' ', '_').replace('(', '').replace(')', '')}_seed{seed}{suffix}"
+            csv_path = os.path.join(runs_dir, f"{run_id}.csv")
+            json_path = os.path.join(runs_dir, f"{run_id}.json")
+
+            # Flatten per-object lists for CSV
+            flat = {k: v for k, v in results.items() if k != "gdasr_growth_points"}
+            flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))
+            flat["centroid_mse_obj0"] = results.get("centroid_mse_per_object", [])[0] if len(results.get("centroid_mse_per_object", [])) > 0 else None
+            flat["centroid_mse_obj1"] = results.get("centroid_mse_per_object", [])[1] if len(results.get("centroid_mse_per_object", [])) > 1 else None
+            flat["centroid_mse_obj2"] = results.get("centroid_mse_per_object", [])[2] if len(results.get("centroid_mse_per_object", [])) > 2 else None
+            flat["centroid_r_obj0"] = results.get("centroid_r_per_object", [])[0] if len(results.get("centroid_r_per_object", [])) > 0 else None
+            flat["centroid_r_obj1"] = results.get("centroid_r_per_object", [])[1] if len(results.get("centroid_r_per_object", [])) > 1 else None
+            flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None
+            flat["per_dim_std"] = str(results.get("per_dim_std", []))
+
+            df_row = pd.DataFrame([flat])
+            df_row.to_csv(csv_path, index=False)
+
+            # Save full JSON (includes growth points)
+            with open(json_path, "w") as f:
+                json.dump(results, f, indent=2, default=str)
+
+            print(f"  -> Saved {csv_path}")
+
+    # ------------------------------------------------------------------ #
+    # Compile aggregate results
+    # ------------------------------------------------------------------ #
+    df_all = pd.DataFrame(all_results)
+
+    # Ensure numeric columns
+    for col in [
+        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",
+        "final_train_loss", "final_train_sim_loss", "final_train_sfa_loss",
+        "gdasr_growth_point_count",
+    ]:
+        if col in df_all.columns:
+            df_all[col] = pd.to_numeric(df_all[col], errors="coerce")
+
+    summary_path = os.path.join(results_dir, f"summary_phase0{suffix}.csv")
+    df_all.to_csv(summary_path, index=False)
+    print(f"\nSaved full results to {summary_path}")
+
+    # ------------------------------------------------------------------ #
+    # Aggregated per-arm stats
+    # ------------------------------------------------------------------ #
+    agg_cols = [
+        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",
+        "final_train_loss", "final_train_sim_loss", "gdasr_growth_point_count",
+    ]
+    agg = df_all.groupby("arm")[agg_cols].agg(["mean", "std"]).reset_index()
+    agg_path = os.path.join(results_dir, f"aggregated_phase0{suffix}.csv")
+    agg.to_csv(agg_path)
+    print(f"\nAggregated stats saved to {agg_path}")
+    print("\n" + "=" * 70)
+    print("AGGREGATED RESULTS (mean ± std)")
+    print("=" * 70)
+    for _, row in agg.iterrows():
+        name = row["arm"]
+        print(f"\n--- {name} ---")
+        for col in agg_cols:
+            mean_val = row[(col, "mean")]
+            std_val = row[(col, "std")]
+            print(f"  {col:30s} = {mean_val:.4f} ± {std_val:.4f}")
+
+    # ------------------------------------------------------------------ #
+    # Falsification audit
+    # ------------------------------------------------------------------ #
+    print("\n" + "=" * 70)
+    print("FALSIFICATION AUDIT (per pre-registration)")
+    print("=" * 70)
+
+    # Separate arms
+    arm_a = df_all[df_all["arm"] == "Arm A (SFA+VICReg)"]
+    arm_b = df_all[df_all["arm"] == "Arm B (JEPA+VICReg)"]
+    arm_c = df_all[df_all["arm"] == "Arm C (SFA+pos_enc)"]
+
+    # --- C1: Collapse ---
+    if len(arm_a) > 0:
+        collapsed_a = int(arm_a["has_collapsed"].sum())
+        print(f"\nC1 (Collapse): Arm A collapsed seeds: {collapsed_a} / {len(arm_a)}")
+        c1_pass = collapsed_a < 2  # fail if >= 2 seeds collapsed
+        print(f"  -> {'PASS' if c1_pass else 'FAIL'} (threshold: < 2 collapsed seeds)")
+    else:
+        c1_pass = False
+        print("\nC1: Arm A data missing.")
+
+    # --- C2: Centroid MSE ---
+    if len(arm_a) > 0 and len(arm_b) > 0:
+        mse_a_mean = float(arm_a["centroid_mse_mean"].mean())
+        mse_b_mean = float(arm_b["centroid_mse_mean"].mean())
+        if np.isnan(mse_a_mean) or np.isnan(mse_b_mean):
+            print("  [WARNING] centroid_mse_mean contains NaN — possibly too few eval samples.")
+            c2_pass = False
+        else:
+            threshold = 1.10 * mse_b_mean
+        print(f"\nC2 (Centroid MSE):")
+        print(f"  Arm A (SFA)  MSE = {mse_a_mean:.4f}")
+        print(f"  Arm B (JEPA) MSE = {mse_b_mean:.4f}")
+        print(f"  Threshold (1.10 x JEPA) = {threshold:.4f}")
+        c2_pass = mse_a_mean <= threshold
+        print(f"  -> {'PASS' if c2_pass else 'FAIL'} (SFA MSE {'' if c2_pass else 'NOT '}<= 1.10 x JEPA MSE)")
+
+        # Welch's t-test
+        mse_a_vals = arm_a["centroid_mse_mean"].values.astype(float)
+        mse_b_vals = arm_b["centroid_mse_mean"].values.astype(float)
+        if len(mse_a_vals) > 1 and len(mse_b_vals) > 1:
+            t_stat, p_val = scipy_stats.ttest_ind(mse_a_vals, mse_b_vals, equal_var=False)
+            n1, n2 = len(mse_a_vals), len(mse_b_vals)
+            dof = (mse_a_vals.var() / n1 + mse_b_vals.var() / n2) ** 2 / \
+                  ((mse_a_vals.var() / n1) ** 2 / (n1 - 1) + (mse_b_vals.var() / n2) ** 2 / (n2 - 1))
+            cohens_d = (mse_a_mean - mse_b_mean) / np.sqrt(
+                ((n1 - 1) * mse_a_vals.var() + (n2 - 1) * mse_b_vals.var()) / (n1 + n2 - 2)
+            )
+            print(f"  Welch's t({dof:.1f}) = {t_stat:.4f}, p = {p_val:.4f}")
+            print(f"  Cohen's d = {cohens_d:.4f}")
+    else:
+        c2_pass = False
+        print("\nC2: Arm A or Arm B data missing.")
+
+    # --- C3: Slowness separation ---
+    if len(arm_a) > 0:
+        ratios_a = arm_a["slowness_ratio"].values.astype(float)
+        mean_ratio_a = float(np.mean(ratios_a))
+        print(f"\nC3 (Slowness separation):")
+        print(f"  Arm A mean slowness ratio = {mean_ratio_a:.4f}")
+        print(f"  Threshold: ratio < 0.6")
+        c3_pass = mean_ratio_a < 0.6
+        print(f"  -> {'PASS' if c3_pass else 'FAIL'} (ratio {'<' if c3_pass else '>='} 0.6)")
+
+        # One-sample t-test against 0.6
+        if len(ratios_a) > 1:
+            t_stat3, p_val3 = scipy_stats.ttest_1samp(ratios_a, 0.6, alternative="less")
+            print(f"  One-sample t({len(ratios_a)-1}) vs 0.6: t = {t_stat3:.4f}, p = {p_val3:.4f} (one-sided less)")
+    else:
+        c3_pass = False
+        print("\nC3: Arm A data missing.")
+
+    overall = c1_pass and c2_pass and c3_pass
+    print(f"\n{'=' * 70}")
+    print(f"OVERALL: {'VALIDATED' if overall else 'FALSIFIED'}")
+    print(f"{'=' * 70}")
+
+    # ------------------------------------------------------------------ #
+    # Save audit report
+    # ------------------------------------------------------------------ #
+    audit_data = {
+        "c1_collapse_pass": bool(c1_pass),
+        "c1_collapsed_seeds_a": int(collapsed_a) if len(arm_a) > 0 else -1,
+        "c2_mse_pass": bool(c2_pass),
+        "c2_mse_sfa_mean": float(mse_a_mean) if len(arm_a) > 0 else -1.0,
+        "c2_mse_jepa_mean": float(mse_b_mean) if len(arm_b) > 0 else -1.0,
+        "c2_mse_threshold": float(threshold) if len(arm_a) > 0 and len(arm_b) > 0 else -1.0,
+        "c3_slowness_pass": bool(c3_pass),
+        "c3_slowness_ratio_mean": float(mean_ratio_a) if len(arm_a) > 0 else -1.0,
+        "overall_validated": bool(overall),
+    }
+    audit_path = os.path.join(results_dir, f"audit_phase0{suffix}.json")
+    with open(audit_path, "w") as f:
+        json.dump(audit_data, f, indent=2)
+    print(f"\nAudit report saved to {audit_path}")
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()]
+
+[Tool Call: read_file({'path': 'goal.md'})]
+[Tool Result: # GOAL: Thalamus — Curiosity-Driven, Decoder-Free Representation Agent (v4, sml-grounded)
+
+## 0. Status and Relationship to `rdf_thalamus_sml`
+
+This is an **evolutionary revision** of the project goal, not a reset. The existing
+machinery is retained: GDASR (dynamic dimension recruitment), Arm F
+(Non-Parametric Soft-Argmax centroid projection), Arm G (CLTS motorics), the
+Watchdog/noise-robustness apparatus, and Pillars A–E. What changes is that three
+findings, validated across an 8-iteration RDF run in the companion project, now
+govern the design as non-negotiable mandates.
+
+**Companion project:** `..\rdf_thalamus_sml\` (HSUN — Hierarchical Sparse Universal
+Nodes). It validated the *representational foundation* on a controlled 1D binary
+toy problem. The implementing agents have filesystem access to that directory and
+**must read its iteration reports** (`RESEARCH-RESULT-001` through `008`) before
+planning Phase 0.
+
+**Scope of transfer (important):** the sml findings transfer at the **objective
+and regularization level** (M1, M2 below), NOT at the architecture level. The sml
+`P3-C` node is a kernel-3, weight-shared universal node on binary input; the
+existing Thalamus encoder is a kernel-5, stride-2 CNN with a soft-argmax centroid
+head (`NonParametricJEPASpatial`). The evolutionary path keeps the existing CNN.
+The sml `P3-C` node is a *reference and comparison arm*, not a drop-in replacement.
+
+These phases are **implementation-scope labels, not iteration numbers**. The iter
+counter continues from 019; the project does not reset. It resumes with a changed
+training objective (M2) and a scope-reduced, fixed-dimensionality regime (M3).
+
+The three mandates (Section 1.1) resolve or sidestep several of this project's
+documented pathologies: the cold-start trilemma (Iter 016–018), the
+representation collapse under decoder-free prediction, and part of the persistent
+Spatial Specialization Gap (Phases 6–11).
+
+---
+
+## 1. Primary Objective
+
+Design, simulate, and evaluate a neural architecture that achieves hierarchical
+abstraction **without generative decoders**, learns **temporal structure in
+latent space**, and develops a **thalamic gating mechanism** that focuses
+plasticity and motor behavior on the epistemically most relevant entities in a
+1D physics scene. Learning is driven by local objectives constrained by
+anti-collapse and anti-dark-room mechanisms.
+
+The project name "Thalamus" reflects the central role of the gating mechanism:
+selective routing of sensory information and attention, analogous to the
+biological thalamus.
+
+### 1.1 Validated Mandates from `rdf_thalamus_sml` (NON-NEGOTIABLE)
+
+**M1 — Pooled/batch VICReg is the anti-collapse mechanism, not a candidate.**
+The sml run was, in retrospect, a clean ablation of VICReg across iterations 2–7.
+Without it, every objective (reconstruction, JEPA, SFA, Hebbian) collapsed to
+~44–48% downstream accuracy (near random). With **pooled** VICReg, the same
+objectives reached 61–83%. VICReg applied **locally per timestep fails** due to
+gradient dilution: the per-step gradient is scaled by ~1/28000 versus ~1/64 at the
+pooled-representation level.
+
+**Status in current code: already satisfied.** `calc_var_loss` / `calc_cov_loss`
+in `models_dual_stream.py` are computed over the **batch dimension** on
+single-frame latents `(B, d_t)`, batch=32 — i.e. the pooled/batch regime, gradient
+~1/32, not diluted across timesteps. So M1 is a confirmation, not a code change.
+Therefore:
+- VICReg (variance term enforcing per-dimension std >= 1, plus covariance
+  decorrelation term) is **mandatory** wherever a representation is shaped, and
+  the current batch-level application is the correct form — keep it.
+- The dilution warning is a **forward-looking guard**: if any future variant
+  unfolds the representation over time and applies VICReg per-step, it must pool
+  first. Do not "fix" the current code by moving VICReg per-step.
+- This dilution mechanism is the suspected confound behind the cold-start
+  pathologies (Iter 016–018), whose per-step probationary error signals suffer it.
+
+**M2 — Primary representation objective is SFA + pooled VICReg, applied to the
+slow (identity) stream.**
+On tasks where the class is *temporally stable* (a moving blob stays a blob),
+sml measured SFA+VICReg at 82% and Reconstruction+VICReg at 83%, versus
+JEPA+VICReg at only 61% — a ~20pp gap. SFA is decoder-free and matches
+reconstruction, so it preserves this project's decoder-free principle.
+
+**Stream assignment (critical — do not apply SFA naively).** The encoder produces
+two streams per dimension: `z_coord` (soft-argmax centroid = *where*, position)
+and `z_dyn` (mean activation = *what*, identity/appearance). A naive slowness
+penalty `||z_t - z_{t-1}||^2` on `z_coord` would be **wrong** — object position
+changes legitimately as objects move, and penalizing it would suppress tracking.
+Therefore:
+- **SFA shapes `z_dyn`** (the slow identity/appearance stream): object color,
+  size, identity do not change frame-to-frame, so slowness is the right prior.
+- **`z_coord` stays the soft-argmax readout** (position is allowed to be fast and
+  is read out, not slowed).
+- **Hypothesis (to test in Phase 1, not assumed):** SFA on `z_dyn` may separate
+  slow identity from fast position *by construction*, which is exactly the
+  disentanglement the **Spatial Specialization Gap** (Phases 6–11) has been
+  chasing. If it holds, SFA addresses the gap structurally rather than via an
+  added bottleneck.
+- The slowness term partly exists already (`ccr_smooth_loss`); SFA-primary means
+  promoting a slowness term on `z_dyn` to the main shaper and demoting the JEPA
+  `sim_loss` to a readout.
+
+**JEPA is demoted** from primary objective to (a) Baseline B1 and (b) a dedicated
+comparison arm on *causal-sensitivity* tasks, where transition prediction may
+shape better representations than slowness (the one regime where JEPA could still
+win — test, do not assume).
+
+**The surprise / prediction-error signal survives** as a *readout* (drives
+attention and motor), not as the representation objective. See Pillar B (4.B).
+
+**Distinction from the failed DSDT (Iter 010) — read before implementing.** DSDT
+stop-gradient-decoupled the coordinate stream from the dynamics/prediction
+objective and it collapsed (semantic blindness, 100% collapse) because the
+decoupled stream had *no strong objective of its own*. M2 is different: the
+representation is shaped by **SFA + pooled VICReg**, a validated strong objective.
+The stop-gradient on the prediction-error readout therefore does **not** strand
+the representation — SFA grounds it. Do not pattern-match M2 onto DSDT and reject
+it; the failure mode does not apply here.
+
+**M3 — Fixed dimensionality first; GDASR logs growth points, does not recruit.**
+The cold-start trilemma (encoder cold-start Iter 017, predictor cold-start
+Iter 016, optimization-transient Iter 018) is fundamentally a *probationary
+recruitment evaluation* problem: it only exists because new dimensions must be
+judged during a warm-up window. sml validated the full architecture with **fixed
+dimensionality** and no recruitment, cleanly. Therefore, invoking the Manager
+Agent's scope-reduction authority (Section 2):
+- The working regime for Phases 0–4 **freezes the active dimension count `d_t`**
+  at its target (3 for N=3 objects, 4 for N=4). The CNN backbone is already fixed
+  (Section 4.A); only the recruitment of new active channels is disabled.
+- GDASR is retained but runs in **log-only mode**: it detects *where and when* a
+  recruitment trigger would fire (sustained residual prediction error / variance
+  unexplained by the existing subspace) and **logs these growth points** as data.
+  It does not modify `d_t` or the network.
+- The growth-point logs become the **empirical input** for a properly informed
+  recruitment design in the deferred Phase 5 — at which point the cold-start
+  evaluation can be designed against real data rather than guessed.
+
+**Semantic caution (derived, advisory not absolute).**
+sml Phase 5 found that for low-DOF binary inputs, coordinate semantics
+(Magnitude, Gradient) are largely *structural* — they emerge from random
+projection through tanh, and training adds little (+0.039 cross-layer
+consistency). Hand-designed **anchoring hurt** (0.714 -> 0.700): imposed semantics
+degraded the natural geometry. Implication for this project:
+- The Spatial Specialization Gap may be **partly fundamental** (bounded by input
+  degrees of freedom), not solely a training failure.
+- Structural priors that *impose* disentanglement (e.g. micro-columns,
+  Section 8.4) must be treated as **hypotheses to test, not fixes to assume**.
+  The rule is **measure-before-impose**: characterize the naturally emergent
+  geometry first; only add structural constraints if a measured gap remains.
+- RGB+position inputs carry more DOF than binary, so training *may* play a larger
+  role here than in sml — this is exactly what Phase 0 must measure.
+
+---
+
+## 2. Research Directives and Managerial Constraints
+
+- **Novelty over replication.** Existing paradigms (JEPA, Active Inference, NGC,
+  Subsumption, Growing Neural Gas, SFA) are conceptual starting points. The aim
+  is novel intersections, not verbatim rebuilds.
+- **Scientific rigor.** The Manager Agent suppresses hyperbolic language and
+  rejects results that overstate evidence. Claims are falsifiable and stated
+  relative to baselines (Section 5).
+- **Active scope management.** The Manager Agent is authorized to reduce scope
+  when a sub-problem threatens the whole project. **This authority has already
+  been exercised** for dynamic recruitment (M3): fixed dimensionality first,
+  growth-points logged.
+- **Incremental validation.** Planners decompose into isolated proofs and minimal
+  experiments before integration. Each mandate (M1–M3) carries forward a
+  *validated* result; re-deriving it from scratch is not required, but the
+  objective migration (Phase 0) must re-confirm non-collapse on the existing CNN
+  before building upward.
+
+---
+
+## 3. Test Environment: 1D Physics Sandbox
+
+- **State space:** 1D array of 128 RGB pixels.
+- **Entities:** 3 distinct objects (varying sizes, colors, gradient edges) under
+  physical laws (mass, velocity, elastic collision).
+- **Agent interaction:** 1D pointer with left/right acceleration and a "push"
+  action.
+- **Environmental variation (mandatory):** object counts, sizes, shapes, colors,
+  masses, and physics parameters are continuously varied. A static regime is
+  forbidden — it is the primary defense against dark-room collapse (Pillar B)
+  and the basis of the generalization metrics (Section 6).
+- **Input format (tested variant, Phase 0):** each pixel `i` in `[0,127]` may carry
+  `[R_i, G_i, B_i, pos_i]`, where `pos_i` is a normalized or sinusoidal position
+  encoding. Whether the explicit position channel narrows the Spatial
+  Specialization Gap is a Phase 0 measurement, not an assumption (semantic
+  caution, Section 1.1).
+
+---
+
+## 4. Architectural Pillars (revised under M1–M3)
+
+### A. Existing CNN Backbone, Frozen Dimensionality (was: dynamic node merging)
+
+The actual production encoder (`NonParametricJEPASpatial` in
+`models_dual_stream.py`) is retained unchanged:
+
+```
+Input:   (B, 3, 128)     RGB pixels (or (B, 4, 128) / (B, 7, 128) with pos-encoding)
+conv1:   Conv1d(C ->  16, k=5, s=2)   -> (B,  16, 64)
+conv2:   Conv1d(16 ->  32, k=5, s=2)  -> (B,  32, 32)
+conv3:   Conv1d(32 ->  64, k=5, s=2)  -> (B,  64, 16)
+conv4:   Conv1d(64 -> 128, k=5, s=2)  -> (B, 128,  8)
+conv_sp: Conv1d(128 -> d_max=8, k=1)  -> (B, d_max, 8)  -> interpolate -> (B, d_max, 128)
+heads:   soft-argmax over space -> z_coord (B, d_max)   [where / position]
+         mean over space        -> z_dyn   (B, d_max)   [what / identity]
+```
+
+- `d_max = 8` latent channels maximum; `d_t` active channels (2 -> 3 -> 4 via
+  recruitment historically). A "dimension" is an active latent channel, **not** a
+  hierarchical merge.
+- **Under M3, `d_t` is frozen** at the target (3 for N=3, 4 for N=4); GDASR
+  recruitment is disabled. The CNN itself is already fixed.
+- **GDASR runs in log-only mode** (M3): it computes the residual / EMA-error
+  signals that *would* trigger recruitment and logs them, without changing `d_t`.
+- The soft-argmax centroid head is **Arm F**, the non-parametric spatial readout
+  used for the centroid-decoding-MSE metric.
+- *Deferred (Phase 6, Section 8):* the contracting hierarchical pyramid
+  (`128x3 -> 32x8 -> 8x16 -> 2x32`) with similarity-driven node merging. This was
+  specified in prior planning but **never implemented**; it is a future
+  architecture, not the Phase 0 backbone.
+
+### B. Local SFA Representation + Surprise Readout (was: JEPA energy)
+
+Two cleanly separated signals (this is the core M2 change):
+
+1. **Representation objective (shapes the latent space):**
+   Local Slow Feature Analysis on the **`z_dyn` (identity) stream** under pooled
+   VICReg, applied to the active `d_t` channels:
+   `L_repr = ||z_dyn(t) - z_dyn(t-1)||^2 + lambda_var * VICReg_var(z_dyn) + lambda_cov * VICReg_cov(z_dyn)`
+   computed over the batch (the existing batch-level VICReg form, M1). The variance
+   term (target std >= 1) prevents the trivial constant solution; without it SFA
+   collapses. Start from the existing hyperparameters (`lambda = 25`) and sweep.
+   **`z_coord` is NOT slowed** — position legitimately changes as objects move and
+   is read out via the soft-argmax head (Arm F). Applying slowness to `z_coord`
+   would suppress tracking (M2).
+
+2. **Surprise / saliency readout (does NOT shape the representation):**
+   A lightweight next-latent predictor reads out of the (stop-gradient) SFA
+   representation; its prediction error is the **surprise** signal driving
+   attention (Pillar D) and motor (Pillar E) only. The stop-gradient is safe here
+   because SFA+VICReg already grounds the representation — this is the key
+   distinction from the failed DSDT decoupling (M2, Iter 010), where the decoupled
+   stream had no objective and collapsed.
+
+**Anti-dark-room:** mandatory environmental variation (Section 3). Planners
+decide whether an additional explicit epistemic-value term is warranted and
+justify it; default is to rely on variation + the surprise readout first.
+
+### C. Temporal Modeling
+
+Prediction operates in time. The existing predictor already consumes an `H=3`
+history `(z_{t-2}, z_{t-1}, z_t)` — structurally the same three-slot temporal
+context that sml validated (P2-D), where it beat locally-trained recurrent and
+feedback variants without explicit memory cells. Keep the `H=3` predictor as the
+saliency readout (Pillar B.2). The sml lesson that transfers is at the objective
+level: temporal context of three slots is sufficient; no recurrent state is
+needed. Note sml refuted *zero-shot* spatial->temporal weight transfer but
+validated *jointly trained* shared weights — relevant only if a future variant
+shares an encoder across both axes.
+
+### D. Thalamic Gating: Attention and Plasticity (dual-control)
+
+This pillar maps onto the M2 signal separation. The **Surprise Detector** already
+exists inside `CLTSMotorController` (`motor.py`); the **Categorizer** is the
+recruitment logic (now log-only, M3):
+
+- **Surprise Detector (fast, every step, all active channels):** per-channel
+  surprise `s_c = MSE(z_pred_coord_c, z_target_coord_c) + MSE(z_pred_dyn_c,
+  z_target_dyn_c)`, z-score normalized via an **online EMA mean/std per channel**
+  (`mu`, `sigma`, `ema_alpha=0.05`). The Attention Token routes to
+  `argmax(norm_surprise)` with a **15-step attention cooldown**. Does not modify
+  weights. (This is the existing implementation — keep it.)
+- **Categorizer (slow, attended locus only):** the GDASR growth-point logic
+  (log-only under M3) and, when recruitment is re-enabled (Phase 5), the
+  consistency-buffer acceptance test (MDL-style cross-scenario variance
+  reduction). Modifies structure only at the attended locus.
+- **Normalization:** the per-channel z-score above is the working scheme for the
+  flat backbone (all channels share one scale, so no cross-scale issue arises).
+  True cross-scale normalization becomes mandatory only if the hierarchical
+  pyramid (8.6) is built.
+- **Inter-layer coupling stability:** the per-channel EMA + attention cooldown +
+  the frozen-`d_t` regime (M3, which removes recruitment churn) are the current
+  stabilizers. Revisit only if a deeper hierarchy reintroduces drift.
+
+**Interaction with M2 (watch this):** the surprise above sums `z_coord` and
+`z_dyn` prediction error. Under M2, SFA makes `z_dyn` slow and therefore
+*easy to predict*, so `err_dyn` shrinks and the surprise signal becomes
+**`z_coord`-dominated** — i.e. attention/motor will increasingly track *positional
+unpredictability* (e.g. post-collision motion) rather than appearance change. This
+is plausibly desirable, but it is a behavioral shift the Phase 2 evaluation must
+measure, not assume.
+
+### E. Epistemic Motor Control (Subsumption / CLTS)
+
+Retained as Arm G (`CLTSMotorController`). Motor output is hierarchical:
+- *Reflexive (low):* PD tracking of the attended centroid (`Kp=2.0, Kd=0.5`).
+- *Predictive (mid):* velocity matching to the target's motion (`Kv=0.5`).
+- *Deliberate (high):* a push perturbation, currently triggered when the
+  attended channel's surprise exceeds `mu + sigma` **and** the pointer is within
+  `|error| <= 6.0` of the target — i.e. "probe the surprising object once reached."
+  Note the older `SubsumptionMotorController` triggered push on *boredom* (low
+  error + low ΔE) instead — the Schmidhuber artificial-curiosity framing. Which
+  trigger serves causal-sensitivity better (probe-when-surprised vs.
+  probe-when-bored) is an open comparison for Phase 3, not settled.
+
+Motor coupling is introduced **progressively**: decoupled random/fixed
+exploration early (the `ablation="random"` path exists), attached once a stable
+representation is detected. Arm F (soft-argmax centroid) remains the `z_coord`
+position readout and the centroid-MSE evaluation metric.
+
+---
+
+## 5. Mandatory Comparison Baselines
+
+Every architectural claim is validated against at least two baselines on the same
+environment:
+
+- **B1 — Standard JEPA** (fixed dimensionality, no gating, no motor). Per M2, B1
+  also serves as the **causal-probe arm**: the one regime where JEPA's
+  transition-prediction may beat SFA must be measured here.
+- **B2 — Predictive Coding (NGC-style)** of comparable parameter count.
+- **B3 (optional) — vanilla CNN + MSE pixel reconstruction.** Note: sml showed
+  Reconstruction+VICReg is strong (83%); if B3 is run, it must include pooled
+  VICReg to be a fair upper-bound reference rather than a strawman.
+
+The Manager Agent rejects performance claims not stated relative to these.
+
+---
+
+## 6. Evaluation Metrics
+
+- **Non-collapse check (gate for every trained model):** use the existing
+  `has_collapsed` criterion in `evaluate_branch` (`e_a_dim >= 0.1*e_a_all` and
+  `std_x_mean > 5.0`), augmented with the per-dimension std of the batch
+  representation staying clear of zero. A collapsed model is reported as failed,
+  not tuned silently.
+- **Sample efficiency** vs. baselines on identical environments.
+- **Generalization:** train with N=3 objects, introduce a 4th unseen object;
+  measure prediction accuracy on the novel object and (in log-only mode) whether
+  a growth point is logged at the right time.
+- **Causal sensitivity:** alter a hidden parameter (e.g. mass); measure whether
+  predictions adapt — probing genuine representation vs. spurious correlation.
+  This is the primary battleground for the JEPA-vs-SFA comparison (M2).
+- **Spatial specialization:** centroid decoding MSE via Arm F (Phase-12 reference
+  points: CLTS 85.85, WUP-MDL clean 57.34). Report whether explicit position
+  encoding (Section 3) narrows the gap.
+- **Compute / memory profile:** parameter count, FLOPs/step, and — in log-only
+  mode — the *count and timing* of logged growth points over training.
+- **Plasticity-token traces:** which layer holds the token over time; does a
+  curriculum emerge (lower layers stabilize before higher)?
+
+---
+
+## 7. Phased Implementation Scope
+
+**Phase 0 — Objective Migration and Non-Collapse Re-confirmation (bridge phase).**
+- On the **existing** `NonParametricJEPASpatial` CNN (Section 4.A), switch the
+  representation objective from JEPA to **SFA on `z_dyn` + batch VICReg**
+  (Pillar B), with `d_t` frozen at 3 (N=3) and GDASR in log-only mode.
+- Keep Arm F (soft-argmax) as the `z_coord` position readout unchanged.
+- **Gate:** representation must not collapse (Section 6 non-collapse check, which
+  already exists as `has_collapsed` in `evaluate_branch`) and must reach a
+  centroid-decoding MSE at least comparable to the JEPA baseline Arm P (~55.6).
+- Also run RGB-only vs. RGB+position (the `pos_encoding` already in the encoder)
+  as a measured comparison (semantic caution) — recall Iter 013 found position
+  encoding *hurt* under JEPA; re-test under SFA.
+- Deliverable: confirmation that SFA+VICReg trains the existing CNN without
+  collapse, plus a first characterization of whether SFA on `z_dyn` separates
+  identity from position (the Spatial-Gap hypothesis, M2).
+- The sml `P3-C` node may optionally be run as an alternative-encoder comparison
+  arm, but is **not** required and is not the default backbone.
+
+**Phase 1 — Frozen-Dim Representation Base (Pillars A, B, C; passive observation).**
+- No motor action. Validate non-collapsing SFA representation, log-only GDASR
+  growth points, sample efficiency vs. B1/B2.
+- Run the JEPA-vs-SFA causal-sensitivity comparison (M2) — this is where the
+  decision to demote JEPA gets empirically tested, not just assumed.
+
+**Phase 2 — Thalamic Gating (Pillar D).**
+- Add Detector/Categorizer dual-control, token routing, per-layer plasticity
+  gating, cross-scale normalization, inter-layer stability.
+- Start with externally primed attention queries; measure the transition to
+  self-generated queries (output-as-input loop).
+
+**Phase 3 — Motor and Closed Loop (Pillar E, CLTS).**
+- Attach progressive subsumption motor; measure curiosity-driven exploration vs.
+  random baseline; run the full causal-sensitivity battery.
+
+**Phase 4 — Generalization and Reporting.**
+- Full metric battery (Section 6) against all baselines; honest reporting of
+  failure modes and negative results.
+
+**Phase 5 — (DEFERRED) Reactivate Dynamic Recruitment.**
+- Using the Phase 0–4 growth-point logs as data, design a recruitment-evaluation
+  scheme that avoids the cold-start trilemma (Iter 016–018). Candidate directions
+  the trilemma analysis left open: warm-start predictors (eliminate Phase-A
+  transient by construction), Phase-B-only trend gating, pre-trained proposal
+  evaluators, or Bayesian model comparison. Only enter this phase once the
+  fixed-dim foundation is solid.
+
+**Phase 6 — (DEFERRED) Extensions, each gated on measure-before-impose.**
+See Section 8.
+
+---
+
+## 8. Deferred Extensions (preserved; gated)
+
+Each is retained from prior planning but sequenced after the validated
+foundation, and each carries the semantic-caution guardrail (Section 1.1):
+characterize the emergent baseline before adding the structural prior.
+
+**8.1 RGB + explicit position encoding.** Linear, sinusoidal, or learnable
+position channels. Already pulled forward into Phase 0 as a measured comparison.
+
+**8.2 Gaze direction / foveated attention.** A gaze pointer controlling a
+foveated receptive field (full resolution at fixation, downsampled periphery),
+making the externally-primed -> self-generated attention transition operational.
+Subsumption extension: reflexive saccade (low), smooth pursuit (mid), deliberate
+gaze shifts (high). Metrics: fixation stability, saccade efficiency, information
+gain under reduced bandwidth.
+
+**8.3 Graph topology of layer-nodes.** Replace the linear stack with a DAG:
+lateral connections within a level, top-down predictive-coding projections,
+surprise-modulated edges, skip connections. Initialize as the linear chain
+(backward compatible), recruit/prune edges by information contribution, cap
+fan-in (e.g. K=4), keep the forward pass acyclic (recurrence via t-1 delay).
+Motivated by Iter 004 (tracking lag) and Iter 010 (DSDT semantic blindness).
+
+**8.4 Micro-columns (treat as hypothesis, not fix).** Lightweight sub-networks
+per node specializing on color/texture, motion/velocity, position, each with its
+own surprise signal. **Caution (Section 1.1):** sml showed imposed anchoring
+degraded natural geometry. Micro-columns must be validated against the measured
+emergent baseline; if the monolithic layer already separates these aspects
+naturally, the added structure is rejected. Note that **M2's SFA-on-`z_dyn` is the
+first, cheaper attempt** at the same disentanglement (slow identity vs. fast
+position); micro-columns are only justified if SFA leaves a measured gap.
+
+**8.5 Interactive demo application.** Standalone Python app (PyGame / Matplotlib
+animation / lightweight web frontend) rendering the environment, per-layer latent
+state, attention-token trace, motor output, and prediction-vs-reality overlay in
+real time (>=10 fps). Human controls: add/remove objects, change properties,
+inject noise/Noisy-TV, pause/step/resume, toggle motor modes. Inspection via
+observer hooks only — no modification of core `src/thalamus.py` / `src/motor.py`.
+
+**8.6 Contracting hierarchical pyramid (future backbone).** The
+`128x3 -> 32x8 -> 8x16 -> 2x32` schedule with similarity-driven node merging,
+specified in prior planning (old Section 13.2) but never implemented. This is the
+long-term move toward V1->IT-style spatial contraction with rising feature
+dimensionality. Deferred until the frozen-dim flat backbone + SFA foundation is
+validated; introducing it earlier would confound the M2/M3 evaluation.
+
+---
+
+## 9. Reporting Standards
+
+- All quantitative results stated with run-to-run variance or confidence
+  intervals over >=5 seeds. Single-seed results are not evidence.
+- Failure modes and dead ends are **first-class deliverables**.
+- The Manager Agent rejects "we have shown / proven / discovered" phrasing unless
+  backed by reproducible quantitative evidence against the Section 5 baselines.
+- Where a result reproduces or contradicts an `rdf_thalamus_sml` finding, the
+  report states which and why — cross-project consistency is itself evidence.
+]
+Let me examine the environment and model to understand available features for semantic probes:
+
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_blur = sigma_blur
+        self.seed = seed
+        self.pixel_noise_std = pixel_noise_std
+        self.noisy_tv = noisy_tv
+        self.structured_distractor = structured_distractor
+        
+        # State variables for standard objects
+        self.positions = np.zeros(N)
+        self.velocities = np.zeros(N)
+        self.radii = np.zeros(N)
+        self.masses = np.zeros(N)
+        self.colors = np.zeros((N, 3))
+        
+        # State variables for Noisy-TV entity
+        self.noisy_tv_pos = 64.0
+        self.noisy_tv_radius = 5.0
+        self.noisy_tv_color = np.array([0.5, 0.5, 0.5])
+        
+        # State variables for Structured Distractor (Sinusoidal Oscillator)
+        self.sd_center = 64.0
+        self.sd_amplitude = 10.0
+        self.sd_omega = 0.03
+        self.sd_phase = 0.0
+        self.sd_color = np.array([0.5, 0.5, 0.5])
+        self.sd_radius = 5.0
+        self.sd_t = 0
+        self.sd_pos = 64.0
+        
+        # Pointer state variables
+        self.pointer_pos = 64.0
+        self.pointer_vel = 0.0
+        self.pointer_radius = 4.0
+        self.pointer_mass = 10.0
+        self.pointer_color = np.array([1.0, 1.0, 1.0])
+        
+        self.reset(seed=seed)
+        
+    def reset(self, seed=None):
+        """
+        Reset environment with randomized parameters (sizes, colors, masses, positions, velocities)
+        and reset pointer position & velocity, then resolve all overlaps.
+        """
+        if seed is not None:
+            np.random.seed(seed)
+            self.seed = seed
+
+        W = 128.0 / self.N
+        for i in range(self.N):
+            # Sample radius and mass
+            r = np.random.uniform(3.0, 8.0)
+            self.radii[i] = r
+            self.masses[i] = r  # Mass is proportional to radius/size
+            
+            # Sample color from [0.3, 1.0] for each channel
+            self.colors[i] = np.random.uniform(0.3, 1.0, size=(3,))
+            
+            # Position inside the segmented interval to prevent initial overlaps
+            low = i * W + r
+            high = (i + 1) * W - r
+            # Just in case the segment is too small (should not happen with N=2 or 3, but let's be safe)
+            if low >= high:
+                low = i * W + W / 2.0
+                high = low
+            self.positions[i] = np.random.uniform(low, high)
+            
+            # Velocity from [-2.0, 2.0], non-zero
+            v = np.random.uniform(0.5, 2.0)
+            if np.random.rand() < 0.5:
+                v = -v
+            self.velocities[i] = v
+            
+        # Reset pointer position and velocity
+        self.pointer_pos = 64.0
+        self.pointer_vel = 0.0
+        self.pointer_radius = 4.0
+        self.pointer_mass = 10.0
+        self.pointer_color = np.array([1.0, 1.0, 1.0])
+        
+        # Reset Noisy-TV entity if active
+        if self.noisy_tv:
+            self.noisy_tv_radius = np.random.uniform(3.0, 8.0)
+            self.noisy_tv_pos = np.random.uniform(self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+        
+        # Reset Structured Distractor if active
+        if self.structured_distractor:
+            self.sd_center = np.random.uniform(32.0, 96.0)
+            self.sd_amplitude = np.random.uniform(5.0, 15.0)
+            self.sd_omega = np.random.uniform(0.02, 0.05)
+            self.sd_phase = np.random.uniform(0.0, 2.0 * np.pi)
+            self.sd_color = np.random.uniform(0.3, 1.0, size=(3,))
+            self.sd_radius = np.random.uniform(3.0, 8.0)
+            self.sd_t = 0
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_phase)
+        
+        # Resolve initial overlaps of both the objects and the pointer in a loop
+        temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+        temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+        temp_masses = np.concatenate([self.masses, [self.pointer_mass]])
+        
+        for _ in range(50):
+            # Boundary correction
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+            
+            # Overlap resolution
+            sort_idx = np.argsort(temp_positions)
+            for idx_in_sort in range(len(temp_positions) - 1):
+                i = sort_idx[idx_in_sort]
+                j = sort_idx[idx_in_sort + 1]
+                
+                dist = temp_positions[j] - temp_positions[i]
+                min_dist = temp_radii[i] + temp_radii[j]
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    m_inv_i = 1.0 / temp_masses[i]
+                    m_inv_j = 1.0 / temp_masses[j]
+                    sum_inv_m = m_inv_i + m_inv_j
+                    
+                    temp_positions[i] -= overlap * (m_inv_i / sum_inv_m)
+                    temp_positions[j] += overlap * (m_inv_j / sum_inv_m)
+
+        # Assign positions back
+        self.positions = temp_positions[:-1]
+        self.pointer_pos = temp_positions[-1]
+            
+        return self.render()
+
+    def step(self, action=None):
+        """
+        Step the environment by 1.0 time unit using self.substeps, incorporating optional actions.
+        
+        Args:
+            action (dict, optional): containing continuous acceleration 'acc' (float) and boolean 'push'.
+        Returns:
+            observation (np.ndarray): Shape (3, 128)
+            info (dict): Useful diagnostic info
+        """
+        if action is not None:
+            acc = action.get('acc', 0.0)
+            push = action.get('push', False)
+        else:
+            acc = 0.0
+            push = False
+            
+        if push:
+            if len(self.positions) > 0:
+                dists = self.positions - self.pointer_pos
+                nearest_idx = np.argmin(np.abs(dists))
+                diff = dists[nearest_idx]
+                direction = 1.0 if diff >= 0 else -1.0
+                self.pointer_vel = direction * 5.0
+                
+        dt = 1.0 / self.substeps
+        
+        for _ in range(self.substeps):
+            # Apply acceleration
+            self.pointer_vel += acc * dt
+            
+            # Pack all N+1 objects
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_velocities = np.concatenate([self.velocities, [self.pointer_vel]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_masses = np.concatenate([self.masses, [self.pointer_mass]])
+            
+            # 1. Update positions
+            temp_positions += temp_velocities * dt
+            
+            # 2. Boundary bounces & position correction
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                    if temp_velocities[i] < 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+                    if temp_velocities[i] > 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+            
+            # 3. Resolve elastic collisions between adjacent objects
+            sort_idx = np.argsort(temp_positions)
+            for idx_in_sort in range(len(temp_positions) - 1):
+                i = sort_idx[idx_in_sort]
+                j = sort_idx[idx_in_sort + 1]
+                
+                dist = temp_positions[j] - temp_positions[i]
+                min_dist = temp_radii[i] + temp_radii[j]
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    m_inv_i = 1.0 / temp_masses[i]
+                    m_inv_j = 1.0 / temp_masses[j]
+                    sum_inv_m = m_inv_i + m_inv_j
+                    
+                    # Resolve overlap proportionally to inverse masses
+                    temp_positions[i] -= overlap * (m_inv_i / sum_inv_m)
+                    temp_positions[j] += overlap * (m_inv_j / sum_inv_m)
+                    
+                    # Conserve momentum and kinetic energy if moving towards each other
+                    if temp_velocities[i] > temp_velocities[j]:
+                        v1 = temp_velocities[i]
+                        v2 = temp_velocities[j]
+                        m1 = temp_masses[i]
+                        m2 = temp_masses[j]
+                        
+                        temp_velocities[i] = (v1 * (m1 - m2) + 2.0 * m2 * v2) / (m1 + m2)
+                        temp_velocities[j] = (v2 * (m2 - m1) + 2.0 * m1 * v1) / (m1 + m2)
+                        
+            # Additional boundary check after collision resolution to ensure no object is pushed out
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                    if temp_velocities[i] < 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+                    if temp_velocities[i] > 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                        
+            # Unpack back to state variables
+            self.positions = temp_positions[:-1]
+            self.velocities = temp_velocities[:-1]
+            self.pointer_pos = temp_positions[-1]
+            self.pointer_vel = temp_velocities[-1]
+
+        # Update Noisy-TV state if active
+        if self.noisy_tv:
+            # Random walk motion: Gaussian step with std 2.0
+            step_noise = np.random.normal(0.0, 2.0)
+            self.noisy_tv_pos += step_noise
+            # Keep inside environment boundaries [radius, 128 - radius]
+            self.noisy_tv_pos = np.clip(self.noisy_tv_pos, self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            # Flicker with maximum entropy: color randomly sampled from [0.3, 1.0]
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+
+        # Update Structured Distractor state if active
+        if self.structured_distractor:
+            self.sd_t += 1
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_omega * self.sd_t + self.sd_phase)
+
+        obs = self.render()
+        
+        info = {
+            "positions": self.positions.copy(),
+            "velocities": self.velocities.copy(),
+            "radii": self.radii.copy(),
+            "masses": self.masses.copy(),
+            "colors": self.colors.copy(),
+            "pointer_pos": self.pointer_pos,
+            "pointer_vel": self.pointer_vel,
+            "pointer_radius": self.pointer_radius,
+            "pointer_mass": self.pointer_mass,
+            "pointer_color": self.pointer_color.copy(),
+        }
+        
+        if self.noisy_tv:
+            info["noisy_tv_pos"] = self.noisy_tv_pos
+            info["noisy_tv_color"] = self.noisy_tv_color.copy()
+            info["noisy_tv_radius"] = self.noisy_tv_radius
+        
+        if self.structured_distractor:
+            info["sd_pos"] = self.sd_pos
+            info["sd_color"] = self.sd_color.copy()
+            info["sd_radius"] = self.sd_radius
+            
+        return obs, info
+
+    def render(self):
+        """
+        Render continuous 1D space to a (3, 128) array with soft continuous blending.
+        Includes original objects, the white physical pointer, and optionally the Noisy-TV entity.
+        """
+        pixel_centers = np.arange(128) + 0.5  # shape (128,)
+        canvas = np.zeros((3, 128))
+        
+        # Combine objects, pointer, and optional Noisy-TV for rendering depth sorting
+        if self.noisy_tv:
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos], [self.noisy_tv_pos]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius], [self.noisy_tv_radius]])
+            temp_colors = np.concatenate([self.colors, [self.pointer_color], [self.noisy_tv_color]], axis=0)
+        else:
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_colors = np.concatenate([self.colors, [self.pointer_color]], axis=0)
+        
+        # Sort objects and pointer by position to blend left-to-right (depth order)
+        sorted_indices = np.argsort(temp_positions)
+        for idx in sorted_indices:
+            pos = temp_positions[idx]
+            r = temp_radii[idx]
+            color = temp_colors[idx]  # shape (3,)
+            
+            # Distance from pixel centers to object center
+            d = np.abs(pixel_centers - pos)
+            
+            # Sigmoid continuous blending
+            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))  # shape (128,)
+            mask = mask[np.newaxis, :]  # shape (1, 128)
+            color_expanded = color[:, np.newaxis]  # shape (3, 1)
+            
+            # Alpha blend onto canvas
+            canvas = canvas * (1.0 - mask) + color_expanded * mask
+        
+        # Render structured distractor after all standard objects and pointer
+        if self.structured_distractor:
+            pos = self.sd_pos
+            r = self.sd_radius
+            color = self.sd_color
+            d = np.abs(pixel_centers - pos)
+            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))
+            mask = mask[np.newaxis, :]
+            color_expanded = color[:, np.newaxis]
+            canvas = canvas * (1.0 - mask) + color_expanded * mask
+            
+        # Apply global pixel noise if specified
+        if self.pixel_noise_std > 0.0:
+            noise = np.random.normal(0.0, self.pixel_noise_std, size=canvas.shape)
+            canvas = np.clip(canvas + noise, 0.0, 1.0)
+            
+        return canvas
+]
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_linear = coords / max(1.0, float(W - 1))
+        pos_linear = pos_linear.unsqueeze(0).unsqueeze(0).expand(B, 1, -1)
+        return torch.cat([x, pos_linear], dim=1)
+    elif pos_encoding == "sinusoidal":
+        pos_sin_10 = torch.sin(coords / 10.0)
+        pos_cos_10 = torch.cos(coords / 10.0)
+        pos_sin_100 = torch.sin(coords / 100.0)
+        pos_cos_100 = torch.cos(coords / 100.0)
+        pos_embeds = torch.stack([pos_sin_10, pos_cos_10, pos_sin_100, pos_cos_100], dim=0)
+        pos_embeds = pos_embeds.unsqueeze(0).expand(B, -1, -1)
+        return torch.cat([x, pos_embeds], dim=1)
+    return x
+
+class DualStreamEncoder(nn.Module):
+    def __init__(self, d_max=8):
+        """
+        1D CNN mapping input of shape (B, 3, 128) to decoupled coordinate and dynamics streams.
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.conv1 = nn.Conv1d(3, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+        
+        # Dual stream heads
+        self.conv_spatial_coord = nn.Conv1d(128, d_max, kernel_size=1)
+        self.conv_spatial_dyn = nn.Conv1d(128, d_max, kernel_size=1)
+        
+    def forward_spatial(self, x):
+        """
+        Returns spatial feature map of shape (B, d_max, 128) for the coordinate stream.
+        To ensure backprop through loss_spatial only flows to conv_spatial_coord,
+        we detach the output of conv4 before passing to conv_spatial_coord.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        # Detach before conv_spatial_coord to stop gradients flowing to conv1-4
+        x_coord = self.conv_spatial_coord(x.detach())  # (B, d_max, 8)
+        x_coord = F.interpolate(x_coord, size=128, mode='linear', align_corners=False) # (B, d_max, 128)
+        return x_coord
+
+    def forward_dynamics(self, x):
+        """
+        Returns the dynamics representation of shape (B, d_max).
+        Gradients on this stream flow back to conv_spatial_dyn and conv1-4.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        x_dyn = self.conv_spatial_dyn(x) # (B, d_max, 8)
+        return x_dyn.mean(dim=-1) # (B, d_max)
+
+    def forward(self, x):
+        """
+        Returns both streams:
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations, shape (B, d_max)
+        """
+        a_spatial = self.forward_spatial(x)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        z_dyn = self.forward_dynamics(x)
+        return z_coord, z_dyn
+
+
+class DualStreamPredictor(nn.Module):
+    def __init__(self, d_max=8, h=3):
+        """
+        MLP forecasting target z_{t+1} of size (B, 2 * D_max)
+        from history of active latent states (B, H * 2 * D_max).
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.net = nn.Sequential(
+            nn.Linear(h * 2 * d_max, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 2 * d_max)
+        )
+        
+    def forward(self, z_coord_history, z_dyn_history, d_t, mask_coord=False):
+        """
+        Args:
+            z_coord_history (Tensor): Shape (B, H, D_max)
+            z_dyn_history (Tensor): Shape (B, H, D_max)
+            d_t (int): Current active latent dimension.
+            mask_coord (bool): If True, zero out the coordinate input.
+        """
+        # Option to zero out coordinate input completely
+        if mask_coord:
+            z_coord_history = torch.zeros_like(z_coord_history)
+            
+        # Zero out inactive dimensions (index >= d_t)
+        mask_c = torch.zeros_like(z_coord_history)
+        mask_c[:, :, :d_t] = 1.0
+        z_coord_active = z_coord_history * mask_c
+        
+        mask_d = torch.zeros_like(z_dyn_history)
+        mask_d[:, :, :d_t] = 1.0
+        z_dyn_active = z_dyn_history * mask_d
+        
+        # Concatenate coordinate and dynamics histories along feature dimension: (B, H, 2 * d_max)
+        z_history = torch.cat([z_coord_active, z_dyn_active], dim=-1)
+        
+        # Flatten history: (B, H * 2 * d_max)
+        z_history_flat = z_history.reshape(-1, self.h * 2 * self.d_max)
+        
+        # Predict both streams
+        pred = self.net(z_history_flat) # (B, 2 * d_max)
+        
+        # Split into coord and dyn predictions
+        pred_coord, pred_dyn = torch.split(pred, self.d_max, dim=-1)
+        
+        # Zero out inactive dimensions in the outputs
+        out_mask = torch.zeros_like(pred_coord)
+        out_mask[:, :d_t] = 1.0
+        
+        pred_coord_active = pred_coord * out_mask
+        pred_dyn_active = pred_dyn * out_mask
+        
+        return pred_coord_active, pred_dyn_active
+
+
+class DualStreamJEPASpatial(nn.Module):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100):
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        
+        self.encoder = DualStreamEncoder(d_max=d_max)
+        self.predictor = DualStreamPredictor(d_max=d_max, h=h)
+        
+        # Dynamic state tracking
+        self.d_t = 2
+        self.steps_since_recruitment = cooldown  # start outside of cooldown
+        self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable periods
+        self.ema_error = None
+        self.ema_alpha = 0.05
+        self.gdasr_log_only = False
+        self.gdasr_growth_points = []
+
+    def reset_error_buffer(self):
+        self.error_buffer.clear()
+        self.ema_error = None
+
+    def calculate_centroid_and_variance(self, a_spatial):
+        return calculate_centroid_and_variance(a_spatial)
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False):
+        """
+        Args:
+            x_hist (Tensor): shape (B, H, 3, 128)
+            x_target (Tensor): shape (B, 3, 128)
+            sim_weight (float): VICReg invariance loss weight
+            var_weight (float): VICReg variance loss weight
+            cov_weight (float): VICReg covariance loss weight
+            lambda_spatial (float): spatial bottleneck loss weight
+            k_chan (int, optional): channel index to minimize spatial variance on. Defaults to d_t - 1.
+            mask_coord (bool): whether to zero out coordinate history in predictor.
+        """
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+        
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
+        
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+        
+        # Apply stabilization stop-gradient logic to history and target representations
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_hist_coord_stable = torch.cat([
+                z_hist_coord[:, :, :self.d_t-1].detach(),
+                z_hist_coord[:, :, self.d_t-1:]
+            ], dim=-1)
+            z_hist_dyn_stable = torch.cat([
+                z_hist_dyn[:, :, :self.d_t-1].detach(),
+                z_hist_dyn[:, :, self.d_t-1:]
+            ], dim=-1)
+            
+            z_target_coord_stable = torch.cat([
+                z_target_coord[:, :self.d_t-1].detach(),
+                z_target_coord[:, self.d_t-1:]
+            ], dim=-1)
+            z_target_dyn_stable = torch.cat([
+                z_target_dyn[:, :self.d_t-1].detach(),
+                z_target_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_hist_coord_stable = z_hist_coord
+            z_hist_dyn_stable = z_hist_dyn
+            
+            z_target_coord_stable = z_target_coord
+            z_target_dyn_stable = z_target_dyn
+            
+        # Predictive Coupling & Stop-Gradients on coordinate stream
+        # This prevents prediction gradients from flowing to the coordinate stream representation
+        z_hist_coord_pred = z_hist_coord_stable.detach()
+        z_target_coord_pred = z_target_coord_stable.detach()
+        
+        # Predict target representations
+        z_pred_coord, z_pred_dyn = self.predictor(
+            z_hist_coord_pred, 
+            z_hist_dyn_stable, 
+            self.d_t, 
+            mask_coord=mask_coord
+        )
+        
+        # Apply stabilization stop-gradient to predictor outputs
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_pred_coord_stable = torch.cat([
+                z_pred_coord[:, :self.d_t-1].detach(),
+                z_pred_coord[:, self.d_t-1:]
+            ], dim=-1)
+            z_pred_dyn_stable = torch.cat([
+                z_pred_dyn[:, :self.d_t-1].detach(),
+                z_pred_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_pred_coord_stable = z_pred_coord
+            z_pred_dyn_stable = z_pred_dyn
+            
+        # Select active dimensions
+        z_pred_coord_active = z_pred_coord_stable[:, :self.d_t]
+        z_target_coord_active = z_target_coord_stable[:, :self.d_t]
+        
+        z_pred_dyn_active = z_pred_dyn_stable[:, :self.d_t]
+        z_target_dyn_active = z_target_dyn_stable[:, :self.d_t]
+        
+        # 1. Similarity (Invariance) Loss
+        sim_loss_coord = F.mse_loss(z_pred_coord_active, z_target_coord_pred[:, :self.d_t])
+        sim_loss_dyn = F.mse_loss(z_pred_dyn_active, z_target_dyn_active)
+        sim_loss = sim_loss_coord + sim_loss_dyn
+        
+        # 2. Variance Loss
+        def calc_var_loss(x, gamma=1.0, eps=1e-4):
+            mean = x.mean(dim=0)
+            var = torch.mean((x - mean)**2, dim=0)
+            std = torch.sqrt(var + eps)
+            return torch.mean(F.relu(gamma - std))
+            
+        var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+        var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+        var_loss = var_loss_coord + var_loss_dyn
+        
+        # 3. Covariance Loss
+        def calc_cov_loss(x):
+            B, d = x.shape
+            if B <= 1 or d <= 1:
+                return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            mean = x.mean(dim=0, keepdim=True)
+            x_centered = x - mean
+            cov = (x_centered.T @ x_centered) / (B - 1)
+            diag = torch.diagonal(cov)
+            off_diag = cov - torch.diag(diag)
+            return (off_diag ** 2).sum() / d
+            
+        cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
+        cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+        cov_loss = cov_loss_coord + cov_loss_dyn
+        
+        base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+        
+        # 4. Spatial Bottleneck Loss
+        if lambda_spatial > 0:
+            z_target_spatial = self.encoder.forward_spatial(x_target)
+            _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+            if k_chan is None:
+                k_chan = self.d_t - 1
+            var_k = var_all[:, k_chan]
+            loss_spatial = lambda_spatial * var_k.mean()
+            loss = base_loss + loss_spatial
+        else:
+            loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            loss = base_loss
+            
+        return {
+            "loss": loss,
+            "sim_loss": sim_loss,
+            "sim_loss_coord": sim_loss_coord,
+            "sim_loss_dyn": sim_loss_dyn,
+            "var_loss": var_loss,
+            "var_loss_coord": var_loss_coord,
+            "var_loss_dyn": var_loss_dyn,
+            "cov_loss": cov_loss,
+            "cov_loss_coord": cov_loss_coord,
+            "cov_loss_dyn": cov_loss_dyn,
+            "loss_spatial": loss_spatial
+        }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def update_recruitment_logic(self, error_val, target_dim=None, step=None):
+        if target_dim is None:
+            target_dim = self.d_t
+
+        if self.ema_error is None:
+            self.ema_error = error_val
+        else:
+            self.ema_error = self.ema_alpha * error_val + (1.0 - self.ema_alpha) * self.ema_error
+            
+        self.steps_since_recruitment += 1
+        
+        if self.d_t == target_dim:
+            self.error_buffer.append(self.ema_error)
+            
+        if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+            if len(self.error_buffer) >= 200:
+                mean = np.mean(self.error_buffer)
+                std = np.std(self.error_buffer)
+                if self.ema_error > mean + self.k * std:
+                    if self.gdasr_log_only:
+                        self.steps_since_recruitment = 0
+                        self.gdasr_growth_points.append({
+                            "step": step,
+                            "ema_error": self.ema_error,
+                            "mean": mean,
+                            "std": std
+                        })
+                        print(f"[GDASR LOG-ONLY] Growth point detected at d_t={self.d_t}, "
+                              f"error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+                    else:
+                        self.d_t = target_dim + 1
+                        self.steps_since_recruitment = 0
+                        print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+
+    def clone(self):
+        """
+        Self-cloning capability: Returns a copy of this model with identical parameters and dynamic state.
+        """
+        import copy
+        cloned = DualStreamJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        cloned.gdasr_log_only = self.gdasr_log_only
+        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
+        return cloned
+
+
+class PDRCEncoder(DualStreamEncoder):
+    def __init__(self, d_max=8):
+        super().__init__(d_max=d_max)
+        self.stage = 1
+
+    def forward_spatial(self, x):
+        """
+        Returns spatial feature map of shape (B, d_max, 128) for the coordinate stream.
+        To ensure backprop through loss_spatial only flows to conv_spatial_coord,
+        we detach the output of conv4 before passing to conv_spatial_coord in Stage 2.
+        In Stage 1, we allow gradients to flow back to conv1-4.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        if self.stage == 2:
+            x_coord = self.conv_spatial_coord(x.detach())
+        else:
+            x_coord = self.conv_spatial_coord(x)
+            
+        x_coord = F.interpolate(x_coord, size=128, mode='linear', align_corners=False) # (B, d_max, 128)
+        return x_coord
+
+
+class PDRCJEPASpatial(DualStreamJEPASpatial):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, stage=1):
+        super().__init__(d_max=d_max, h=h, k=k, cooldown=cooldown, stabilization_period=stabilization_period)
+        self.encoder = PDRCEncoder(d_max=d_max)
+        self._stage = stage
+        self.stage = stage # Trigger property setter to configure requires_grad
+
+    @property
+    def stage(self):
+        return self._stage
+
+    @stage.setter
+    def stage(self, value):
+        if value not in [1, 2]:
+            raise ValueError("Stage must be 1 or 2.")
+        self._stage = value
+        self.encoder.stage = value
+        
+        # Stage 1: All parameters should have requires_grad=True
+        # Stage 2: Set requires_grad=False on encoder.conv_spatial_coord parameters
+        #          The dynamics stream and predictor should remain fully trainable
+        if value == 1:
+            for p in self.parameters():
+                p.requires_grad = True
+        elif value == 2:
+            for name, p in self.named_parameters():
+                if "encoder.conv_spatial_coord" in name:
+                    p.requires_grad = False
+                else:
+                    p.requires_grad = True
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False):
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+        
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
+        
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+        
+        # Stabilization stop-gradient logic depending on stage
+        if self.stage == 1:
+            # Stage 1: No detaching at all on coordinate representations
+            z_hist_coord_stable = z_hist_coord
+            z_target_coord_stable = z_target_coord
+        else:
+            # Stage 2: Apply standard stabilization stop-gradients to coordinate stream
+            if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+                z_hist_coord_stable = torch.cat([
+                    z_hist_coord[:, :, :self.d_t-1].detach(),
+                    z_hist_coord[:, :, self.d_t-1:]
+                ], dim=-1)
+                z_target_coord_stable = torch.cat([
+                    z_target_coord[:, :self.d_t-1].detach(),
+                    z_target_coord[:, self.d_t-1:]
+                ], dim=-1)
+            else:
+                z_hist_coord_stable = z_hist_coord
+                z_target_coord_stable = z_target_coord
+
+        # Dynamics stream always has stabilization stop-gradient logic
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_hist_dyn_stable = torch.cat([
+                z_hist_dyn[:, :, :self.d_t-1].detach(),
+                z_hist_dyn[:, :, self.d_t-1:]
+            ], dim=-1)
+            z_target_dyn_stable = torch.cat([
+                z_target_dyn[:, :self.d_t-1].detach(),
+                z_target_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_hist_dyn_stable = z_hist_dyn
+            z_target_dyn_stable = z_target_dyn
+
+        # Predictive Coupling & Stop-Gradients on coordinate stream
+        if self.stage == 1:
+            # Stage 1: Do NOT detach before passing to predictor or in similarity loss
+            z_hist_coord_pred = z_hist_coord_stable
+            z_target_coord_pred = z_target_coord_stable
+        else:
+            # Stage 2: Detach z_hist_coord and z_target_coord before predictor or similarity loss
+            z_hist_coord_pred = z_hist_coord_stable.detach()
+            z_target_coord_pred = z_target_coord_stable.detach()
+
+        # Predict target representations
+        z_pred_coord, z_pred_dyn = self.predictor(
+            z_hist_coord_pred, 
+            z_hist_dyn_stable, 
+            self.d_t, 
+            mask_coord=mask_coord
+        )
+
+        # Apply stabilization stop-gradient to predictor outputs
+        if self.stage == 1:
+            # Stage 1: Do NOT detach coordinate predictor output
+            z_pred_coord_stable = z_pred_coord
+        else:
+            if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+                z_pred_coord_stable = torch.cat([
+                    z_pred_coord[:, :self.d_t-1].detach(),
+                    z_pred_coord[:, self.d_t-1:]
+                ], dim=-1)
+            else:
+                z_pred_coord_stable = z_pred_coord
+
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_pred_dyn_stable = torch.cat([
+                z_pred_dyn[:, :self.d_t-1].detach(),
+                z_pred_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_pred_dyn_stable = z_pred_dyn
+
+        # Select active dimensions
+        z_pred_coord_active = z_pred_coord_stable[:, :self.d_t]
+        z_target_coord_active = z_target_coord_stable[:, :self.d_t]
+        
+        z_pred_dyn_active = z_pred_dyn_stable[:, :self.d_t]
+        z_target_dyn_active = z_target_dyn_stable[:, :self.d_t]
+        
+        # 1. Similarity (Invariance) Loss
+        sim_loss_coord = F.mse_loss(z_pred_coord_active, z_target_coord_pred[:, :self.d_t])
+        sim_loss_dyn = F.mse_loss(z_pred_dyn_active, z_target_dyn_active)
+        sim_loss = sim_loss_coord + sim_loss_dyn
+        
+        # 2. Variance Loss
+        def calc_var_loss(x, gamma=1.0, eps=1e-4):
+            mean = x.mean(dim=0)
+            var = torch.mean((x - mean)**2, dim=0)
+            std = torch.sqrt(var + eps)
+            return torch.mean(F.relu(gamma - std))
+            
+        var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+        var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+        var_loss = var_loss_coord + var_loss_dyn
+        
+        # 3. Covariance Loss
+        def calc_cov_loss(x):
+            B, d = x.shape
+            if B <= 1 or d <= 1:
+                return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            mean = x.mean(dim=0, keepdim=True)
+            x_centered = x - mean
+            cov = (x_centered.T @ x_centered) / (B - 1)
+            diag = torch.diagonal(cov)
+            off_diag = cov - torch.diag(diag)
+            return (off_diag ** 2).sum() / d
+            
+        cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
+        cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+        cov_loss = cov_loss_coord + cov_loss_dyn
+        
+        base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+        
+        # 4. Spatial Bottleneck Loss
+        if lambda_spatial > 0:
+            z_target_spatial = self.encoder.forward_spatial(x_target)
+            _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+            if k_chan is None:
+                k_chan = self.d_t - 1
+            var_k = var_all[:, k_chan]
+            loss_spatial = lambda_spatial * var_k.mean()
+            loss = base_loss + loss_spatial
+        else:
+            loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            loss = base_loss
+            
+        return {
+            "loss": loss,
+            "sim_loss": sim_loss,
+            "sim_loss_coord": sim_loss_coord,
+            "sim_loss_dyn": sim_loss_dyn,
+            "var_loss": var_loss,
+            "var_loss_coord": var_loss_coord,
+            "var_loss_dyn": var_loss_dyn,
+            "cov_loss": cov_loss,
+            "cov_loss_coord": cov_loss_coord,
+            "cov_loss_dyn": cov_loss_dyn,
+            "loss_spatial": loss_spatial
+        }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def clone(self):
+        import copy
+        cloned = PDRCJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period,
+            stage=self.stage
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        return cloned
+
+
+class NonParametricEncoder(nn.Module):
+    def __init__(self, d_max=8, pos_encoding="none"):
+        super().__init__()
+        self.d_max = d_max
+        self.pos_encoding = pos_encoding
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+        self.conv_spatial = nn.Conv1d(128, d_max, kernel_size=1)
+
+    def forward_spatial(self, x):
+        """
+        Returns spatial feature map of shape (B, d_max, 128) for the encoder.
+        """
+        x = add_positional_encoding(x, self.pos_encoding)
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        x = self.conv_spatial(x) # (B, d_max, 8)
+        x = F.interpolate(x, size=128, mode='linear', align_corners=False) # (B, d_max, 128)
+        return x
+
+    def forward(self, x):
+        """
+        Returns both streams:
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations computed as mean of a_spatial over spatial dim, shape (B, d_max)
+        """
+        a_spatial = self.forward_spatial(x)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        z_dyn = a_spatial.mean(dim=-1)
+        return z_coord, z_dyn
+
+
+class NonParametricJEPASpatial(nn.Module):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
+                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True):
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        self.pos_encoding = pos_encoding
+        self.primary_objective = primary_objective
+        self.sfa_weight = sfa_weight
+        self.gdasr_log_only = gdasr_log_only
+        
+        self.encoder = NonParametricEncoder(d_max=d_max, pos_encoding=pos_encoding)
+        self.predictor = DualStreamPredictor(d_max=d_max, h=h)
+        
+        # Dynamic state tracking
+        self.d_t = 2
+        self.steps_since_recruitment = cooldown  # start outside of cooldown
+        self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable periods
+        self.ema_error = None
+        self.ema_alpha = 0.05
+        self.gdasr_growth_points = []
+
+    def reset_error_buffer(self):
+        self.error_buffer.clear()
+        self.ema_error = None
+
+    def calculate_centroid_and_variance(self, a_spatial):
+        return calculate_centroid_and_variance(a_spatial)
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None):
+        """
+        Args:
+            x_hist (Tensor): shape (B, H, 3, 128)
+            x_target (Tensor): shape (B, 3, 128)
+            sim_weight (float): VICReg invariance loss weight
+            var_weight (float): VICReg variance loss weight
+            cov_weight (float): VICReg covariance loss weight
+            lambda_spatial (float): spatial bottleneck loss weight
+            k_chan (int, optional): channel index to minimize spatial variance on. Defaults to d_t - 1.
+            mask_coord (bool): whether to zero out coordinate history in predictor.
+            ccr_mode (str): CCR mode ('none', 'hinge', 'covariance').
+            ccr_smooth_weight (float): CCR smoothness loss weight.
+            ccr_spatial_weight (float): CCR spatial loss weight.
+            d_t_predict (int or None): Number of dimensions the predictor should predict.
+                If None, defaults to self.d_t (standard behavior). If set to a value
+                less than self.d_t, the predictor only receives/outputs d_t_predict
+                active dimensions, keeping its higher-index dimensions untrained.
+            sfa_weight (float or None): SFA slowness loss weight. If None, uses self.sfa_weight.
+                Only relevant when primary_objective='sfa'.
+        """
+        # Determine effective prediction dimension
+        dt_pred = d_t_predict if d_t_predict is not None else self.d_t
+        
+        # Use instance sfa_weight unless overridden at call time
+        _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight
+
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
+
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+
+        if self.primary_objective == "sfa":
+            # === SFA MODE: SFA on z_dyn + VICReg as primary representation objective ===
+            # Per M2: SFA shapes z_dyn (identity/appearance stream). z_coord is NOT slowed.
+
+            # SFA loss: slowness on z_dyn across timesteps
+            # z_hist_dyn is (B, H, d_max); take last timestep vs target
+            # H=3, so z_hist_dyn[:, -1] is the previous frame's z_dyn
+            z_prev_dyn = z_hist_dyn[:, -1]  # (B, d_max)
+
+            # SFA computed over active dimensions
+            z_target_dyn_active = z_target_dyn[:, :self.d_t]
+            z_prev_dyn_active = z_prev_dyn[:, :self.d_t]
+            sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active)
+
+            # VICReg on z_dyn to prevent collapse (variance + covariance)
+            def calc_var_loss(x, gamma=1.0, eps=1e-4):
+                mean = x.mean(dim=0)
+                var = torch.mean((x - mean)**2, dim=0)
+                std = torch.sqrt(var + eps)
+                return torch.mean(F.relu(gamma - std))
+
+            def calc_cov_loss(x):
+                Bc, d = x.shape
+                if Bc <= 1 or d <= 1:
+                    return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+                mean = x.mean(dim=0, keepdim=True)
+                x_centered = x - mean
+                cov = (x_centered.T @ x_centered) / (Bc - 1)
+                diag = torch.diagonal(cov)
+                off_diag = cov - torch.diag(diag)
+                return (off_diag ** 2).sum() / d
+
+            var_loss_dyn = calc_var_loss(z_target_dyn_active)
+            var_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            var_loss = var_loss_dyn
+
+            cov_loss_dyn = calc_cov_loss(z_target_dyn_active)
+            cov_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            cov_loss = cov_loss_dyn
+
+            # JEPA as readout with stop-gradient: prediction error trains predictor only
+            z_target_sfa_dyn = z_target_dyn_active.detach()
+            z_hist_sfa_dyn = z_hist_dyn.detach()
+            z_hist_sfa_coord = z_hist_coord.detach()
+
+            z_pred_coord, z_pred_dyn = self.predictor(
+                z_hist_sfa_coord,
+                z_hist_sfa_dyn,
+                dt_pred,
+                mask_coord=mask_coord
+            )
+
+            z_pred_coord_pred = z_pred_coord[:, :dt_pred]
+            z_target_coord_pred_dt = z_target_coord[:, :dt_pred]
+            z_pred_dyn_pred = z_pred_dyn[:, :dt_pred]
+            z_target_dyn_pred = z_target_dyn_active.detach()  # stop-gradient for readout
+
+            # Prediction losses (train predictor, not encoder)
+            sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
+            sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
+            sim_loss = sim_loss_coord + sim_loss_dyn
+
+            # Prediction loss does NOT shape encoder representation
+            base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+
+            # Active dims for reporting (full d_t)
+            z_pred_coord_active = z_pred_coord[:, :self.d_t]
+            z_target_coord_active = z_target_coord[:, :self.d_t]
+            z_pred_dyn_active = z_pred_dyn[:, :self.d_t]
+
+            # Spatial bottleneck
+            if lambda_spatial > 0:
+                z_target_spatial = self.encoder.forward_spatial(x_target)
+                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+                if k_chan is None:
+                    k_chan = self.d_t - 1
+                var_k = var_all[:, k_chan]
+                loss_spatial = lambda_spatial * var_k.mean()
+                loss = base_loss + loss_spatial
+            else:
+                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+                loss = base_loss
+
+            # CCR (unchanged)
+            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            if ccr_mode != 'none':
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)
+                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0
+                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1]
+                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
+
+                if ccr_mode == 'hinge':
+                    hinge_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        if self.d_t > 1:
+                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
+                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
+                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
+                            hinge = F.relu(0.15 - diff_pairs)
+                            hinge_losses.append(hinge.mean())
+                        else:
+                            hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
+                    ccr_spatial_loss = torch.stack(hinge_losses).mean()
+                elif ccr_mode == 'covariance':
+                    cov_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        cov_losses.append(calc_cov_loss(z_f))
+                    ccr_spatial_loss = torch.stack(cov_losses).mean()
+
+                ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss
+                loss = loss + ccr_total
+
+            return {
+                "loss": loss,
+                "sim_loss": sim_loss,
+                "sim_loss_coord": sim_loss_coord,
+                "sim_loss_dyn": sim_loss_dyn,
+                "var_loss": var_loss,
+                "var_loss_coord": var_loss_coord,
+                "var_loss_dyn": var_loss_dyn,
+                "cov_loss": cov_loss,
+                "cov_loss_coord": cov_loss_coord,
+                "cov_loss_dyn": cov_loss_dyn,
+                "loss_spatial": loss_spatial,
+                "sfa_loss": sfa_loss,
+                "ccr_smooth_loss": ccr_smooth_loss,
+                "ccr_spatial_loss": ccr_spatial_loss
+            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+        else:
+            # === JEPA MODE (default, backward compatible) ===
+
+            # In NonParametricJEPASpatial, there are no stop-gradients/detaches on the coordinate stream
+            z_hist_coord_pred = z_hist_coord
+            z_target_coord_pred = z_target_coord
+
+            # Predict target representations using dt_pred for the predictor's active dim mask
+            z_pred_coord, z_pred_dyn = self.predictor(
+                z_hist_coord_pred,
+                z_hist_dyn,
+                dt_pred,  # <-- use dt_pred instead of self.d_t
+                mask_coord=mask_coord
+            )
+
+            # Compute coordinate/dynamics prediction over dt_pred dimensions
+            z_pred_coord_pred = z_pred_coord[:, :dt_pred]
+            z_target_coord_pred_dt = z_target_coord_pred[:, :dt_pred]
+
+            z_pred_dyn_pred = z_pred_dyn[:, :dt_pred]
+            z_target_dyn_pred = z_target_dyn[:, :dt_pred]
+
+            # Select all self.d_t active dimensions for variance and covariance losses
+            z_pred_coord_active = z_pred_coord[:, :self.d_t]
+            z_target_coord_active = z_target_coord[:, :self.d_t]
+
+            z_pred_dyn_active = z_pred_dyn[:, :self.d_t]
+            z_target_dyn_active = z_target_dyn[:, :self.d_t]
+
+            # 1. Similarity (Invariance) Loss — computed only over dt_pred dimensions
+            sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
+            sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
+            sim_loss = sim_loss_coord + sim_loss_dyn
+
+            # 2. Variance Loss — computed over all self.d_t dimensions
+            def calc_var_loss(x, gamma=1.0, eps=1e-4):
+                mean = x.mean(dim=0)
+                var = torch.mean((x - mean)**2, dim=0)
+                std = torch.sqrt(var + eps)
+                return torch.mean(F.relu(gamma - std))
+
+            var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+            var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+            var_loss = var_loss_coord + var_loss_dyn
+
+            # 3. Covariance Loss — computed over all self.d_t dimensions
+            def calc_cov_loss(x):
+                Bc, d = x.shape
+                if Bc <= 1 or d <= 1:
+                    return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+                mean = x.mean(dim=0, keepdim=True)
+                x_centered = x - mean
+                cov = (x_centered.T @ x_centered) / (Bc - 1)
+                diag = torch.diagonal(cov)
+                off_diag = cov - torch.diag(diag)
+                return (off_diag ** 2).sum() / d
+
+            cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
+            cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+            cov_loss = cov_loss_coord + cov_loss_dyn
+
+            base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+
+            # 4. Spatial Bottleneck Loss
+            if lambda_spatial > 0:
+                z_target_spatial = self.encoder.forward_spatial(x_target)
+                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+                if k_chan is None:
+                    k_chan = self.d_t - 1
+                var_k = var_all[:, k_chan]
+                loss_spatial = lambda_spatial * var_k.mean()
+                loss = base_loss + loss_spatial
+            else:
+                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+                loss = base_loss
+
+            # 5. Contrastive Coordinate Regularization (CCR)
+            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            if ccr_mode != 'none':
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1) # (B, 4, d_max)
+                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0 # (B, 4, d_t)
+
+                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1] # (B, 3, d_t)
+                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
+
+                if ccr_mode == 'hinge':
+                    hinge_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        if self.d_t > 1:
+                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
+                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
+                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
+                            hinge = F.relu(0.15 - diff_pairs)
+                            hinge_losses.append(hinge.mean())
+                        else:
+                            hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
+                    ccr_spatial_loss = torch.stack(hinge_losses).mean()
+
+                elif ccr_mode == 'covariance':
+                    cov_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        cov_losses.append(calc_cov_loss(z_f))
+                    ccr_spatial_loss = torch.stack(cov_losses).mean()
+
+                ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss
+                loss = loss + ccr_total
+
+            return {
+                "loss": loss,
+                "sim_loss": sim_loss,
+                "sim_loss_coord": sim_loss_coord,
+                "sim_loss_dyn": sim_loss_dyn,
+                "var_loss": var_loss,
+                "var_loss_coord": var_loss_coord,
+                "var_loss_dyn": var_loss_dyn,
+                "cov_loss": cov_loss,
+                "cov_loss_coord": cov_loss_coord,
+                "cov_loss_dyn": cov_loss_dyn,
+                "loss_spatial": loss_spatial,
+                "ccr_smooth_loss": ccr_smooth_loss,
+                "ccr_spatial_loss": ccr_spatial_loss
+            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def update_recruitment_logic(self, error_val, target_dim=None, step=None):
+        if target_dim is None:
+            target_dim = self.d_t
+
+        if self.ema_error is None:
+            self.ema_error = error_val
+        else:
+            self.ema_error = self.ema_alpha * error_val + (1.0 - self.ema_alpha) * self.ema_error
+            
+        self.steps_since_recruitment += 1
+        
+        if self.d_t == target_dim:
+            self.error_buffer.append(self.ema_error)
+
+        # Log-only mode (M3): detect growth points without changing d_t
+        if self.gdasr_log_only:
+            if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+                if len(self.error_buffer) >= 200:
+                    mean = np.mean(self.error_buffer)
+                    std = np.std(self.error_buffer)
+                    if self.ema_error > mean + self.k * std:
+                        self.steps_since_recruitment = 0
+                        self.gdasr_growth_points.append({
+                            "step": step,
+                            "ema_error": self.ema_error,
+                            "mean": mean,
+                            "std": std
+                        })
+                        print(f"[GDASR LOG-ONLY] Growth point detected at d_t={self.d_t}, "
+                              f"error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+        else:
+            # Active recruitment mode (backward compatible)
+            if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+                if len(self.error_buffer) >= 200:
+                    mean = np.mean(self.error_buffer)
+                    std = np.std(self.error_buffer)
+                    if self.ema_error > mean + self.k * std:
+                        self.d_t = target_dim + 1
+                        self.steps_since_recruitment = 0
+                        print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+
+    def clone(self):
+        import copy
+        cloned = NonParametricJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period,
+            pos_encoding=self.pos_encoding,
+            primary_objective=self.primary_objective,
+            sfa_weight=self.sfa_weight,
+            gdasr_log_only=self.gdasr_log_only
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
+        return cloned
+]
+Let me check for the pre-registration and any phase instruction documents:
+
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 020
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+On the existing NonParametricJEPASpatial CNN encoder with frozen d_t=3 and no dynamic
+recruitment, replacing the JEPA prediction objective with SFA (slowness) on z_dyn as the
+primary representation objective, combined with batch VICReg on z_dyn, will:
+(1) Train without representation collapse (all per-dimension std >= 0.5, no has_collapsed trigger),
+(2) Achieve centroid-decoding MSE via Arm F (soft-argmax on z_coord) at most 10% higher
+    than the JEPA+VICReg baseline (i.e., MSE_SFA <= 1.10 * MSE_JEPA, where MSE_JEPA ~ 55.6),
+(3) Produce z_dyn representations that are significantly slower (mean ||z_dyn(t) - z_dyn(t-1)||^2
+    at least 40% lower) than z_coord temporal variation, indicating that SFA separates slow
+    identity from fast position by construction.
+
+## 2. Falsification Criterion
+The hypothesis is falsified if ANY of the following hold across the 5-seed sweep:
+C1 (Collapse): SFA+VICReg arm collapses (has_collapsed=True OR any active dimension std < 0.5)
+    in >= 2 out of 5 seeds.
+C2 (Centroid MSE): Mean centroid-decoding MSE of the SFA arm exceeds 1.10 * mean MSE of the
+    JEPA baseline arm (i.e., SFA degrades spatial readout by more than 10%).
+C3 (Slowness separation): The ratio mean(||z_dyn(t)-z_dyn(t-1)||^2) / mean(||z_coord(t)-z_coord(t-1)||^2)
+    is >= 0.6 for the SFA arm (i.e., z_dyn is not substantially slower than z_coord,
+    failing the identity-position separation hypothesis).
+
+## 3. Proposed Method
+Step 1: Create SFA training infrastructure.
+- MODIFY src/models_dual_stream.py: Add an SFA loss computation to NonParametricJEPASpatial.forward()
+  that computes L_sfa = ||z_dyn_target - z_dyn_prev||^2 over the batch, where z_dyn_prev is
+  z_dyn from the previous frame in the history. Also add batch VICReg on z_dyn_target (the 
+  target frame's dynamics representation). The total representation loss becomes:
+  L_repr = sfa_weight * L_sfa + var_weight * VICReg_var(z_dyn) + cov_weight * VICReg_cov(z_dyn)
+  The JEPA sim_loss is retained ONLY as a readout/surprise signal (stop-gradient detached from
+  the representation), not as a training objective for the encoder.
+- Keep the predictor's forward pass for surprise computation, but detach its output from the
+  encoder's gradient path when SFA is the primary objective.
+
+Step 2: Create the Phase 0 experiment runner.
+- CREATE src/run_phase0_sfa.py: A 5-seed sweep comparing three arms:
+  Arm A (SFA+VICReg): Primary objective = SFA on z_dyn + batch VICReg on z_dyn.
+    - sfa_weight=1.0, var_weight=25.0, cov_weight=25.0
+    - Predictor is retained for surprise readout but gradients do NOT flow to encoder from sim_loss.
+    - z_coord is NOT slowed (M2 mandate).
+    - d_t frozen at 3, no recruitment.
+  Arm B (JEPA+VICReg Baseline, B1): Same as current NonParametricJEPASpatial with
+    sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t frozen at 3, no recruitment.
+    This is the direct comparison baseline.
+  Arm C (SFA+VICReg with pos_encoding="sinusoidal"): Same as Arm A but with sinusoidal
+    position encoding added to the input. Tests whether explicit position channels
+    narrow the Spatial Specialization Gap under SFA.
+
+Step 3: Training protocol (shared across arms).
+- Environment: PhysicsSandbox(N=3, seed=seed) for 3000 training steps, batch_size=32.
+- History buffer: deque(maxlen=4) for H=3 history + 1 target.
+- Replay buffer: capacity 2000, prefill 100 transitions.
+- Optimizer: Adam, lr=1e-3.
+- d_t = 3 frozen from start (no recruitment logic).
+- GDASR runs in log-only mode (computes and logs growth-point signals without modifying d_t).
+- Seeds: [42, 123, 456, 789, 999].
+
+Step 4: Evaluation protocol (at step 3000 and checkpoint at 1500).
+- Non-collapse check: has_collapsed criterion + per-dimension std >= 0.5.
+- Centroid decoding MSE: linear probe on soft-argmax centroids vs. true object positions
+  (all 3 objects, report mean and per-object).
+- Slowness metrics: mean ||z_dyn(t) - z_dyn(t-1)||^2 and mean ||z_coord(t) - z_coord(t-1)||^2
+  over 200 test frames, and their ratio.
+- VICReg health: per-dimension std, mean absolute correlation between active dimensions.
+- GDASR growth-point log: count and timing of would-have-recruited events.
+
+Step 5: Statistical analysis.
+- Welch's t-test comparing SFA arm vs JEPA arm on centroid MSE.
+- Welch's t-test comparing SFA arm z_dyn slowness ratio vs 0.6 threshold.
+- Cohen's d for effect sizes.
+- Report with confidence intervals per reporting standards (Section 9).
+
+Step 6: Falsification audit against C1, C2, C3.
+- C1: Count collapsed seeds per arm.
+- C2: Compare mean MSE_SFA vs 1.10 * mean MSE_JEPA.
+- C3: Compute slowness ratio for SFA arm; check >= 0.6.
+
+Files to create/modify:
+- MODIFY: src/models_dual_stream.py (add SFA objective option to NonParametricJEPASpatial.forward)
+- CREATE: src/run_phase0_sfa.py (experiment runner with 3 arms × 5 seeds)
+- UPDATE: src/pre_registration.md (with Phase 0 pre-registration)
+
+---
+*Created automatically by the RDF Orchestrator prior to iteration execution.*
+]
+Let me check if there are any additional instruction files or recent research results that elaborate on the semantic disentanglement requirement:
+
+
+[Tool Call: grep_search({'pattern': 'semantic.*disentangl|disentangl.*probe|semantic.*probe', 'include_pattern': '*.md'})]
+[Tool Result: manager_log.md:2477: The hypothesis claim (3) and falsification criterion C3 suffer a **constructional confound**. You imposed an explicit slowness penalty on `z_dyn` and none on `z_coord`. The optimizer minimizing what you asked it to minimize — yielding `||Δz_dyn||² / ||Δz_coord||² < 0.6` — is a **verification of the gradient path**, not empirical evidence that identity and position are semantically disentangled. The ratio tells us "the loss term worked," not "the representation factorized meaningfully."
+manager_log.md:2481: - **Add a genuinely empirical disentanglement metric:** linear probes predicting object identity (color/size class) from `z_dyn` vs. `z_coord`, and object centroid position from `z_coord` vs. `z_dyn`. If SFA creates semantic separation, `z_dyn` should predict identity well and position poorly, and vice versa for `z_coord`. *This* is the test of the Spatial-Gap hypothesis — not the slowness ratio.
+manager_log.md:2482: - **Replace or augment C3** with a criterion on the semantic probes, e.g.: "C3 is falsified if the linear-probe accuracy for object identity from `z_dyn` does not exceed that from `z_coord` by at least 10 percentage points."
+archive\iter_020\manager_log.md:94: The hypothesis claim (3) and falsification criterion C3 suffer a **constructional confound**. You imposed an explicit slowness penalty on `z_dyn` and none on `z_coord`. The optimizer minimizing what you asked it to minimize — yielding `||Δz_dyn||² / ||Δz_coord||² < 0.6` — is a **verification of the gradient path**, not empirical evidence that identity and position are semantically disentangled. The ratio tells us "the loss term worked," not "the representation factorized meaningfully."
+archive\iter_020\manager_log.md:98: - **Add a genuinely empirical disentanglement metric:** linear probes predicting object identity (color/size class) from `z_dyn` vs. `z_coord`, and object centroid position from `z_coord` vs. `z_dyn`. If SFA creates semantic separation, `z_dyn` should predict identity well and position poorly, and vice versa for `z_coord`. *This* is the test of the Spatial-Gap hypothesis — not the slowness ratio.
+archive\iter_020\manager_log.md:99: - **Replace or augment C3** with a criterion on the semantic probes, e.g.: "C3 is falsified if the linear-probe accuracy for object identity from `z_dyn` does not exceed that from `z_coord` by at least 10 percentage points."
+archive\iter_010\results\phase10_report.md:43: To ensure that $z^{coord}$ does not become "semantically blind" under stop-gradient operations, we audited the linear probe centroid decoding MSE for Arm D. The resulting decoding MSE of **75.8786** matches or exceeds the diagnostic quality of Arm A (**69.1092**), proving that the coordinate stream remains grounded and actively tracks physical entity centroids rather than static noise.
+archive\iter_020\iter_001\task.md:9: 1. **Reframe claim (3) as a sanity check**: The slowness ratio (||Δz_dyn||² / ||Δz_coord||²) merely verifies that the SFA objective is active and VICReg prevents collapse. It does NOT constitute evidence of semantic disentanglement. State this explicitly in the pre-registration update.
+archive\iter_020\iter_001\task.md:11: 2. **Add semantic disentanglement probes**: Linear probes predicting object identity (color as a 3D regression target) from z_dyn vs z_coord, and object centroid position from z_coord vs z_dyn. If SFA creates semantic separation, z_dyn should predict color well and position poorly, and vice versa for z_coord.
+archive\iter_020\iter_001\task.md:13: 3. **Augment C3 with semantic probe criterion**: "C3 is falsified if the linear-probe R² for object color from z_dyn does not exceed that from z_coord by at least 0.10 (10 percentage points in R²)." The original slowness-ratio C3 becomes a sanity check, not the main falsification criterion.
+archive\iter_020\iter_001\task.md:94: 4. **Semantic disentanglement probes** (primary C3):
+archive\iter_020\iter_001\task.md:130: - New C3 with semantic probe criterion (delta_R2_color >= 0.10)
+archive\iter_020\iter_001\iter_006\task.md:1: Modify `src/run_phase0_sfa.py` to add the semantic disentanglement probes and the augmented C3 falsification criterion as specified in the Phase 0 instructions. Update the summary report, JSONs, and CSVs with these new semantic metrics. Run a dry run to verify correctness.]
+
+[Tool Call: read_file({'path': 'archive\\iter_020\\iter_001\\task.md'})]
+[Tool Result: 
+# Phase 0 — Objective Migration: SFA on z_dyn + VICReg
+
+## Pre-Registration File
+You MUST read `src/pre_registration.md` first and adhere to its hypotheses and falsification criteria. Also read the Manager's notes below carefully — there are CRITICAL modifications to the pre-registration that you must implement.
+
+## Manager's Critical Modifications (MUST IMPLEMENT)
+
+1. **Reframe claim (3) as a sanity check**: The slowness ratio (||Δz_dyn||² / ||Δz_coord||²) merely verifies that the SFA objective is active and VICReg prevents collapse. It does NOT constitute evidence of semantic disentanglement. State this explicitly in the pre-registration update.
+
+2. **Add semantic disentanglement probes**: Linear probes predicting object identity (color as a 3D regression target) from z_dyn vs z_coord, and object centroid position from z_coord vs z_dyn. If SFA creates semantic separation, z_dyn should predict color well and position poorly, and vice versa for z_coord.
+
+3. **Augment C3 with semantic probe criterion**: "C3 is falsified if the linear-probe R² for object color from z_dyn does not exceed that from z_coord by at least 0.10 (10 percentage points in R²)." The original slowness-ratio C3 becomes a sanity check, not the main falsification criterion.
+
+## CRITICAL: Architecture Context
+
+Read `src/models_dual_stream.py` carefully. The `NonParametricEncoder` computes BOTH z_coord and z_dyn from a single shared `a_spatial = self.forward_spatial(x)`:
+- `z_coord = soft_argmax(a_spatial)` — centroids (position)
+- `z_dyn = a_spatial.mean(dim=-1)` — mean activation (identity)
+
+Since both streams share the same spatial feature map, SFA gradients on z_dyn flow through a_spatial → conv_spatial → conv1-4, indirectly shaping z_coord too. This is the structural basis for testing whether SFA on z_dyn produces good z_coord readouts.
+
+## Step 1: Modify src/models_dual_stream.py
+
+Add SFA mode to `NonParametricJEPASpatial`:
+
+1. Add `primary_objective` parameter to `__init__()` (default "jepa" for backward compat). Valid values: "jepa", "sfa".
+
+2. Add `sfa_weight` parameter to `__init__()` (default 1.0).
+
+3. Add `gdasr_log_only` parameter to `__init__()` (default False). When True, `update_recruitment_logic()` computes and logs growth-point signals but NEVER modifies `d_t`.
+
+4. In `forward()`, when `primary_objective == "sfa"`:
+   a. **SFA loss**: `L_sfa = F.mse_loss(z_target_dyn[:, :self.d_t], z_hist_dyn[:, -1, :self.d_t].detach())`
+      - `z_hist_dyn[:, -1, :]` is the most recent history frame (z at time t)
+      - `z_target_dyn` is z at time t+1
+      - `.detach()` on z_hist_dyn[:, -1, :] ensures SFA pushes z(t+1) toward z(t) without also pulling z(t) — cleaner gradient
+   b. **VICReg on z_dyn ONLY** (not z_coord): compute var_loss and cov_loss on `z_target_dyn[:, :self.d_t]` only
+   c. **Predictor for surprise readout**: Use detached encoder outputs:
+      - `z_hist_coord.detach()`, `z_hist_dyn.detach()` as predictor inputs
+      - sim_loss computed as: `F.mse_loss(z_pred_coord[:, :dt_pred], z_target_coord[:, :dt_pred].detach()) + F.mse_loss(z_pred_dyn[:, :dt_pred], z_target_dyn[:, :dt_pred].detach())`
+      - This trains the predictor ONLY, not the encoder
+   d. **Total loss**: `sfa_weight * L_sfa + var_weight * var_loss_dyn + cov_weight * cov_loss_dyn + sim_weight * sim_loss`
+      - SFA + VICReg terms have gradients to encoder only
+      - sim_loss has gradients to predictor only (encoder outputs are detached)
+   e. Return the same dict structure but add `sfa_loss` key. Set `sim_loss_coord`, `sim_loss_dyn` from the detached computation.
+   f. Do NOT apply var_loss or cov_loss to z_coord under SFA mode.
+
+5. When `primary_objective == "jepa"`: keep existing behavior exactly as-is (backward compatible).
+
+6. Modify `update_recruitment_logic()` to respect `gdasr_log_only`: when True, compute and print growth-point detection signals but never change `d_t`. Log the would-have-recruited events.
+
+## Step 2: Create src/run_phase0_sfa.py
+
+Full experiment runner with 3 arms × 5 seeds:
+
+### Arms:
+- **Arm A (SFA+VICReg)**: `NonParametricJEPASpatial(primary_objective="sfa", pos_encoding="none", sfa_weight=1.0, gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.
+- **Arm B (JEPA+VICReg Baseline, B1)**: `NonParametricJEPASpatial(primary_objective="jepa", pos_encoding="none", gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.
+- **Arm C (SFA+VICReg+pos_encoding)**: Same as Arm A but `pos_encoding="sinusoidal"`. Tests whether explicit position channels help under SFA.
+
+### Training Protocol (shared):
+- Seeds: [42, 123, 456, 789, 999]
+- Environment: PhysicsSandbox(N=3, seed=seed) for 3000 steps
+- Passive observation only (no motor, action={"acc": 0.0, "push": False})
+- History: deque(maxlen=4) for H=3 history + 1 target
+- Replay buffer: capacity 2000, prefill 100 transitions
+- Optimizer: Adam, lr=1e-3
+- d_t = 3 frozen from start
+- GDASR in log-only mode
+- Batch size: 32
+- CCR mode: 'none' for this phase (clean SFA vs JEPA comparison without confounds)
+
+### Evaluation Protocol (at step 3000, checkpoint at 1500):
+
+1. **Non-collapse check** (C1):
+   - `has_collapsed` criterion: `e_a_dim >= 0.1 * e_a_all` AND `std_x_mean > 5.0`
+   - Per-dimension std: `torch.std(z_dyn, dim=0)` — all active dims must have std >= 0.5
+   - Report: collapsed (bool), per-dim stds
+
+2. **Centroid decoding MSE** (C2):
+   - Use 200 test frames from a separate test environment (seed+10000)
+   - For each of 3 objects: linear probe on soft-argmax centroids vs true object positions
+   - Report mean MSE across objects, and per-object MSE
+   - Also compute for the last dimension (target_dim_idx = 2) specifically
+
+3. **Slowness metrics** (sanity check, NOT primary falsification):
+   - Over 200 test frames, compute:
+     - `slow_dyn = mean(||z_dyn(t) - z_dyn(t-1)||^2)`
+     - `slow_coord = mean(||z_coord(t) - z_coord(t-1)||^2)`
+     - `slowness_ratio = slow_dyn / slow_coord`
+   - Report for each arm
+
+4. **Semantic disentanglement probes** (primary C3):
+   - Over 200 test frames, for each frame:
+     a. Get z_coord (1, d_t) and z_dyn (1, d_t) from the encoder
+     b. Get ground-truth positions (3,) and colors (3, 3) for each object
+   - For each dimension d in [0, d_t):
+     a. Match dimension d to the nearest object by centroid position (z_coord[d] vs true positions)
+     b. This establishes a dimension-object pairing
+   - Linear regression probes (train on first 100 frames, test on last 100):
+     a. **z_dyn → color**: R² for predicting matched object's color (3 channels, separate R² per channel, report mean)
+     b. **z_coord → color**: Same prediction from z_coord
+     c. **z_coord → position**: R² for predicting matched object's position from z_coord[d]
+     d. **z_dyn → position**: Same prediction from z_dyn
+   - **Key metric**: `delta_R2_color = R2(z_dyn → color) - R2(z_coord → color)`. C3 fails if delta_R2_color < 0.10
+
+5. **VICReg health**:
+   - Per-dimension std of z_dyn across the batch
+   - Mean absolute off-diagonal correlation between active z_dyn dimensions
+
+6. **GDASR growth-point log**:
+   - Count and timing of would-have-recruited events during training
+   - Final EMA error value
+
+7. **Prediction error (surprise)**:
+   - sim_loss on test frames (predictor quality)
+   - Per-dimension prediction error breakdown
+
+### Output:
+Save results to `archive/iter_020/results/`:
+- `phase0_raw_results.json`: Full results for each arm × seed combination
+- `phase0_summary.csv`: Summary table with key metrics
+- `phase0_training_curves.csv`: Training loss curves (sampled every 100 steps)
+
+## Step 3: Update src/pre_registration.md
+
+Update the pre-registration with:
+- Modified hypothesis (claim 3 reframed as sanity check)
+- New C3 with semantic probe criterion (delta_R2_color >= 0.10)
+- Keep C1 and C2 as originally specified
+- All other details from the approved plan
+
+## Step 4: Execute and Save Results
+
+Run the full sweep. Save all results to the archive directory.
+
+## Important Notes:
+- The sfa_weight=1.0 is a starting point. If the first run shows SFA is too weak or too strong, adjusting it is legitimate but MUST be documented with rationale in the output.
+- Do NOT silently tune after viewing results.
+- Report both directions honestly: if MSE_SFA < MSE_JEPA, note it; if MSE_SFA > MSE_JEPA but within 10%, that's a successful bridge.
+- Use CPU (torch device "cpu") unless CUDA is available.
+- Set torch.set_num_threads(2) to prevent CPU thrashing.
+- Each training run (3000 steps) should take ~2-5 minutes on CPU.
+]
+Now I have the complete context. I need to modify `src/run_phase0_sfa.py` to add:
+
+1. Semantic disentanglement probe function (z_dyn→color, z_coord→color, z_coord→position, z_dyn→position)
+2. Augmented C3 falsification criterion using delta_R²_color >= 0.10
+3. Update all output files (CSVs, JSONs, summary, audit) with these new metrics
+
+
+[Tool Call: read_file({'end_line': 275, 'path': 'src/run_phase0_sfa.py', 'start_line': 235})]
+[Tool Result: --- lines 235 to 275 of 678 ---
+    cov_weight = arm_config.get("cov_weight", 25.0)
+    pos_encoding = arm_config.get("pos_encoding", "none")
+    d_t = arm_config.get("d_t", 3)
+
+    set_seed(seed)
+
+    # Determine total training steps (5 for dry run, 3000 otherwise)
+    total_steps = 5 if dry_run else 3000
+    eval_steps = min(200, total_steps // 2) if dry_run else 200
+
+    # Create model
+    model = NonParametricJEPASpatial(
+        d_max=8,
+        h=3,
+        k=4,
+        cooldown=300,
+        stabilization_period=100,
+        pos_encoding=pos_encoding,
+        primary_objective=primary_obj,
+        sfa_weight=sfa_weight,
+        gdasr_log_only=True,  # log-only mode for Phase 0
+    )
+    model.d_t = d_t  # freeze at 3
+    model = model.to(device)
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    # Environment
+    env = PhysicsSandbox(N=3, seed=seed)
+    obs = env.reset()
+    history = collections.deque(maxlen=4)
+    history.append(obs)
+
+    replay_buffer = ReplayBuffer(capacity=2000)
+
+    # Prefill buffer
+    def _prefill(n):
+        while len(replay_buffer) < n:
+            obs, info = env.step({"acc": 0.0, "push": False})
+            history.append(obs)
+            if len(history) == 4:]
+
+[Tool Call: edit_file({'path': 'src/run_phase0_sfa.py', 'old_string': 'def compute_vicreg_health(z_dyn, d_t):\n    """\n    Returns per-dimension std and mean absolute correlation between active dimensions.\n    """\n    z_active = z_dyn[:, :d_t]\n    per_dim_std = np.std(z_active, axis=0)\n    if d_t > 1:\n        corr = np.corrcoef(z_active.T)\n        # upper triangle off-diagonal\n        triu = np.triu_indices(d_t, k=1)\n        mean_abs_corr = float(np.mean(np.abs(corr[triu])))\n    else:\n        mean_abs_corr = 0.0\n    return {\n        "per_dim_std": per_dim_std.tolist(),\n        "mean_abs_corr": mean_abs_corr,\n    }', 'new_string': 'def compute_vicreg_health(z_dyn, d_t):\n    """\n    Returns per-dimension std and mean absolute correlation between active dimensions.\n    """\n    z_active = z_dyn[:, :d_t]\n    per_dim_std = np.std(z_active, axis=0)\n    if d_t > 1:\n        corr = np.corrcoef(z_active.T)\n        # upper triangle off-diagonal\n        triu = np.triu_indices(d_t, k=1)\n        mean_abs_corr = float(np.mean(np.abs(corr[triu])))\n    else:\n        mean_abs_corr = 0.0\n    return {\n        "per_dim_std": per_dim_std.tolist(),\n        "mean_abs_corr": mean_abs_corr,\n    }\n\n\ndef compute_semantic_probes(model, test_env, test_history, num_samples=200,\n                             train_ratio=0.5, device="cpu"):\n    """\n    Semantic disentanglement probes.\n\n    Collects z_dyn, z_coord along with ground-truth positions and colors over\n    num_samples frames.  Matches each latent dimension to the nearest object\n    (by centroid position).  Fits linear probes on the first half and evaluates\n    R² on the second half for two tasks:\n\n      * color  regression  (3-D RGB target → 3 scalar R² values, then mean)\n      * position regression  (1-D scalar target → 1 R² value)\n\n    Probes are fit separately for z_dyn and z_coord, giving four R² scores:\n      R2_dyn_color,  R2_coord_color,  R2_dyn_pos,  R2_coord_pos\n\n    The key disentanglement metric is:\n      delta_R2_color = R2_dyn_color - R2_coord_color\n    If SFA separates identity from position, z_dyn should predict color well\n    and z_coord should predict color poorly, yielding a positive delta.\n    """\n    model.eval()\n\n    # Collect data\n    obs = test_env.reset()\n    test_history.clear()\n    test_history.append(obs)\n\n    # Warm up\n    for _ in range(4):\n        obs, info = test_env.step({"acc": 0.0, "push": False})\n        test_history.append(obs)\n\n    z_dyn_list = []\n    z_coord_list = []\n    pos_list = []  # positions for all N objects\n    colors_list = []  # colors for all N objects\n\n    with torch.no_grad():\n        for _ in range(num_samples):\n            obs, info = test_env.step({"acc": 0.0, "push": False})\n            test_history.append(obs)\n            if len(test_history) == 4:\n                x_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)\n                z_c, z_d = model.encoder(x_t)\n                z_dyn_list.append(z_d[0].cpu().numpy())       # (d_max,)\n                z_coord_list.append(z_c[0].cpu().numpy())      # (d_max,)\n                pos_list.append(info["positions"])              # (N,)\n                colors_list.append(info["colors"])              # (N, 3)\n\n    z_dyn_arr = np.array(z_dyn_list)   # (num_samples, d_max)\n    z_coord_arr = np.array(z_coord_list)\n    pos_arr = np.array(pos_list)       # (num_samples, N)\n    colors_arr = np.array(colors_list) # (num_samples, N, 3)\n\n    N = pos_arr.shape[1]  # number of objects\n    d_t = model.d_t\n\n    # Match each latent dimension d in [0, d_t) to the nearest object\n    # by average distance between centroid z_coord and true position.\n    dim_to_obj = {}  # dim_idx -> obj_idx\n    used_objs = set()\n    for d in range(d_t):\n        best_obj = None\n        best_dist = np.inf\n        for o in range(N):\n            if o in used_objs:\n                continue\n            # average absolute distance between centroid and position\n            dist = np.mean(np.abs(z_coord_arr[:, d] - pos_arr[:, o]))\n            if dist < best_dist:\n                best_dist = dist\n                best_obj = o\n        if best_obj is not None:\n            dim_to_obj[d] = best_obj\n            used_objs.add(best_obj)\n\n    # Split into train and test\n    n_train = int(num_samples * train_ratio)\n\n    def fit_probe_r2(z_feature, y_target):\n        """Fit linear probe: y = w*z + b. Return R² on test portion."""\n        z_train = z_feature[:n_train]\n        y_train = y_target[:n_train]\n        z_test = z_feature[n_train:]\n        y_test = y_target[n_train:]\n\n        if z_train.size < 5 or y_train.size < 5:\n            return 0.0\n\n        w, b = fit_linear_probe(z_train, y_train)\n        y_pred = z_test * w + b\n\n        ss_res = np.sum((y_test - y_pred) ** 2)\n        ss_tot = np.sum((y_test - np.mean(y_train)) ** 2)\n        if ss_tot < 1e-12:\n            return 0.0\n        return float(1.0 - ss_res / ss_tot)\n\n    probes = {}\n    r2_per_dim = []\n\n    for d in range(d_t):\n        if d not in dim_to_obj:\n            r2_per_dim.append({"dyn_color": 0.0, "coord_color": 0.0,\n                               "dyn_pos": 0.0, "coord_pos": 0.0})\n            continue\n\n        obj = dim_to_obj[d]\n        z_d = z_dyn_arr[:, d]\n        z_c = z_coord_arr[:, d]\n\n        # Position probe\n        r2_dyn_pos = fit_probe_r2(z_d, pos_arr[:, obj])\n        r2_coord_pos = fit_probe_r2(z_c, pos_arr[:, obj])\n\n        # Color probe (3 channels, average R²)\n        r2_dyn_ch = []\n        r2_coord_ch = []\n        for ch in range(3):\n            r2_dyn_ch.append(fit_probe_r2(z_d, colors_arr[:, obj, ch]))\n            r2_coord_ch.append(fit_probe_r2(z_c, colors_arr[:, obj, ch]))\n        r2_dyn_color = float(np.mean(r2_dyn_ch))\n        r2_coord_color = float(np.mean(r2_coord_ch))\n\n        r2_per_dim.append({\n            "dyn_color": r2_dyn_color,\n            "coord_color": r2_coord_color,\n            "dyn_pos": r2_dyn_pos,\n            "coord_pos": r2_coord_pos,\n        })\n\n    # Averages across matched dimensions\n    r2_dyn_color_all = np.mean([p["dyn_color"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    r2_coord_color_all = np.mean([p["coord_color"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    r2_dyn_pos_all = np.mean([p["dyn_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    r2_coord_pos_all = np.mean([p["coord_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    delta_r2_color = float(r2_dyn_color_all - r2_coord_color_all)\n\n    return {\n        "dim_to_obj": dim_to_obj,\n        "r2_per_dim": r2_per_dim,\n        "r2_dyn_color": float(r2_dyn_color_all),\n        "r2_coord_color": float(r2_coord_color_all),\n        "r2_dyn_pos": float(r2_dyn_pos_all),\n        "r2_coord_pos": float(r2_coord_pos_all),\n        "delta_r2_color": delta_r2_color,\n    }'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+
+[Tool Call: read_file({'end_line': 335, 'path': 'src/run_phase0_sfa.py', 'start_line': 305})]
+[Tool Result: --- lines 305 to 335 of 828 ---
+        if ss_tot < 1e-12:
+            return 0.0
+        return float(1.0 - ss_res / ss_tot)
+
+    probes = {}
+    r2_per_dim = []
+
+    for d in range(d_t):
+        if d not in dim_to_obj:
+            r2_per_dim.append({"dyn_color": 0.0, "coord_color": 0.0,
+                               "dyn_pos": 0.0, "coord_pos": 0.0})
+            continue
+
+        obj = dim_to_obj[d]
+        z_d = z_dyn_arr[:, d]
+        z_c = z_coord_arr[:, d]
+
+        # Position probe
+        r2_dyn_pos = fit_probe_r2(z_d, pos_arr[:, obj])
+        r2_coord_pos = fit_probe_r2(z_c, pos_arr[:, obj])
+
+        # Color probe (3 channels, average R²)
+        r2_dyn_ch = []
+        r2_coord_ch = []
+        for ch in range(3):
+            r2_dyn_ch.append(fit_probe_r2(z_d, colors_arr[:, obj, ch]))
+            r2_coord_ch.append(fit_probe_r2(z_c, colors_arr[:, obj, ch]))
+        r2_dyn_color = float(np.mean(r2_dyn_ch))
+        r2_coord_color = float(np.mean(r2_coord_ch))
+
+        r2_per_dim.append({]
+Now I need to modify the evaluation section in `run_single` to compute the semantic probes, and add these metrics to the results dict. Let me find the exact location in the evaluation section:
+
+
+[Tool Call: read_file({'end_line': 420, 'path': 'src/run_phase0_sfa.py', 'start_line': 367})]
+[Tool Result: --- lines 367 to 420 of 828 ---
+    Parameters
+    ----------
+    arm_config : dict
+        Keys: 'name', 'primary_objective', 'sfa_weight', 'sim_weight',
+              'var_weight', 'cov_weight', 'pos_encoding', 'd_t'
+    seed : int
+    device : torch.device
+    dry_run : bool  — if True, run only 5 training steps per seed for quick verification.
+
+    Returns
+    -------
+    results : dict  (metrics for this run)
+    """
+    name = arm_config["name"]
+    primary_obj = arm_config["primary_objective"]
+    sfa_weight = arm_config.get("sfa_weight", 1.0)
+    sim_weight = arm_config.get("sim_weight", 25.0)
+    var_weight = arm_config.get("var_weight", 25.0)
+    cov_weight = arm_config.get("cov_weight", 25.0)
+    pos_encoding = arm_config.get("pos_encoding", "none")
+    d_t = arm_config.get("d_t", 3)
+
+    set_seed(seed)
+
+    # Determine total training steps (5 for dry run, 3000 otherwise)
+    total_steps = 5 if dry_run else 3000
+    eval_steps = min(200, total_steps // 2) if dry_run else 200
+
+    # Create model
+    model = NonParametricJEPASpatial(
+        d_max=8,
+        h=3,
+        k=4,
+        cooldown=300,
+        stabilization_period=100,
+        pos_encoding=pos_encoding,
+        primary_objective=primary_obj,
+        sfa_weight=sfa_weight,
+        gdasr_log_only=True,  # log-only mode for Phase 0
+    )
+    model.d_t = d_t  # freeze at 3
+    model = model.to(device)
+
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    # Environment
+    env = PhysicsSandbox(N=3, seed=seed)
+    obs = env.reset()
+    history = collections.deque(maxlen=4)
+    history.append(obs)
+
+    replay_buffer = ReplayBuffer(capacity=2000)
+
+    # Prefill buffer]
+
+[Tool Call: read_file({'end_line': 495, 'path': 'src/run_phase0_sfa.py', 'start_line': 455})]
+[Tool Result: --- lines 455 to 495 of 828 ---
+            x_hist_t,
+            x_target_t,
+            sim_weight=sim_weight,
+            var_weight=var_weight,
+            cov_weight=cov_weight,
+            d_t_predict=d_t,  # predictor always sees d_t dimensions
+        )
+        loss_dict["loss"].backward()
+        optimizer.step()
+
+        # GDASR log-only update
+        sim_loss_val = loss_dict["sim_loss"].item()
+        model.update_recruitment_logic(sim_loss_val, target_dim=d_t, step=step)
+
+        # Log
+        log_entry = {
+            "step": step,
+            "loss": loss_dict["loss"].item(),
+            "sim_loss": sim_loss_val,
+            "sfa_loss": loss_dict.get("sfa_loss", torch.tensor(0.0)).item(),
+            "var_loss": loss_dict["var_loss"].item(),
+            "cov_loss": loss_dict["cov_loss"].item(),
+        }
+        logs.append(log_entry)
+
+        if step % 1000 == 0 or step == total_steps:
+            print(f"  [{name}] seed={seed} step={step:5d}/{total_steps}  "
+                  f"loss={log_entry['loss']:.4f}  sim={log_entry['sim_loss']:.4f}  "
+                  f"sfa={log_entry['sfa_loss']:.4f}")
+
+    # Collect GDASR growth points
+    gdasr_growth_points = list(model.gdasr_growth_points)
+
+    # ---------------------------------------------------------------
+    # Evaluation
+    # ---------------------------------------------------------------
+    model.eval()
+
+    # --- Collapse check ---
+    eval_env = PhysicsSandbox(N=3, seed=seed + 10000)
+    eval_history = collections.deque(maxlen=4)]
+
+[Tool Call: read_file({'end_line': 555, 'path': 'src/run_phase0_sfa.py', 'start_line': 530})]
+[Tool Result: --- lines 530 to 555 of 828 ---
+    test_history.append(obs)
+    centroid_mse = compute_centroid_mse(model, test_env, test_history,
+                                         num_samples=eval_steps, device=device)
+
+    # --- Summary results ---
+    results = {
+        "arm": name,
+        "seed": seed,
+
+        # Collapse
+        "has_collapsed": int(has_collapsed),
+        "per_dim_std": per_dim_std.tolist(),
+        "mean_abs_corr": vh["mean_abs_corr"],
+
+        # Slowness
+        "mean_dyn_delta": slowness["mean_dyn_delta"],
+        "mean_coord_delta": slowness["mean_coord_delta"],
+        "slowness_ratio": slowness["ratio"],
+
+        # Centroid MSE
+        "centroid_mse_mean": centroid_mse["mse_mean"],
+        "centroid_mse_per_object": centroid_mse["mse_per_object"],
+        "centroid_r_mean": centroid_mse["r_mean"],
+        "centroid_r_per_object": centroid_mse["r_per_object"],
+
+        # VICReg health]
+
+[Tool Call: edit_file({'path': 'src/run_phase0_sfa.py', 'old_string': '    # --- Centroid decoding MSE on a separate fresh test set ---\n    test_env = PhysicsSandbox(N=3, seed=seed + 20000)\n    test_history = collections.deque(maxlen=4)\n    obs = test_env.reset()\n    test_history.append(obs)\n    centroid_mse = compute_centroid_mse(model, test_env, test_history,\n                                         num_samples=eval_steps, device=device)\n\n    # --- Summary results ---\n    results = {', 'new_string': '    # --- Centroid decoding MSE on a separate fresh test set ---\n    test_env = PhysicsSandbox(N=3, seed=seed + 20000)\n    test_history = collections.deque(maxlen=4)\n    obs = test_env.reset()\n    test_history.append(obs)\n    centroid_mse = compute_centroid_mse(model, test_env, test_history,\n                                         num_samples=eval_steps, device=device)\n\n    # --- Semantic disentanglement probes ---\n    semantic = compute_semantic_probes(model, test_env, test_history,\n                                        num_samples=eval_steps, device=device)\n\n    # --- Summary results ---\n    results = {'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+
+[Tool Call: read_file({'end_line': 590, 'path': 'src/run_phase0_sfa.py', 'start_line': 555})]
+[Tool Result: --- lines 555 to 590 of 832 ---
+        "centroid_mse_per_object": centroid_mse["mse_per_object"],
+        "centroid_r_mean": centroid_mse["r_mean"],
+        "centroid_r_per_object": centroid_mse["r_per_object"],
+
+        # VICReg health
+        "vicreg_per_dim_std": per_dim_std.tolist(),
+        "vicreg_mean_abs_corr": vh["mean_abs_corr"],
+
+        # GDASR
+        "gdasr_growth_point_count": len(gdasr_growth_points),
+        "gdasr_growth_points": gdasr_growth_points,
+
+        # Final training loss
+        "final_train_loss": logs[-1]["loss"],
+        "final_train_sim_loss": logs[-1]["sim_loss"],
+        "final_train_sfa_loss": logs[-1]["sfa_loss"],
+    }
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Arms configuration
+# ---------------------------------------------------------------------------
+ARMS = [
+    {
+        "name": "Arm A (SFA+VICReg)",
+        "primary_objective": "sfa",
+        "sfa_weight": 1.0,
+        "sim_weight": 25.0,
+        "var_weight": 25.0,
+        "cov_weight": 25.0,
+        "pos_encoding": "none",
+        "d_t": 3,
+    },
+    {
+        "name": "Arm B (JEPA+VICReg)",]
+
+[Tool Call: edit_file({'path': 'src/run_phase0_sfa.py', 'old_string': '        # VICReg health\n        "vicreg_per_dim_std": per_dim_std.tolist(),\n        "vicreg_mean_abs_corr": vh["mean_abs_corr"],\n\n        # GDASR\n        "gdasr_growth_point_count": len(gdasr_growth_points),\n        "gdasr_growth_points": gdasr_growth_points,\n\n        # Final training loss\n        "final_train_loss": logs[-1]["loss"],\n        "final_train_sim_loss": logs[-1]["sim_loss"],\n        "final_train_sfa_loss": logs[-1]["sfa_loss"],\n    }', 'new_string': '        # VICReg health\n        "vicreg_per_dim_std": per_dim_std.tolist(),\n        "vicreg_mean_abs_corr": vh["mean_abs_corr"],\n\n        # Semantic disentanglement probes\n        "r2_dyn_color": semantic["r2_dyn_color"],\n        "r2_coord_color": semantic["r2_coord_color"],\n        "r2_dyn_pos": semantic["r2_dyn_pos"],\n        "r2_coord_pos": semantic["r2_coord_pos"],\n        "delta_r2_color": semantic["delta_r2_color"],\n        "r2_per_dim": semantic["r2_per_dim"],\n        "dim_to_obj": semantic["dim_to_obj"],\n\n        # GDASR\n        "gdasr_growth_point_count": len(gdasr_growth_points),\n        "gdasr_growth_points": gdasr_growth_points,\n\n        # Final training loss\n        "final_train_loss": logs[-1]["loss"],\n        "final_train_sim_loss": logs[-1]["sim_loss"],\n        "final_train_sfa_loss": logs[-1]["sfa_loss"],\n    }'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+Now I need to update the CSV/JSON saving section to include the new semantic metrics in the per-run CSVs, and update the aggregate analysis to include the semantic C3 falsification criterion:
+
+
+[Tool Call: read_file({'end_line': 710, 'path': 'src/run_phase0_sfa.py', 'start_line': 670})]
+[Tool Result: --- lines 670 to 710 of 841 ---
+            print(f"\n--- {name}, seed={seed} ---")
+            results = run_single(arm, seed, device, dry_run=dry_run)
+            all_results.append(results)
+
+            # Save per-run CSV with detailed logs
+            run_id = f"{name.lower().replace(' ', '_').replace('(', '').replace(')', '')}_seed{seed}{suffix}"
+            csv_path = os.path.join(runs_dir, f"{run_id}.csv")
+            json_path = os.path.join(runs_dir, f"{run_id}.json")
+
+            # Flatten per-object lists for CSV
+            flat = {k: v for k, v in results.items() if k != "gdasr_growth_points"}
+            flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))
+            flat["centroid_mse_obj0"] = results.get("centroid_mse_per_object", [])[0] if len(results.get("centroid_mse_per_object", [])) > 0 else None
+            flat["centroid_mse_obj1"] = results.get("centroid_mse_per_object", [])[1] if len(results.get("centroid_mse_per_object", [])) > 1 else None
+            flat["centroid_mse_obj2"] = results.get("centroid_mse_per_object", [])[2] if len(results.get("centroid_mse_per_object", [])) > 2 else None
+            flat["centroid_r_obj0"] = results.get("centroid_r_per_object", [])[0] if len(results.get("centroid_r_per_object", [])) > 0 else None
+            flat["centroid_r_obj1"] = results.get("centroid_r_per_object", [])[1] if len(results.get("centroid_r_per_object", [])) > 1 else None
+            flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None
+            flat["per_dim_std"] = str(results.get("per_dim_std", []))
+
+            df_row = pd.DataFrame([flat])
+            df_row.to_csv(csv_path, index=False)
+
+            # Save full JSON (includes growth points)
+            with open(json_path, "w") as f:
+                json.dump(results, f, indent=2, default=str)
+
+            print(f"  -> Saved {csv_path}")
+
+    # ------------------------------------------------------------------ #
+    # Compile aggregate results
+    # ------------------------------------------------------------------ #
+    df_all = pd.DataFrame(all_results)
+
+    # Ensure numeric columns
+    for col in [
+        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",
+        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",
+        "final_train_loss", "final_train_sim_loss", "final_train_sfa_loss",
+        "gdasr_growth_point_count",
+    ]:]
+
+[Tool Call: edit_file({'old_string': '            # Flatten per-object lists for CSV\n            flat = {k: v for k, v in results.items() if k != "gdasr_growth_points"}\n            flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))\n            flat["centroid_mse_obj0"] = results.get("centroid_mse_per_object", [])[0] if len(results.get("centroid_mse_per_object", [])) > 0 else None\n            flat["centroid_mse_obj1"] = results.get("centroid_mse_per_object", [])[1] if len(results.get("centroid_mse_per_object", [])) > 1 else None\n            flat["centroid_mse_obj2"] = results.get("centroid_mse_per_object", [])[2] if len(results.get("centroid_mse_per_object", [])) > 2 else None\n            flat["centroid_r_obj0"] = results.get("centroid_r_per_object", [])[0] if len(results.get("centroid_r_per_object", [])) > 0 else None\n            flat["centroid_r_obj1"] = results.get("centroid_r_per_object", [])[1] if len(results.get("centroid_r_per_object", [])) > 1 else None\n            flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None\n            flat["per_dim_std"] = str(results.get("per_dim_std", []))', 'new_string': '            # Flatten per-object / per-dimension lists for CSV\n            flat = {k: v for k, v in results.items() if k not in (\n                "gdasr_growth_points", "centroid_mse_per_object",\n                "centroid_r_per_object", "r2_per_dim", "dim_to_obj",\n            )}\n            flat["gdasr_growth_point_count"] = len(results.get("gdasr_growth_points", []))\n            flat["centroid_mse_obj0"] = results.get("centroid_mse_per_object", [])[0] if len(results.get("centroid_mse_per_object", [])) > 0 else None\n            flat["centroid_mse_obj1"] = results.get("centroid_mse_per_object", [])[1] if len(results.get("centroid_mse_per_object", [])) > 1 else None\n            flat["centroid_mse_obj2"] = results.get("centroid_mse_per_object", [])[2] if len(results.get("centroid_mse_per_object", [])) > 2 else None\n            flat["centroid_r_obj0"] = results.get("centroid_r_per_object", [])[0] if len(results.get("centroid_r_per_object", [])) > 0 else None\n            flat["centroid_r_obj1"] = results.get("centroid_r_per_object", [])[1] if len(results.get("centroid_r_per_object", [])) > 1 else None\n            flat["centroid_r_obj2"] = results.get("centroid_r_per_object", [])[2] if len(results.get("centroid_r_per_object", [])) > 2 else None\n            flat["per_dim_std"] = str(results.get("per_dim_std", []))\n\n            # Semantic probe per-dimension details\n            r2pd = results.get("r2_per_dim", [])\n            dim_map = results.get("dim_to_obj", {})\n            for d_idx, pd in enumerate(r2pd):\n                flat[f"r2_dim{d_idx}_dyn_color"] = pd.get("dyn_color", None)\n                flat[f"r2_dim{d_idx}_coord_color"] = pd.get("coord_color", None)\n                flat[f"r2_dim{d_idx}_dyn_pos"] = pd.get("dyn_pos", None)\n                flat[f"r2_dim{d_idx}_coord_pos"] = pd.get("coord_pos", None)\n                flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)\n            flat["dim_to_obj"] = json.dumps(dim_map, default=str)', 'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+Now update the aggregate columns to include the new semantic metrics:
+
+
+[Tool Call: edit_file({'new_string': '    # Ensure numeric columns\n    for col in [\n        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",\n        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",\n        "final_train_loss", "final_train_sim_loss", "final_train_sfa_loss",\n        "gdasr_growth_point_count",\n        "r2_dyn_color", "r2_coord_color", "r2_dyn_pos", "r2_coord_pos",\n        "delta_r2_color",\n    ]:', 'old_string': '    # Ensure numeric columns\n    for col in [\n        "has_collapsed", "mean_dyn_delta", "mean_coord_delta", "slowness_ratio",\n        "centroid_mse_mean", "centroid_r_mean", "mean_abs_corr",\n        "final_train_loss", "final_train_sim_loss", "final_train_sfa_loss",\n        "gdasr_growth_point_count",\n    ]:', 'path': 'src/run_phase0_sfa.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_phase0_sfa.py]
+
+
+[NUDGE RESPONSE]
+```yaml
+status: ok
+artifacts:
+  - src/run_phase0_sfa.py
+metrics: {}
+log_excerpt: |
+  Modifications completed:
+  - Added compute_semantic_probes() function with linear probe R² for color and position
+    from both z_dyn and z_coord streams, including delta_R2_color metric
+  - Integrated semantic probes into run_single() evaluation pipeline
+  - Updated results dict to include r2_dyn_color, r2_coord_color, r2_dyn_pos,
+    r2_coord_pos, delta_r2_color, r2_per_dim, dim_to_obj
+  - Updated CSV flattening to include per-dimension semantic probe metrics
+  - Updated numeric column list for aggregate processing
+  Still pending before full execution:
+  - Augment falsification audit with semantic C3 criterion (delta_R2_color >= 0.10)
+  - Update src/pre_registration.md with modified C3
+  - Run dry-run verification
+experimenter_view: |
+  Successfully added semantic disentanglement probes to the Phase 0 runner.
+  The compute_semantic_probes() function matches each latent dimension to the nearest
+  object by centroid position, then fits linear probes on train/test splits to measure
+  R² for predicting object color (identity) and position from both z_dyn and z_coord.
+  The key metric delta_R2_color = R2(z_dyn→color) - R2(z_coord→color) tests whether
+  SFA genuinely separates identity from position, not just that the slowness loss term
+  was minimized. The CSV/JSON output infrastructure is updated to persist these metrics.
+notes: "Semantic probes added; falsification audit augmentation and dry-run pending."
+```
