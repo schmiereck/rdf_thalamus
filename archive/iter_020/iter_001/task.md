@@ -1,0 +1,144 @@
+
+# Phase 0 — Objective Migration: SFA on z_dyn + VICReg
+
+## Pre-Registration File
+You MUST read `src/pre_registration.md` first and adhere to its hypotheses and falsification criteria. Also read the Manager's notes below carefully — there are CRITICAL modifications to the pre-registration that you must implement.
+
+## Manager's Critical Modifications (MUST IMPLEMENT)
+
+1. **Reframe claim (3) as a sanity check**: The slowness ratio (||Δz_dyn||² / ||Δz_coord||²) merely verifies that the SFA objective is active and VICReg prevents collapse. It does NOT constitute evidence of semantic disentanglement. State this explicitly in the pre-registration update.
+
+2. **Add semantic disentanglement probes**: Linear probes predicting object identity (color as a 3D regression target) from z_dyn vs z_coord, and object centroid position from z_coord vs z_dyn. If SFA creates semantic separation, z_dyn should predict color well and position poorly, and vice versa for z_coord.
+
+3. **Augment C3 with semantic probe criterion**: "C3 is falsified if the linear-probe R² for object color from z_dyn does not exceed that from z_coord by at least 0.10 (10 percentage points in R²)." The original slowness-ratio C3 becomes a sanity check, not the main falsification criterion.
+
+## CRITICAL: Architecture Context
+
+Read `src/models_dual_stream.py` carefully. The `NonParametricEncoder` computes BOTH z_coord and z_dyn from a single shared `a_spatial = self.forward_spatial(x)`:
+- `z_coord = soft_argmax(a_spatial)` — centroids (position)
+- `z_dyn = a_spatial.mean(dim=-1)` — mean activation (identity)
+
+Since both streams share the same spatial feature map, SFA gradients on z_dyn flow through a_spatial → conv_spatial → conv1-4, indirectly shaping z_coord too. This is the structural basis for testing whether SFA on z_dyn produces good z_coord readouts.
+
+## Step 1: Modify src/models_dual_stream.py
+
+Add SFA mode to `NonParametricJEPASpatial`:
+
+1. Add `primary_objective` parameter to `__init__()` (default "jepa" for backward compat). Valid values: "jepa", "sfa".
+
+2. Add `sfa_weight` parameter to `__init__()` (default 1.0).
+
+3. Add `gdasr_log_only` parameter to `__init__()` (default False). When True, `update_recruitment_logic()` computes and logs growth-point signals but NEVER modifies `d_t`.
+
+4. In `forward()`, when `primary_objective == "sfa"`:
+   a. **SFA loss**: `L_sfa = F.mse_loss(z_target_dyn[:, :self.d_t], z_hist_dyn[:, -1, :self.d_t].detach())`
+      - `z_hist_dyn[:, -1, :]` is the most recent history frame (z at time t)
+      - `z_target_dyn` is z at time t+1
+      - `.detach()` on z_hist_dyn[:, -1, :] ensures SFA pushes z(t+1) toward z(t) without also pulling z(t) — cleaner gradient
+   b. **VICReg on z_dyn ONLY** (not z_coord): compute var_loss and cov_loss on `z_target_dyn[:, :self.d_t]` only
+   c. **Predictor for surprise readout**: Use detached encoder outputs:
+      - `z_hist_coord.detach()`, `z_hist_dyn.detach()` as predictor inputs
+      - sim_loss computed as: `F.mse_loss(z_pred_coord[:, :dt_pred], z_target_coord[:, :dt_pred].detach()) + F.mse_loss(z_pred_dyn[:, :dt_pred], z_target_dyn[:, :dt_pred].detach())`
+      - This trains the predictor ONLY, not the encoder
+   d. **Total loss**: `sfa_weight * L_sfa + var_weight * var_loss_dyn + cov_weight * cov_loss_dyn + sim_weight * sim_loss`
+      - SFA + VICReg terms have gradients to encoder only
+      - sim_loss has gradients to predictor only (encoder outputs are detached)
+   e. Return the same dict structure but add `sfa_loss` key. Set `sim_loss_coord`, `sim_loss_dyn` from the detached computation.
+   f. Do NOT apply var_loss or cov_loss to z_coord under SFA mode.
+
+5. When `primary_objective == "jepa"`: keep existing behavior exactly as-is (backward compatible).
+
+6. Modify `update_recruitment_logic()` to respect `gdasr_log_only`: when True, compute and print growth-point detection signals but never change `d_t`. Log the would-have-recruited events.
+
+## Step 2: Create src/run_phase0_sfa.py
+
+Full experiment runner with 3 arms × 5 seeds:
+
+### Arms:
+- **Arm A (SFA+VICReg)**: `NonParametricJEPASpatial(primary_objective="sfa", pos_encoding="none", sfa_weight=1.0, gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.
+- **Arm B (JEPA+VICReg Baseline, B1)**: `NonParametricJEPASpatial(primary_objective="jepa", pos_encoding="none", gdasr_log_only=True)`. sim_weight=25.0, var_weight=25.0, cov_weight=25.0. d_t=3 frozen.
+- **Arm C (SFA+VICReg+pos_encoding)**: Same as Arm A but `pos_encoding="sinusoidal"`. Tests whether explicit position channels help under SFA.
+
+### Training Protocol (shared):
+- Seeds: [42, 123, 456, 789, 999]
+- Environment: PhysicsSandbox(N=3, seed=seed) for 3000 steps
+- Passive observation only (no motor, action={"acc": 0.0, "push": False})
+- History: deque(maxlen=4) for H=3 history + 1 target
+- Replay buffer: capacity 2000, prefill 100 transitions
+- Optimizer: Adam, lr=1e-3
+- d_t = 3 frozen from start
+- GDASR in log-only mode
+- Batch size: 32
+- CCR mode: 'none' for this phase (clean SFA vs JEPA comparison without confounds)
+
+### Evaluation Protocol (at step 3000, checkpoint at 1500):
+
+1. **Non-collapse check** (C1):
+   - `has_collapsed` criterion: `e_a_dim >= 0.1 * e_a_all` AND `std_x_mean > 5.0`
+   - Per-dimension std: `torch.std(z_dyn, dim=0)` — all active dims must have std >= 0.5
+   - Report: collapsed (bool), per-dim stds
+
+2. **Centroid decoding MSE** (C2):
+   - Use 200 test frames from a separate test environment (seed+10000)
+   - For each of 3 objects: linear probe on soft-argmax centroids vs true object positions
+   - Report mean MSE across objects, and per-object MSE
+   - Also compute for the last dimension (target_dim_idx = 2) specifically
+
+3. **Slowness metrics** (sanity check, NOT primary falsification):
+   - Over 200 test frames, compute:
+     - `slow_dyn = mean(||z_dyn(t) - z_dyn(t-1)||^2)`
+     - `slow_coord = mean(||z_coord(t) - z_coord(t-1)||^2)`
+     - `slowness_ratio = slow_dyn / slow_coord`
+   - Report for each arm
+
+4. **Semantic disentanglement probes** (primary C3):
+   - Over 200 test frames, for each frame:
+     a. Get z_coord (1, d_t) and z_dyn (1, d_t) from the encoder
+     b. Get ground-truth positions (3,) and colors (3, 3) for each object
+   - For each dimension d in [0, d_t):
+     a. Match dimension d to the nearest object by centroid position (z_coord[d] vs true positions)
+     b. This establishes a dimension-object pairing
+   - Linear regression probes (train on first 100 frames, test on last 100):
+     a. **z_dyn → color**: R² for predicting matched object's color (3 channels, separate R² per channel, report mean)
+     b. **z_coord → color**: Same prediction from z_coord
+     c. **z_coord → position**: R² for predicting matched object's position from z_coord[d]
+     d. **z_dyn → position**: Same prediction from z_dyn
+   - **Key metric**: `delta_R2_color = R2(z_dyn → color) - R2(z_coord → color)`. C3 fails if delta_R2_color < 0.10
+
+5. **VICReg health**:
+   - Per-dimension std of z_dyn across the batch
+   - Mean absolute off-diagonal correlation between active z_dyn dimensions
+
+6. **GDASR growth-point log**:
+   - Count and timing of would-have-recruited events during training
+   - Final EMA error value
+
+7. **Prediction error (surprise)**:
+   - sim_loss on test frames (predictor quality)
+   - Per-dimension prediction error breakdown
+
+### Output:
+Save results to `archive/iter_020/results/`:
+- `phase0_raw_results.json`: Full results for each arm × seed combination
+- `phase0_summary.csv`: Summary table with key metrics
+- `phase0_training_curves.csv`: Training loss curves (sampled every 100 steps)
+
+## Step 3: Update src/pre_registration.md
+
+Update the pre-registration with:
+- Modified hypothesis (claim 3 reframed as sanity check)
+- New C3 with semantic probe criterion (delta_R2_color >= 0.10)
+- Keep C1 and C2 as originally specified
+- All other details from the approved plan
+
+## Step 4: Execute and Save Results
+
+Run the full sweep. Save all results to the archive directory.
+
+## Important Notes:
+- The sfa_weight=1.0 is a starting point. If the first run shows SFA is too weak or too strong, adjusting it is legitimate but MUST be documented with rationale in the output.
+- Do NOT silently tune after viewing results.
+- Report both directions honestly: if MSE_SFA < MSE_JEPA, note it; if MSE_SFA > MSE_JEPA but within 10%, that's a successful bridge.
+- Use CPU (torch device "cpu") unless CUDA is available.
+- Set torch.set_num_threads(2) to prevent CPU thrashing.
+- Each training run (3000 steps) should take ~2-5 minutes on CPU.
