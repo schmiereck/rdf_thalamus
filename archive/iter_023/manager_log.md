@@ -1,9 +1,8 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 023
 
-*   **Iteration:** 023
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 023 -> Manager [Proposed Research Plan]
 
-## 1. Hypothesis
+**Proposed Hypothesis:**
 The SFA objective has been functionally disabled by a 250× gradient imbalance
 (sfa_weight=0.1 vs var_weight=25.0). Increasing sfa_weight to parity with
 var_weight will activate SFA, causing normalized_dyn_var to drop below
@@ -21,7 +20,7 @@ Specifically:
   achieve delta_R2_color ≥ 0.15 and delta_R2_identity ≥ 0.0 (breaking the
   negative identity trend from iter 022).
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 PRIMARY FALSIFICATION: If no sfa_weight value in the sweep [0.1, 1.0, 5.0,
 10.0, 25.0] produces normalized_dyn_var < normalized_coord_var across ≥ 3/5
 seeds, then SFA cannot shape z_dyn even at gradient parity, and the
@@ -39,7 +38,7 @@ TERTIARY FALSIFICATION: If all sfa_weight ≥ 5.0 arms collapse in ≥ 3/5 seeds
 effective SFA strengths, and the hypothesis that SFA can coexist with
 batch VICReg at parity is falsified.
 
-## 3. Proposed Method
+**Proposed Method:**
 EXPERIMENT DESIGN: 7 arms × 5 seeds × 5000 steps. Seeds: [42, 123, 456, 789, 999].
 
 ARM CONFIGURATIONS:
@@ -123,4 +122,36 @@ results in one run. If sfa_weight=10.0 turns out suboptimal, the A-arms
 provide the data to identify the correct weight for a follow-up.
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 023 -> Planner [Strategic Guidance]
+
+# Manager's Note — Iteration 023
+
+## 1. C5 Is Constructional, Not Empirical — Reframe or Deprioritize
+
+The C5 criterion (normalized_dyn_var < normalized_coord_var) is the primary falsification criterion in your plan. **This is a constructional result, not an empirical one.** By design, SFA penalizes z_dyn's temporal variation and does not penalize z_coord's. Once sfa_weight is large enough, z_dyn *must* become slower than z_coord — this follows directly from the loss asymmetry, not from any emergent property. Confirming C5 at sfa_weight ≥ 5.0 tells us the SFA gradient is propagating; it does **not** tell us SFA is encoding identity.
+
+The actual empirical test is whether slowness shapes z_dyn into an *identity-encoding* representation, not merely a *slow* one. A slow-but-uninformative z_dyn (constant noise that satisfies VICReg's std ≥ 1 but carries no object identity) would pass C5 while completely failing M2's intent. The **delta_R2_color criterion** is the real test.
+
+**Directive:** Elevate delta_R2_color ≥ 0.10 improvement over the sfa_weight=0.1 baseline to **PRIMARY falsification**. Reframe C5 as a **gradient-propagation verification** (necessary but not sufficient). The 0.05 threshold in your secondary criterion is too low — it matches neither the Phase 0 gate nor the sml evidence suggesting SFA should be transformative. If SFA at gradient parity only produces +0.05 color improvement, that is evidence *against* M2's relevance to this architecture, not for it.
+
+## 2. The SFA–VICReg Equilibrium Is the Central Scientific Question
+
+The plan's tertiary criterion (collapse at sfa_weight ≥ 5.0) captures the failure mode, but the more important characterization is the **joint satisfaction region**: at what sfa_weight does z_dyn achieve *all three* of slowness (C5), identity encoding (delta_R2_color ≥ 0.10), and non-collapse (C1)? Your sweep will map this, but the pre-registration must name the composite criterion explicitly:
+
+> **Composite M2 Viability Criterion:** There exists an sfa_weight ∈ [0.1, 25.0] such that ≥ 3/5 seeds simultaneously satisfy: (a) C5 (SFA gradient reaches z_dyn), (b) delta_R2_color improvement ≥ 0.10 over A1, and (c) per-dim std > 0.5 (non-collapse).
+
+If no such sfa_weight exists, then SFA + batch VICReg cannot jointly shape z_dyn into a slow identity representation in this architecture — and the M2 mandate, while validated on sml's binary task, is falsified for the RGB CNN. This is an honest negative result and should be reported as such, not reframed as partial success.
+
+## 3. Pre-Registration Precision and Language Hygiene
+
+Before the Orchestrator commits `src/pre_registration.md`, ensure:
+
+- **Hypothesis language:** Replace "the slow identity stream *will begin to separate*" with "we test whether SFA at parity produces measurable identity–position separation." The current phrasing assumes the outcome.
+- **Quantitative thresholds:** State the composite criterion above explicitly, with the 0.10 color threshold (not 0.05). The secondary criterion at 0.05 can remain as a directional-check tier, but the primary claim tier must match the Phase 0 gate.
+- **Arm B pre-commitment:** Since Arm B is pre-set to sfa_weight=10.0 in single-phase mode, explicitly note that if 5.0 < optimal_sfa < 10.0, Arm B may fail for the wrong reason and a follow-up is warranted. Do not interpret Arm B failure alone as falsifying the compound hypothesis.
+
+The sub-agents executing this plan must read `src/pre_registration.md` and adhere strictly to its stated criteria and thresholds during evaluation. No post-hoc threshold relaxation.
+
+---
+

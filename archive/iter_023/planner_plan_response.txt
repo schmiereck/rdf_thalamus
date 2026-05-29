@@ -1,0 +1,815 @@
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: iter | status          | hypothesis
+-----|-----------------|----------
+002  | ok              | phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
+003  | ok              | phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
+004  | ok              | phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
+005  | ok              | phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
+006  | ok              | phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
+007  | ok              | phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
+008  | ok              | phase-8: evaluate unsupervised spatial bottlenecks and close...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py', 'start_line': 1, 'end_line': 80})]
+
+[Tool Result: --- lines 1 to 80 of 1077 ---
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_enco...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py', 'start_line': 80, 'end_line': 200})]
+
+[Tool Result: --- lines 80 to 200 of 1077 ---
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        x_dyn = self.conv_spatial_dyn(x) # (B, d_max, 8)
+        return x_dyn.mean(dim=-1) # (B, d_max)
+
+    def forward(self, x):
+        """
+        Returns both streams:
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations, shape (B, d_max)
+        """
+        a_spatial = self.forward_spatial(x)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        z_dyn = self.forward_dynamics(x)
+        return z_coord, z_dyn
+
+
+class DualStreamPredictor(nn.Module):
+    def __init__(self, d_max=8, d_dyn=None, h=3):
+        """
+        MLP forecasting target z_{t+1} of size (B, d_max + d_dyn)
+        from history of active latent states (B, H * (d_max + d_dyn)).
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.d_dyn = d_dyn if d_dyn is not None else d_max
+       ...]
+
+
+[Tool Call: read_iteration({'iter_num': 21})]
+
+[Tool Result: ```yaml
+cached_tokens: 3318800
+campaign: Thalamus
+cost_usd: 1.4126
+hypothesis: 'phase-22: single-scalar bottleneck falsified as primary cause; SFA objective
+  itself non-functional at current hyperparameters (sfa_weight=0.1 vs var_weight=25)'
+input_tokens: 5007974
+iter: 21
+metrics:
+  arm_a_collapsed_seeds: 3
+  arm_a_delta_r2_color: 0.09
+  arm_a_delta_r2_identity: -0.017
+  arm_b_collapsed_seeds: 1
+  arm_b_delta_r2_color: 0.13
+  arm_b_delta_r2_identity: -0.027
+  arm_c_collapsed_seeds: 5
+  arm_c_delta_r2_color: 0.1
+  arm_c_delta_r2_identity: -0.055
+  arm_c_normalized_coord_var: 1.9e-05
+  arm_c_normalized_dyn_var: 0.01771
+  c1_collapse_pass: false
+  c2_mse_pass: true
+  c3_color_improvement: 0.05
+  c4_identity_improvement: -0.021
+  c5_sfa_effective: false
+  ctrl_collapsed_seeds: 1
+  ctrl_delta_r2_color: 0.05
+  ctrl_delta_r2_identity: -0.035
+  ctrl_normalized_coord_var: 1.74e-05
+  ctrl_normalized_dyn_var: 0.00856
+  overall_validated: false
+  total_runs: 20
+  training_steps_per_run: 5000
+outp...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py', 'start_line': 200, 'end_line': 350})]
+
+[Tool Result: --- lines 200 to 350 of 1077 ---
+            x_hist (Tensor): shape (B, H, 3, 128)
+            x_target (Tensor): shape (B, 3, 128)
+            sim_weight (float): VICReg invariance loss weight
+            var_weight (float): VICReg variance loss weight
+            cov_weight (float): VICReg covariance loss weight
+            lambda_spatial (float): spatial bottleneck loss weight
+            k_chan (int, optional): channel index to minimize spatial variance on. Defaults to d_t - 1.
+            mask_coord (bool): whether to zero out coordinate history in predictor.
+        """
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+        
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
+        
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+   ...]
+
+
+[Tool Call: read_file({'path': 'archive/iter_021/proposed_plan.yaml'})]
+
+[Tool Result: falsification_criterion: 'PRIMARY: If Arm C (K=4 sub-features) fails to achieve mean
+  delta_R2_identity
+
+  ≥ 0.10 across 5 seeds at step 5000, the single-scalar bottleneck is NOT the
+
+  primary cause of the disentanglement failure, and the hypothesis is falsified.
+
+
+  SECONDARY (supporting evidence): If Arms A and B show delta_R2_identity
+
+  improvements < 0.05 over Control, this confirms that richer feature sources
+
+  and more spatial channels cannot compensate for the per-channel scalar bottleneck.
+
+
+  ANCILLARY FALSIFICATION: If Arm C achieves delta_R2_identity ≥ 0.10 but
+
+  delta_R2_color improvement(Arm C - Control) < 0.05, the sub-features are
+
+  not selectively improving identity encoding — they are just adding capacity
+
+  that happens to fit the probe.
+
+
+  THRESHOLD CLARIFICATION (resolving Issue 2): All criteria use IMPROVEMENT-based
+
+  thresholds: metric(arm) - metric(control) ≥ threshold. The absolute criterion
+
+  from iter_021 (delta_R2_color(Arm A) ≥ 0.10) was incoherent ...]
+
+
+[Tool Call: read_file({'end_line': 500, 'path': 'src/models_dual_stream.py', 'start_line': 350})]
+
+[Tool Result: --- lines 350 to 500 of 1077 ---
+        self.steps_since_recruitment += 1
+        
+        if self.d_t == target_dim:
+            self.error_buffer.append(self.ema_error)
+            
+        if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+            if len(self.error_buffer) >= 200:
+                mean = np.mean(self.error_buffer)
+                std = np.std(self.error_buffer)
+                if self.ema_error > mean + self.k * std:
+                    if self.gdasr_log_only:
+                        self.steps_since_recruitment = 0
+                        self.gdasr_growth_points.append({
+                            "step": step,
+                            "ema_error": self.ema_error,
+                            "mean": mean,
+                            "std": std
+                        })
+                        print(f"[GDASR LOG-ONLY] Growth point detected at d_t={self.d_t}, "
+                              f"error {self.ema_error:.4f} (baseline mea...]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_recovery.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+    ...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa_archceiling.py', 'start_line': 1, 'end_line': 100})]
+
+[Tool Result: --- lines 1 to 100 of 1287 ---
+#!/usr/bin/env python3
+"""
+Phase 0 SFA Architecture Ceiling Evaluation Runner.
+
+Tests three architectural modifications against the control:
+- Conv4 dynamics source (dyn_source='conv4')
+- Expanded d_max=16
+- Sub-features K=4
+
+Four arms x 5 seeds x 5000 steps.
+Seeds: [42, 123, 456, 789, 999]
+Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000
+d_t=3, gdasr_log_only=True
+
+Results saved to archive/iter_022/results/
+"""
+
+import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+import warnings
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from scipy import stats as scipy_stats
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import (
+    NonParametricJEPASpatial,...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa_cgir.py', 'start_line': 1, 'end_line': 100})]
+
+[Tool Result: --- lines 1 to 100 of 1181 ---
+#!/usr/bin/env python3
+"""
+Phase 0 SFA CGIR Evaluation Runner.
+
+Tests the Centroid-Gated Identity Readout (CGIR) architectural change against
+the pre-registered falsification criteria C1-C4.
+
+Four arms x 5 seeds x 5000 steps:
+  Arm A (CGIR+SFA+CCR):       dyn_readout="centroid_gated", sfa_weight=0.1,  pos_encoding="none",      CCR=covariance
+  Arm B (Mean+SFA+CCR):       dyn_readout="mean",           sfa_weight=0.1,  pos_encoding="none",      CCR=covariance
+  Arm C (CGIR+SFA+CCR+pos):   dyn_readout="centroid_gated", sfa_weight=0.1,  pos_encoding="sinusoidal", CCR=covariance
+  Arm D (CGIR+SFA no CCR):    dyn_readout="centroid_gated", sfa_weight=0.1,  pos_encoding="none",      CCR=none
+
+Seeds: [42, 123, 456, 789, 999]
+Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000
+d_t=3, gdasr_log_only=True
+
+Results saved to archive/iter_020/results/
+"""
+
+import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+impo...]
+
+
+[Tool Call: grep_search({'pattern': 'sfa_weight', 'include_pattern': '*.py'})]
+
+[Tool Result: src\models_dual_stream.py:721: primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean",
+src\models_dual_stream.py:731: self.sfa_weight = sfa_weight
+src\models_dual_stream.py:758: def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None):
+src\models_dual_stream.py:760: _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight
+src\models_dual_stream.py:831: base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+src\models_dual_stream.py:1065: sfa_weight=self.sfa_weight,
+src\run_phase0_sfa.py:6: Arm A (SFA+VICReg)     : sfa_weight=1.0, var=25, cov=25, pos_encoding='none'
+src\run_phase0_sfa.py:8: Arm C (SFA+pos_enc)    : sfa_weight=1.0, var=25, cov=25, pos_encoding='sinusoidal'
+src\run_phase0_sfa.py:411: Keys: 'name', 'p...]
+
+
+[Tool Call: grep_search({'pattern': 'NonParametricJEPASpatial', 'include_pattern': '*.py'})]
+
+[Tool Result: src\models_dual_stream.py:719: class NonParametricJEPASpatial(nn.Module):
+src\models_dual_stream.py:1057: cloned = NonParametricJEPASpatial(
+src\run_phase0_sfa.py:36: NonParametricJEPASpatial,
+src\run_phase0_sfa.py:437: model = NonParametricJEPASpatial(
+src\run_phase0_sfa_archceiling.py:41: NonParametricJEPASpatial,
+src\run_phase0_sfa_archceiling.py:683: model = NonParametricJEPASpatial(
+src\run_phase0_sfa_cgir.py:44: NonParametricJEPASpatial,
+src\run_phase0_sfa_cgir.py:492: model = NonParametricJEPASpatial(
+src\run_phase0_sfa_recovery.py:43: NonParametricJEPASpatial,
+src\run_phase0_sfa_recovery.py:441: model = NonParametricJEPASpatial(
+src\run_phase11_experiments.py:23: NonParametricJEPASpatial,
+src\run_phase11_experiments.py:330: non_parametric_base = train_base_model_passive(NonParametricJEPASpatial, seed, device, is_pdrc=False)
+src\run_phase12_experiments.py:19: from src.models_dual_stream import NonParametricJEPASpatial
+src\run_phase12_experiments.py:153: model = NonParametricJEPA...]
+
+
+[Tool Call: read_file({'end_line': 850, 'path': 'src/models_dual_stream.py', 'start_line': 710})]
+
+[Tool Result: --- lines 710 to 850 of 1077 ---
+                z_dyn = torch.sum(a_identity * p_c.detach(), dim=-1)  # stop-gradient on attention
+        else:
+            raise ValueError(f"Unknown dyn_readout: {self.dyn_readout}")
+        
+        return z_coord, z_dyn
+
+
+
+
+class NonParametricJEPASpatial(nn.Module):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
+                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean",
+                 sub_features=1, dyn_source="spatial"):
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        self.pos_encoding = pos_encoding
+        self.primary_objective = primary_objective
+        self.sfa_weight = sfa_weight
+        self.gdasr_log_only = gdasr_log_only
+        self.dyn_readout = dyn_readout
+        self.sub_features = sub_features...]
+
+
+[Tool Call: read_file({'end_line': 950, 'path': 'src/models_dual_stream.py', 'start_line': 850})]
+
+[Tool Result: --- lines 850 to 950 of 1077 ---
+            if ccr_mode != 'none':
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)
+                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0
+                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1]
+                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
+
+                if ccr_mode == 'hinge':
+                    hinge_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        if self.d_t > 1:
+                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
+                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
+                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
+                            hinge = F.relu(0.15 - diff_pairs)
+                            hinge_losses.append(hinge.mean())
+               ...]
+
+
+[Tool Call: read_file({'end_line': 1077, 'path': 'src/models_dual_stream.py', 'start_line': 950})]
+
+[Tool Result: --- lines 950 to 1077 of 1077 ---
+            cov_loss = cov_loss_coord + cov_loss_dyn
+
+            base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+
+            if lambda_spatial > 0:
+                z_target_spatial = self.encoder.forward_spatial(x_target)
+                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+                if k_chan is None:
+                    k_chan = self.d_t - 1
+                var_k = var_all[:, k_chan]
+                loss_spatial = lambda_spatial * var_k.mean()
+                loss = base_loss + loss_spatial
+            else:
+                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+                loss = base_loss
+
+            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            if ccr_mode != 'none':
+                z_all_c...]
+
+Now let me look at the training loop from the last experiment to understand how evaluation and metrics work:
+
+[Tool Call: read_file({'end_line': 300, 'path': 'src/run_phase0_sfa_archceiling.py', 'start_line': 100})]
+
+[Tool Result: --- lines 100 to 300 of 1287 ---
+        dyn_diff = np.diff(z_dyn, axis=0)
+        coord_diff = np.diff(z_coord, axis=0)
+        if len(dyn_diff) > 0:
+            dyn_deltas.append(np.mean(np.sum(dyn_diff ** 2, axis=1)))
+            coord_deltas.append(np.mean(np.sum(coord_diff ** 2, axis=1)))
+    mean_dyn_delta = float(np.mean(dyn_deltas)) if dyn_deltas else 0.0
+    mean_coord_delta = float(np.mean(coord_deltas)) if coord_deltas else 0.0
+    ratio = mean_dyn_delta / (mean_coord_delta + 1e-12)
+    return {
+        "mean_dyn_delta": mean_dyn_delta,
+        "mean_coord_delta": mean_coord_delta,
+        "ratio": ratio,
+    }
+
+
+def check_collapse(z_dyn, d_t, std_threshold=0.5):
+    z_active = z_dyn[:, :d_t]
+    per_dim_std = np.std(z_active, axis=0)
+    has_collapsed = np.any(per_dim_std < std_threshold)
+    return has_collapsed, per_dim_std
+
+
+def compute_vicreg_health(z_dyn, d_t):
+    z_active = z_dyn[:, :d_t]
+    per_dim_std = np.std(z_active, axis=0)
+    if d_t > 1:
+        corr = np.co...]
+
+
+[Tool Call: read_file({'end_line': 700, 'path': 'src/run_phase0_sfa_archceiling.py', 'start_line': 600})]
+
+[Tool Result: --- lines 600 to 700 of 1287 ---
+    z_dyn_eval, z_coord_eval, pos_eval, colors_eval, radii_eval = \
+        collect_multitraj_eval_data(model, num_samples=eval_steps,
+                                     base_seed=seed + 40000, device=device)
+    tracking_quality = compute_tracking_quality(z_coord_eval, pos_eval, d_t)
+
+    # Semantic disentanglement probes
+    semantic = compute_semantic_probes(model, num_samples=eval_steps,
+                                        base_seed=seed + 30000, device=device)
+
+    results = {
+        "arm": name,
+        "seed": seed,
+        "checkpoint_step": checkpoint_step,
+        "has_collapsed": int(has_collapsed),
+        "per_dim_std": per_dim_std.tolist(),
+        "mean_abs_corr": vh["mean_abs_corr"],
+        "mean_dyn_delta": slowness["mean_dyn_delta"],
+        "mean_coord_delta": slowness["mean_coord_delta"],
+        "slowness_ratio": slowness["ratio"],
+        "centroid_mse_mean": centroid_mse["mse_mean"],
+        "centroid_mse_per_object": cent...]
+
+
+[Tool Call: read_file({'end_line': 850, 'path': 'src/run_phase0_sfa_archceiling.py', 'start_line': 700})]
+
+[Tool Result: --- lines 700 to 850 of 1287 ---
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+
+    env = PhysicsSandbox(N=3, seed=seed)
+    obs = env.reset()
+    history = collections.deque(maxlen=4)
+    history.append(obs)
+
+    replay_buffer = ReplayBuffer(capacity=2000)
+
+    def _prefill(n):
+        while len(replay_buffer) < n:
+            obs, info = env.step({"acc": 0.0, "push": False})
+            history.append(obs)
+            if len(history) == 4:
+                replay_buffer.push(
+                    np.stack(list(history)[:3], axis=0),
+                    history[3],
+                )
+
+    _prefill(min(100, total_steps))
+
+    logs = []
+    results_list = []
+
+    for step in range(1, total_steps + 1):
+        obs, info = env.step({"acc": 0.0, "push": False})
+        history.append(obs)
+        if len(history) == 4:
+            replay_buffer.push(
+                np.stack(list(history)[:3], axis=0),
+                history[3],
+            )
+
+        x_hist_b, x_target_b = replay_b...]
+
+
+[Tool Call: grep_search({'include_pattern': 'models_dual_stream.py', 'pattern': 'class NonParametricEncoder'})]
+
+[Tool Result: src\models_dual_stream.py:625: class NonParametricEncoder(nn.Module):]
+
+
+[Tool Call: read_file({'end_line': 720, 'path': 'src/models_dual_stream.py', 'start_line': 625})]
+
+[Tool Result: --- lines 625 to 720 of 1077 ---
+class NonParametricEncoder(nn.Module):
+    def __init__(self, d_max=8, pos_encoding="none", dyn_readout="mean", sub_features=1, dyn_source="spatial"):
+        super().__init__()
+        self.d_max = d_max
+        self.pos_encoding = pos_encoding
+        self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
+        
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+...]
+
+Now let me look at the SFA-specific part of the loss more closely to understand the gradient flow and how `sfa_weight` is used:
+
+[Tool Call: read_file({'end_line': 850, 'path': 'src/models_dual_stream.py', 'start_line': 770})]
+
+[Tool Result: --- lines 770 to 850 of 1077 ---
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, d_dyn)
+
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+
+        if self.primary_objective == "sfa":
+            # SFA MODE
+            z_prev_dyn = z_hist_dyn[:, -1]  # (B, d_dyn)
+
+            z_target_dyn_active = z_target_dyn[:, :d_t_dyn]
+            z_prev_dyn_active = z_prev_dyn[:, :d_t_dyn]
+            sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active.detach())
+
+            def calc_var_loss(x, gamma=1.0, eps=1e-4):
+                mean = x.mean(dim=0)
+                var = torch.mean((x - mean) ** 2, dim=0)
+                std = torch.sqrt(var + eps)
+                return torch.mean(F.relu(gamma - std))
+
+            def calc_cov_loss(x):
+                Bc, d = x.shape
+                if Bc <= 1 or d <= 1:
+                    return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+                mean = x.mean(dim=0, keepdim=True)
+               ...]
+
+Now let me check the evaluation function more carefully and understand the ramp implementation needed:
+
+[Tool Call: read_file({'end_line': 550, 'path': 'src/run_phase0_sfa_archceiling.py', 'start_line': 490})]
+
+[Tool Result: --- lines 490 to 550 of 1287 ---
+        max_radius = 20.0
+        identity_vec = np.zeros((num_samples, 4))
+        identity_vec[:, :3] = colors_arr[:, obj, :]
+        identity_vec[:, 3] = radii_arr[:, obj] / max_radius
+
+        r2_dyn_identity = fit_multivariate_probe_r2(z_d, identity_vec)
+        r2_coord_identity = fit_multivariate_probe_r2(z_c, identity_vec)
+
+        r2_per_dim.append({
+            "dyn_color": r2_dyn_color,
+            "coord_color": r2_coord_color,
+            "dyn_pos": r2_dyn_pos,
+            "coord_pos": r2_coord_pos,
+            "dyn_identity": r2_dyn_identity,
+            "coord_identity": r2_coord_identity,
+        })
+
+    r2_dyn_color_all = np.mean([p["dyn_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_color_all = np.mean([p["coord_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_dyn_pos_all = np.mean([p["dyn_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_pos_all = np.mean([p["coord_pos"] for p in r2_per_dim]...]
+
+Now I have a thorough understanding of the codebase and the problem. Let me also check the `current_state.md` more carefully to understand the exact experimental history:
+
+[Tool Call: read_file({'end_line': 400, 'path': 'src/run_phase0_sfa_archceiling.py', 'start_line': 300})]
+
+[Tool Result: --- lines 300 to 400 of 1287 ---
+    test_history.clear()
+    test_history.append(obs)
+
+    for _ in range(4):
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+
+    collected = 0
+    while collected < num_samples:
+        obs, info = test_env.step({"acc": 0.0, "push": False})
+        test_history.append(obs)
+        if len(test_history) == 4:
+            x_target_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad():
+                z_coord, _ = model.encoder(x_target_t)
+            centroids_list.append(z_coord[:, :model.d_t].cpu().numpy())
+            true_pos = np.array(info["positions"][:model.d_t])
+            if len(true_pos) < model.d_t:
+                true_pos = np.pad(true_pos, (0, model.d_t - len(true_pos)), constant_values=np.nan)
+            pos_list.append(true_pos)
+            collected += 1
+
+    centroids_arr = np.concatenate(centroids_list, axis=0)
+    pos_arr = np.array(pos...]
+
+Now I have a comprehensive understanding. Let me also check the semantic probes function in more detail to understand how delta_R2 is computed:
+
+[Tool Call: read_file({'end_line': 490, 'path': 'src/run_phase0_sfa_archceiling.py', 'start_line': 400})]
+
+[Tool Result: --- lines 400 to 490 of 1287 ---
+
+    return z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr
+
+
+# ---------------------------------------------------------------------------
+# Semantic probes (adapted for K>1 pooling)
+# ---------------------------------------------------------------------------
+def compute_semantic_probes(model, num_samples=200, train_ratio=0.5,
+                            base_seed=30000, device="cpu"):
+    model.eval()
+    z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr = \
+        collect_multitraj_eval_data(model, num_samples=num_samples,
+                                     base_seed=base_seed, device=device)
+
+    N = pos_arr.shape[1]
+    d_t = model.d_t
+    sub_features = model.sub_features
+    d_max = model.d_max
+
+    # Pool K sub-features per channel for fair cross-arm comparison
+    if sub_features > 1:
+        # z_dyn_arr: (num_samples, d_max*sub_features)
+        z_dyn_pooled = z_dyn_arr[:, :d_t * sub_features].reshape(num_samples, d_t, sub_feat...]
+
+Now I have a thorough understanding of the codebase, the problem, and the experimental setup. Let me now formulate the plan.
+
+Key findings from the analysis:
+1. **SFA is non-functional**: `sfa_weight=0.1` vs `var_weight=25.0` creates a 250× gradient imbalance. SFA loss cannot shape z_dyn when its gradient contribution is negligible.
+2. **The code already supports** `sfa_weight` as both a constructor parameter and a forward-call override. The training loop passes it through.
+3. **The evaluation suite** is comprehensive: normalized temporal variance, slowness ratio, semantic probes (R² for color, identity, position), collapse checks, centroid MSE.
+4. **Iter 022 best result**: Arm B (d_max=16) with delta_R2_color=+0.130, but delta_R2_identity=-0.027. This was with non-functional SFA.
+5. **The ramp schedule** is a suggested contingency for SFA-VICReg gradient conflict at high weights.
+
+The experiment should:
+- Sweep `sfa_weight` from 0.1 to 25.0 on the Ctrl configuration (d_max=8, CGIR, CCR, d_t=3)
+- Include d_max=16 at the best sfa_weight as a secondary arm
+- Add ramp schedule arms for the high-weight cases that might conflict with VICReg
+- Use the exact same evaluation suite as iter 022
+
+```yaml
+hypothesis: |
+  The SFA objective has been functionally disabled by a 250× gradient imbalance
+  (sfa_weight=0.1 vs var_weight=25.0). Increasing sfa_weight to parity with
+  var_weight will activate SFA, causing normalized_dyn_var to drop below
+  normalized_coord_var (C5 criterion: z_dyn becomes slower than z_coord). With
+  functional SFA, the slow identity stream will begin to separate from the fast
+  position stream, producing delta_R2_color ≥ 0.10 (improvement over
+  sfa_weight=0.1 baseline of +0.050).
+
+  Specifically:
+  - At sfa_weight ≥ 5.0, normalized_dyn_var < normalized_coord_var (SFA effective).
+  - At sfa_weight = 25.0 (parity with var_weight), SFA-VICReg gradient conflict
+    may cause instability or collapse; if so, a linear ramp from 0.1 to 25.0
+    over the first 1000 steps will resolve it.
+  - At the best functional sfa_weight, d_max=16 will compound with SFA to
+    achieve delta_R2_color ≥ 0.15 and delta_R2_identity ≥ 0.0 (breaking the
+    negative identity trend from iter 022).
+
+falsification_criterion: |
+  PRIMARY FALSIFICATION: If no sfa_weight value in the sweep [0.1, 1.0, 5.0,
+  10.0, 25.0] produces normalized_dyn_var < normalized_coord_var across ≥ 3/5
+  seeds, then SFA cannot shape z_dyn even at gradient parity, and the
+  hypothesis is falsified. This would mean the SFA objective itself (not its
+  weight) is structurally incompatible with the CNN architecture or the
+  z_dyn readout.
+
+  SECONDARY FALSIFICATION: If sfa_weight achieves C5 (SFA effective) but the
+  best delta_R2_color improvement over the sfa_weight=0.1 baseline is < 0.05,
+  then functional SFA does not translate to semantic disentanglement — the
+  slowness prior does not separate identity from position in this architecture.
+
+  TERTIARY FALSIFICATION: If all sfa_weight ≥ 5.0 arms collapse in ≥ 3/5 seeds
+  (even with ramping), the SFA-VICReg gradient conflict is unresolvable at
+  effective SFA strengths, and the hypothesis that SFA can coexist with
+  batch VICReg at parity is falsified.
+
+proposed_method: |
+  EXPERIMENT DESIGN: 7 arms × 5 seeds × 5000 steps. Seeds: [42, 123, 456, 789, 999].
+
+  ARM CONFIGURATIONS:
+
+  Arm A1 (Ctrl sfa=0.1): d_max=8, CGIR, CCR, d_t=3, sfa_weight=0.1
+    → Direct replication of iter_022 Ctrl for within-run comparison.
+
+  Arm A2 (sfa=1.0): d_max=8, CGIR, CCR, d_t=3, sfa_weight=1.0
+    → 10× increase; still below VICReg parity but tests gradient sensitivity.
+
+  Arm A3 (sfa=5.0): d_max=8, CGIR, CCR, d_t=3, sfa_weight=5.0
+    → Intermediate; 5/25 = 20% of VICReg strength. First test of functional SFA.
+
+  Arm A4 (sfa=10.0): d_max=8, CGIR, CCR, d_t=3, sfa_weight=10.0
+    → 40% of VICReg strength. Likely functional SFA with less conflict risk.
+
+  Arm A5 (sfa=25.0 fixed): d_max=8, CGIR, CCR, d_t=3, sfa_weight=25.0
+    → Full parity with var_weight. Tests SFA effectiveness at maximum strength.
+    Expected risk: gradient conflict with VICReg causing instability/collapse.
+
+  Arm A6 (sfa=25.0 ramp): d_max=8, CGIR, CCR, d_t=3, sfa_weight ramp 0.1→25.0 over 1000 steps
+    → Contingency arm: linearly ramp sfa_weight from 0.1 to 25.0 over the first
+    1000 steps, then hold at 25.0. Tests whether gradual SFA introduction avoids
+    the collapse predicted for Arm A5. Implementation: in the training loop,
+    compute effective_sfa_weight = 0.1 + (25.0 - 0.1) * min(1.0, step / 1000)
+    and pass it via the sfa_weight forward-call override.
+
+  Arm B (d_max=16 at best sfa): d_max=16, CGIR, CCR, d_t=3, sfa_weight=<BEST>
+    → Secondary arm using the best sfa_weight from A2–A6 (determined by C5 pass
+    rate + lowest collapse rate + best delta_R2_color). If multiple pass, use
+    the lowest effective weight. If none pass C5, use sfa_weight=10.0 as the
+    most likely candidate. Tests whether expanded channels + functional SFA
+    compound positively.
+
+  ALL ARMS PRESERVE:
+  - primary_objective="sfa"
+  - sim_weight=25.0 (JEPA readout, stop-gradient per M2)
+  - var_weight=25.0, cov_weight=25.0 (batch VICReg, M1)
+  - dyn_readout="centroid_gated" (CGIR)
+  - ccr_mode="covariance", ccr_smooth=10, ccr_spatial=10
+  - pos_encoding="none"
+  - sub_features=1, dyn_source="spatial"
+  - d_t=3 frozen, gdasr_log_only=True
+  - Adam lr=1e-3, batch=32, replay_buffer=2000
+  - 5000 training steps
+
+  METRICS (same as iter_022, directly comparable):
+  1. C5 (SFA effective): normalized_dyn_var < normalized_coord_var per seed
+  2. C1 (Collapse): per_dim_std < 0.5 in < 2/5 seeds per arm
+  3. C2 (Centroid MSE): arm MSE ≤ 1.10 × A1 MSE
+  4. C3 (Color): delta_R2_color improvement(Arm - A1) ≥ 0.05
+  5. C4 (Identity): delta_R2_identity improvement(Arm - A1) ≥ 0.05
+  6. Normalized temporal variance (dyn and coord) — primary C5 indicator
+  7. Slowness ratio (dyn_delta / coord_delta)
+  8. Per-dim std, collapse counts
+  9. Tracking quality (delta_corr, level_corr)
+  10. GDASR growth-point logs (log-only per M3)
+
+  CODE CHANGES:
+  1. src/run_phase0_sfa_sweep.py (NEW): Main experiment runner.
+     - Based on run_phase0_sfa_archceiling.py structure.
+     - 7 arms × 5 seeds × 5000 steps.
+     - Ramp schedule for Arm A6: compute effective sfa_weight per step,
+       pass via forward() sfa_weight parameter override.
+     - Arm B determined after A-arms complete (two-phase execution),
+       or pre-set to sfa_weight=10.0 if single-phase preferred.
+     - Same evaluation suite: normalized temporal variance, semantic probes,
+       collapse checks, centroid MSE, tracking quality.
+     - Results saved to archive/iter_023/results/.
+
+  2. src/models_dual_stream.py: NO CHANGES needed.
+     The sfa_weight parameter already supports per-forward-call override.
+     The ramp schedule is implemented in the training loop, not the model.
+
+  3. src/pre_registration.md: Update with this plan.
+
+  TWO-PHASE vs SINGLE-PHASE:
+  Single-phase preferred (all 7 arms run simultaneously with Arm B pre-set
+  to sfa_weight=10.0). This avoids sequential dependency and produces all
+  results in one run. If sfa_weight=10.0 turns out suboptimal, the A-arms
+  provide the data to identify the correct weight for a follow-up.
+
+pre_registration_file: "src/pre_registration.md"
+```

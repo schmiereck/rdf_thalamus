@@ -1,0 +1,95 @@
+falsification_criterion: 'PRIMARY FALSIFICATION: If no sfa_weight value in the sweep
+  [0.1, 1.0, 5.0,
+
+  10.0, 25.0] produces normalized_dyn_var < normalized_coord_var across ≥ 3/5
+
+  seeds, then SFA cannot shape z_dyn even at gradient parity, and the
+
+  hypothesis is falsified. This would mean the SFA objective itself (not its
+
+  weight) is structurally incompatible with the CNN architecture or the
+
+  z_dyn readout.
+
+
+  SECONDARY FALSIFICATION: If sfa_weight achieves C5 (SFA effective) but the
+
+  best delta_R2_color improvement over the sfa_weight=0.1 baseline is < 0.05,
+
+  then functional SFA does not translate to semantic disentanglement — the
+
+  slowness prior does not separate identity from position in this architecture.
+
+
+  TERTIARY FALSIFICATION: If all sfa_weight ≥ 5.0 arms collapse in ≥ 3/5 seeds
+
+  (even with ramping), the SFA-VICReg gradient conflict is unresolvable at
+
+  effective SFA strengths, and the hypothesis that SFA can coexist with
+
+  batch VICReg at parity is falsified.
+
+  '
+hypothesis: "The SFA objective has been functionally disabled by a 250× gradient imbalance\n\
+  (sfa_weight=0.1 vs var_weight=25.0). Increasing sfa_weight to parity with\nvar_weight\
+  \ will activate SFA, causing normalized_dyn_var to drop below\nnormalized_coord_var\
+  \ (C5 criterion: z_dyn becomes slower than z_coord). With\nfunctional SFA, the slow\
+  \ identity stream will begin to separate from the fast\nposition stream, producing\
+  \ delta_R2_color ≥ 0.10 (improvement over\nsfa_weight=0.1 baseline of +0.050).\n\
+  \nSpecifically:\n- At sfa_weight ≥ 5.0, normalized_dyn_var < normalized_coord_var\
+  \ (SFA effective).\n- At sfa_weight = 25.0 (parity with var_weight), SFA-VICReg\
+  \ gradient conflict\n  may cause instability or collapse; if so, a linear ramp from\
+  \ 0.1 to 25.0\n  over the first 1000 steps will resolve it.\n- At the best functional\
+  \ sfa_weight, d_max=16 will compound with SFA to\n  achieve delta_R2_color ≥ 0.15\
+  \ and delta_R2_identity ≥ 0.0 (breaking the\n  negative identity trend from iter\
+  \ 022).\n"
+pre_registration_file: src/pre_registration.md
+proposed_method: "EXPERIMENT DESIGN: 7 arms × 5 seeds × 5000 steps. Seeds: [42, 123,\
+  \ 456, 789, 999].\n\nARM CONFIGURATIONS:\n\nArm A1 (Ctrl sfa=0.1): d_max=8, CGIR,\
+  \ CCR, d_t=3, sfa_weight=0.1\n  → Direct replication of iter_022 Ctrl for within-run\
+  \ comparison.\n\nArm A2 (sfa=1.0): d_max=8, CGIR, CCR, d_t=3, sfa_weight=1.0\n \
+  \ → 10× increase; still below VICReg parity but tests gradient sensitivity.\n\n\
+  Arm A3 (sfa=5.0): d_max=8, CGIR, CCR, d_t=3, sfa_weight=5.0\n  → Intermediate; 5/25\
+  \ = 20% of VICReg strength. First test of functional SFA.\n\nArm A4 (sfa=10.0):\
+  \ d_max=8, CGIR, CCR, d_t=3, sfa_weight=10.0\n  → 40% of VICReg strength. Likely\
+  \ functional SFA with less conflict risk.\n\nArm A5 (sfa=25.0 fixed): d_max=8, CGIR,\
+  \ CCR, d_t=3, sfa_weight=25.0\n  → Full parity with var_weight. Tests SFA effectiveness\
+  \ at maximum strength.\n  Expected risk: gradient conflict with VICReg causing instability/collapse.\n\
+  \nArm A6 (sfa=25.0 ramp): d_max=8, CGIR, CCR, d_t=3, sfa_weight ramp 0.1→25.0 over\
+  \ 1000 steps\n  → Contingency arm: linearly ramp sfa_weight from 0.1 to 25.0 over\
+  \ the first\n  1000 steps, then hold at 25.0. Tests whether gradual SFA introduction\
+  \ avoids\n  the collapse predicted for Arm A5. Implementation: in the training loop,\n\
+  \  compute effective_sfa_weight = 0.1 + (25.0 - 0.1) * min(1.0, step / 1000)\n \
+  \ and pass it via the sfa_weight forward-call override.\n\nArm B (d_max=16 at best\
+  \ sfa): d_max=16, CGIR, CCR, d_t=3, sfa_weight=<BEST>\n  → Secondary arm using the\
+  \ best sfa_weight from A2–A6 (determined by C5 pass\n  rate + lowest collapse rate\
+  \ + best delta_R2_color). If multiple pass, use\n  the lowest effective weight.\
+  \ If none pass C5, use sfa_weight=10.0 as the\n  most likely candidate. Tests whether\
+  \ expanded channels + functional SFA\n  compound positively.\n\nALL ARMS PRESERVE:\n\
+  - primary_objective=\"sfa\"\n- sim_weight=25.0 (JEPA readout, stop-gradient per\
+  \ M2)\n- var_weight=25.0, cov_weight=25.0 (batch VICReg, M1)\n- dyn_readout=\"centroid_gated\"\
+  \ (CGIR)\n- ccr_mode=\"covariance\", ccr_smooth=10, ccr_spatial=10\n- pos_encoding=\"\
+  none\"\n- sub_features=1, dyn_source=\"spatial\"\n- d_t=3 frozen, gdasr_log_only=True\n\
+  - Adam lr=1e-3, batch=32, replay_buffer=2000\n- 5000 training steps\n\nMETRICS (same\
+  \ as iter_022, directly comparable):\n1. C5 (SFA effective): normalized_dyn_var\
+  \ < normalized_coord_var per seed\n2. C1 (Collapse): per_dim_std < 0.5 in < 2/5\
+  \ seeds per arm\n3. C2 (Centroid MSE): arm MSE ≤ 1.10 × A1 MSE\n4. C3 (Color): delta_R2_color\
+  \ improvement(Arm - A1) ≥ 0.05\n5. C4 (Identity): delta_R2_identity improvement(Arm\
+  \ - A1) ≥ 0.05\n6. Normalized temporal variance (dyn and coord) — primary C5 indicator\n\
+  7. Slowness ratio (dyn_delta / coord_delta)\n8. Per-dim std, collapse counts\n9.\
+  \ Tracking quality (delta_corr, level_corr)\n10. GDASR growth-point logs (log-only\
+  \ per M3)\n\nCODE CHANGES:\n1. src/run_phase0_sfa_sweep.py (NEW): Main experiment\
+  \ runner.\n   - Based on run_phase0_sfa_archceiling.py structure.\n   - 7 arms ×\
+  \ 5 seeds × 5000 steps.\n   - Ramp schedule for Arm A6: compute effective sfa_weight\
+  \ per step,\n     pass via forward() sfa_weight parameter override.\n   - Arm B\
+  \ determined after A-arms complete (two-phase execution),\n     or pre-set to sfa_weight=10.0\
+  \ if single-phase preferred.\n   - Same evaluation suite: normalized temporal variance,\
+  \ semantic probes,\n     collapse checks, centroid MSE, tracking quality.\n   -\
+  \ Results saved to archive/iter_023/results/.\n\n2. src/models_dual_stream.py: NO\
+  \ CHANGES needed.\n   The sfa_weight parameter already supports per-forward-call\
+  \ override.\n   The ramp schedule is implemented in the training loop, not the model.\n\
+  \n3. src/pre_registration.md: Update with this plan.\n\nTWO-PHASE vs SINGLE-PHASE:\n\
+  Single-phase preferred (all 7 arms run simultaneously with Arm B pre-set\nto sfa_weight=10.0).\
+  \ This avoids sequential dependency and produces all\nresults in one run. If sfa_weight=10.0\
+  \ turns out suboptimal, the A-arms\nprovide the data to identify the correct weight\
+  \ for a follow-up.\n"
