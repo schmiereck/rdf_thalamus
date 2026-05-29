@@ -1,0 +1,74 @@
+falsification_criterion: 'No single-knob variation in the sweep achieves ≤10% collapse
+  rate (i.e., ≤1
+
+  collapsed seed out of 10) over the seed set [7, 17, 31, 53, 71, 83, 97, 113,
+
+  127, 149], where collapse is defined as: at the final evaluation (step 8000),
+
+  any of the first d_t=3 z_dyn dimensions has batch-std < 0.5 computed over 200
+
+  evaluation samples from a fresh PhysicsSandbox(N=3). Additionally, any
+
+  configuration where the mean training loss at step 8000 exceeds 100 (diverged)
+
+  or where the mean per-dimension z_dyn std at the final training log is < 0.1
+
+  (VICReg trivially satisfied / representation collapsed at training time) is
+
+  disqualified regardless of the evaluation collapse rate.
+
+  '
+hypothesis: 'There exists a training-regime configuration within the swept parameter
+  space
+
+  {batch_size ∈ {32, 64}, var_weight ∈ {25, 50}, sim_weight ∈ {25 constant, 0→25 ramp},
+
+  learning_rate ∈ {3e-4, 1e-4}} that reduces the z_dyn collapse rate of the
+
+  NonParametricJEPASpatial encoder (JEPA+VICReg, d_max=8, d_t=3, centroid_gated
+
+  readout) from the current 30% (iter_025 v2) to ≤10% over 10 seeds with 8000
+
+  training steps. The most likely candidate is batch_size=64, because VICReg''s
+
+  variance and covariance estimation reliability scales inversely with
+
+  1/sqrt(B), and B=32 provides marginal statistical power for per-dimension
+
+  std estimation across d_t=3 dimensions.
+
+  '
+pre_registration_file: src/pre_registration.md
+proposed_method: "Step-by-step experimental protocol:\n\n1. Create src/run_phase0_collapse_sweep.py\
+  \ based on run_phase0_id_probe_v2.py,\n   stripped to only the JEPA+VICReg control\
+  \ arm (no supervised/contrastive).\n   \n2. Sweep four regime knobs one-at-a-time\
+  \ against the canonical baseline:\n\n   Arm A0 (canonical repeat): lr=3e-4, var_weight=25,\
+  \ cov_weight=25,\n     sim_weight=25, batch_size=32. Identical to iter_025 v2 Arm\
+  \ A.\n     10 seeds: [7, 17, 31, 53, 71, 83, 97, 113, 127, 149].\n   \n   Arm A1\
+  \ (batch_size=64): lr=3e-4, var_weight=25, cov_weight=25,\n     sim_weight=25, batch_size=64,\
+  \ replay_buffer_capacity=4000.\n     Same 10 seeds.\n   \n   Arm A2 (var_weight=50):\
+  \ lr=3e-4, var_weight=50, cov_weight=25,\n     sim_weight=25, batch_size=32. Same\
+  \ 10 seeds.\n   \n   Arm A3 (sim_weight warm-up): lr=3e-4, var_weight=25, cov_weight=25,\n\
+  \     sim_weight ramped 0→25 over 1000 steps, batch_size=32. Same 10 seeds.\n  \
+  \ \n   Arm A4 (lr=1e-4): lr=1e-4, var_weight=25, cov_weight=25,\n     sim_weight=25,\
+  \ batch_size=32. Same 10 seeds.\n\n3. All arms share: gradient clipping max_norm=1.0,\
+  \ 8000 training steps,\n   d_max=8, d_t=3, dyn_readout=\"centroid_gated\", pos_encoding=\"\
+  none\",\n   CCR covariance mode (ccr_smooth_weight=10, ccr_spatial_weight=10),\n\
+  \   gdasr_log_only=True, Adam optimizer, replay_buffer pre-fill 200 transitions\n\
+  \   (doubled from 100 to ensure batch_size=64 is always achievable from step 1).\n\
+  \n4. Evaluation at step 8000 only (no intermediate checkpoints to save compute):\n\
+  \   - Collapse check: per_dim_std < 0.5 on 200 eval samples from fresh env\n   -\
+  \ VICReg health: per_dim_std, mean_abs_corr on eval samples\n   - Training loss\
+  \ sanity: mean total loss, var_loss, sim_loss at final step\n   - Centroid MSE (for\
+  \ reference only, NOT used for regime selection)\n   - Semantic probes (for reference\
+  \ only, NOT used for regime selection)\n\n5. Stop rule: Arms are evaluated in order\
+  \ A0, A1, A2, A3, A4. The first arm\n   achieving ≤10% collapse rate (≤1/10 seeds\
+  \ collapsed) passes the gate and\n   becomes the new canonical regime. If no arm\
+  \ clears, report the best achieved\n   collapse rate as a measured null and do NOT\
+  \ declare a winner.\n\n6. The ONLY dependent variable is collapse rate. delta_R2_color,\
+  \ centroid MSE,\n   and other downstream metrics are recorded for reference but\
+  \ MUST NOT be used\n   to pick a winning regime.\n\n7. Hungarian matching remains\
+  \ the standing rule for any auxiliary semantic\n   probe reporting (not relevant\
+  \ for collapse measurement but included for\n   consistency).\n\nFiles to create/modify:\n\
+  - src/run_phase0_collapse_sweep.py (NEW): collapse-rate sweep runner\n- src/pre_registration.md\
+  \ (UPDATE): this plan\n"
