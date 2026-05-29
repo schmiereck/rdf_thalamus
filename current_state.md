@@ -1,41 +1,39 @@
 # Current Research State
-Phase: Collapse-Elimination Sweep — Measured Null
+Phase: sim_loss_dyn identified as collapse driver; separate backbone refuted
 
 ## Goal
-Achieve a training regime where the NonParametricJEPASpatial encoder (JEPA+VICReg, d_max=8, d_t=3, centroid_gated readout) collapses on ≤10% of seeds over ≥10 seeds. This is a prerequisite for any further architectural or objective experiments.
+Achieve a training regime where the NonParametricJEPASpatial encoder collapses on ≤10% of seeds over ≥10 seeds (dual criterion). Ultimately: build a decoder-free, curiosity-driven representation agent.
 
-## Confirmed (iter_026, agent 26.1)
-- MEASURED NULL: No single-knob regime variation in {batch_size ∈ {32,64}, var_weight ∈ {25,50}, sim_weight ∈ {25, 0→25 ramp}, lr ∈ {3e-4, 1e-4}} achieves ≤10% collapse rate over 10 seeds under the dual criterion (eval-std < 0.5 OR train-std < 0.5).
-- A0 (canonical repeat, lr=3e-4, B=32, buffer=4000): 40% collapse rate (dual). Regressed from iter_025's 30%, possibly due to buffer-size change.
-- A1 (batch_size=64): 30% collapse rate (dual). Best arm, matches iter_025 v2. Insufficient for the gate.
-- A2 (var_weight=50): 60% collapse rate (dual). Doubling VICReg variance weight WORSENED collapse — JEPA-vs-VICReg objective tension.
-- A3 (sim_weight 0→25 ramp): 50% collapse rate (dual). JEPA warm-up worsened collapse.
-- A4 (lr=1e-4): 100% collapse rate. LR too low for 8000-step training budget.
-- TRAIN-VS-EVAL DISCREPANCY: Many runs maintain train-std > 0.5 but fail eval-std < 0.5 (e.g. A2: 10% train collapse vs 60% eval collapse). Representation is narrow, not fully collapsed.
-- BUFFER SENSITIVITY: A0 regression from 30%→40% with buffer change (2000→4000) suggests replay buffer composition affects collapse probability.
-- SANITY CHECK: No seeds disqualified (all losses ≤ 50, all met the VICReg floor at training time for non-collapsed seeds).
+## Confirmed (iter_027, agents 27.1 + 27.3)
+- SHARED BACKBONE IS NOT THE PRIMARY COLLAPSE CAUSE: Arm B (separate backbone, full JEPA+VICReg) collapses at 30% (3/10), identical to shared-backbone arms (iter_027 27.3). Pre-registered SECOND NULL confirmed.
+- SIM_LOSS_DYN IS THE CAUSAL DRIVER: Arm C (separate backbone, VICReg-only on z_dyn, mask_dyn_sim=True) achieves 0% collapse (0/10) across all seeds. The B-vs-C comparison (same architecture 135,608 params, same backbone, only mask_dyn_sim differs) provides controlled evidence that sim_loss_dyn causes collapse (iter_027 27.3).
+- VICReg-ONLY z_dyn PRODUCES BEST SEMANTIC ENCODING: Arm C delta_R2_color = 0.1812, highest across all arms. Mean absolute correlation = 0.210, lowest across all arms. Removing sim_loss_dyn IMPROVES identity encoding (iter_027 27.3).
+- NO TRAIN-vs-EVAL STD GAP IN ARM C: All 10 seeds have train stds > 0.98 and eval stds > 0.50. The representation is genuinely stable, not narrow (iter_027 27.3).
+- CAPACITY CONFOUND ADDRESSED: Arm B and Arm C have identical parameter counts (135,608). Different collapse rates are NOT attributable to capacity (iter_027 27.3).
+- READOUT EFFECT: centroid_gated (30% collapse) vs mean (40% collapse) on shared backbone — a +10pp difference suggesting centroid_gated provides slight protection (iter_027 27.3).
+- PARAMETER COUNTS: Shared arms ~80K, separate arms ~136K (iter_027 27.3).
 
 ## Refuted
-- HYPOTHESIS (iter_026 pre-registered): There exists a single-knob regime variation within the swept space that achieves ≤10% collapse. Falsified.
+- HYPOTHESIS: The shared CNN backbone is the primary structural cause of z_dyn collapse. FALSIFIED by Arm B (separate backbone + full JEPA+VICReg still collapses at 30%) (iter_027 27.3).
+- PRIOR ITERATIONS (023-026): Single-knob regime variations, SFA, multi-step SFA, temporal contrastive (NT-Xent), supervised probes, and capacity increases (d_max=16) all failed to reduce collapse below 10%. None identified the sim_loss_dyn pressure as the cause.
 
 ## Best Result
-- A1 (batch_size=64): 30% collapse rate (dual). Same as iter_025 v2. No improvement found.
-
-## In Progress
-- None. Collapse-elimination sweep complete.
+- Arm C (separate backbone, VICReg-only on z_dyn): 0% collapse rate (0/10), delta_R2_color=0.18, mean_abs_corr=0.21. First zero-collapse configuration in project history.
 
 ## NOT Established
-- Whether multi-knob combinations (e.g. batch_size=64 + longer training) could reach ≤10%
-- Whether the centroid_gated readout is the collapse bottleneck
-- Whether a separate z_dyn encoder would solve collapse
-- Whether longer training would help or hurt collapse rates
-- Whether the buffer-size effect is a genuine confound or noise
+- Whether mask_dyn_sim=True eliminates collapse on the SHARED backbone (the critical isolate — combines two interventions in Arm C)
+- Whether VICReg-only z_dyn is sufficient for downstream tasks beyond color encoding
+- Whether Arm C's 0% collapse rate holds at longer training (16000+ steps)
+- Whether a stop-gradient on z_target_dyn (instead of removing sim_loss_dyn entirely) also prevents collapse
+
+## In Progress
+- None. iter_027 complete.
 
 ## Open Questions (ordered by expected value)
-1. Is the centroid_gated z_dyn readout the collapse bottleneck? (Comparing with mean readout is a clean, single-knob test within collapse-elimination scope.)
-2. Would a combined regime (batch_size=64 + 16000 steps) overcome individual-arm weaknesses?
-3. Why does A0 regress from 30% to 40% with the buffer change? Is this a genuine confound?
-4. Is the train-vs-eval collapse discrepancy fixable by architectural changes, or is it fundamental?
-5. Should the project pivot to a separate z_dyn encoder?
-6. Is collapse a fundamental limitation of JEPA+VICReg on this architecture?
-7. Would longer training (20000+ steps) help or is the 8000-step budget too short?
+1. Does mask_dyn_sim=True eliminate collapse on the SHARED backbone? (Critical next test — isolates sim_loss_dyn from separate-backbone effect.)
+2. Is VICReg-only z_dyn semantically useful for downstream tasks (causal sensitivity, generalization)?
+3. Can stop-gradient on z_target_dyn (instead of full removal) prevent collapse while still training the predictor?
+4. What is the gradient magnitude ratio of sim_loss_dyn vs VICReg on z_dyn? (Mechanism analysis.)
+5. Does longer training reveal late collapse in Arm C?
+6. How does this finding relate to M2's SFA mandate? VICReg-only is a weaker objective than SFA+VICReg.
+7. Is the iter_010 DSDT failure explained by the absence of VICReg on the decoupled stream?

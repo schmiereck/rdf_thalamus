@@ -1,151 +1,175 @@
 # Research Journal – Thalamus Project
 
 ## 1. High-Level Strategy & Trajectory
-*   **Current Phase:** Phase 0 (Objective Migration) — stabilization sub-
-    phase has produced a clean pre-registered NULL. **Single-knob regime
-    tuning cannot drive collapse ≤10% under the current architecture.**
-    The project is now at a decision branch: continue trying to stabilize
-    the shared-CNN dual-stream regime via multi-knob / structural changes,
-    or accept that collapse is a property of the architecture and pivot
-    to a separate z_dyn encoder (or another structural change).
-*   **Active Direction:** iter_026 executed a pre-registered 5-arm,
-    50-run sweep with Manager-corrected protocol (dual collapse criterion,
-    VICReg sanity floors anchored to iter_025 data, uniform buffer=4000,
-    no early termination). The hypothesis ("no single-knob regime
-    variation reduces z_dyn collapse below 10%") was the *measured
-    outcome*: best arm (batch_size=64) achieved 30% collapse, the same
-    as iter_025 v2; canonical A0 regressed to 40%; stronger VICReg
-    variance weight (25→50) worsened collapse to 60%; lower LR
-    (3e-4→1e-4) was catastrophic (100%). This is a first-class null
-    result and removes single-knob regime tuning from the candidate
-    intervention set.
-*   **Diagnostic gains from iter_026 (secondary, suggestive):**
-    - **Train-vs-eval std discrepancy:** many runs maintain train std
-      > 0.5 but fail eval std. The representation is narrow on the
-      train manifold but does not cover the eval state space —
-      consistent with the shared CNN learning a partial subspace
-      rather than a generalizing identity code.
-    - **JEPA-vs-VICReg objective tension:** increasing variance weight
-      worsens collapse, which is the opposite of the naive prior. The
-      two objectives are competing under the dual-stream shared-CNN
-      regime; pure variance pressure does not stabilize.
-    - **Optimization budget is borderline:** 8000 steps at lr=1e-4
-      is not enough to escape initialization; the optimization horizon
-      and the collapse mechanism interact.
-*   **Confound flagged (must be carried forward):** A0 regressed from
-    30% (iter_025 v2, buffer=2000) to 40% (iter_026, buffer=4000).
-    Any future cross-iteration comparison MUST control buffer capacity
-    or treat iter_025/iter_026 baselines as different conditions.
-*   **Next Priority (iter_027):** Architectural intervention, NOT
-    another regime knob. Under the Manager-authorized scope-reduction
-    rule, the candidate is the **separate z_dyn encoder** (the natural
-    structural move flagged in iter_025 v2's Open Questions). Rationale:
-    (a) we have ruled out single-knob regime tuning empirically;
-    (b) the train-vs-eval discrepancy and the JEPA-vs-VICReg tension
-    both point at shared-parameter competition between coord and dyn
-    streams as the mechanism; (c) decoupling the streams structurally
-    is the minimal intervention that addresses both diagnostics
-    without re-introducing the failed DSDT pattern (which would only
-    apply if the decoupled encoder *also* had no objective — z_dyn
-    with SFA+VICReg has one). Any iter_027 plan MUST pre-register
-    its collapse gate and its control arms.
-*   **Confidence Score:** 40% (reduced from 50%). Two of three
-    consecutive iterations failed gates; the third (iter_026) cleared
-    its gate by producing a definitive null. We now have a more
-    narrowly defined problem (architectural, not regime) but the
-    foundation for downstream work is still not in place.
+*   **Current Phase:** Phase 0 (Objective Migration) — collapse-elimination
+    sub-phase has produced a **second pre-registered null** (iter_027) on the
+    structural-cause hypothesis, plus a **suggestive within-architecture
+    ablation** (Arm C) that re-frames the active question from "where does
+    the gradient competition happen?" to "which loss term drives z_dyn
+    collapse?".
+*   **Active Direction:** iter_027 tested the hypothesis that the **shared
+    CNN backbone** is the primary cause of z_dyn collapse. Arm B (separate
+    backbone, full JEPA+VICReg, same hyperparameters) was the falsification
+    vehicle. Arm B collapsed at **30%** — indistinguishable from the
+    shared-backbone baseline (30–40%). The shared-backbone hypothesis is
+    **refuted**. This is the second consecutive iteration in which a
+    pre-registered structural hypothesis was cleanly killed; this is
+    methodologically healthy.
+*   **The Arm C signal (treat with discipline):** Arm C, identical to Arm B
+    except `mask_dyn_sim=True` (i.e. `sim_loss_dyn` removed; z_dyn shaped
+    only by VICReg variance + covariance), showed 0% collapse over 10 seeds
+    AND the highest measured delta_R2_color (0.18). The agent labelled this
+    a "breakthrough" and stated "sim_loss_dyn is the causal driver of z_dyn
+    collapse" — **this language is rejected by the Manager as overclaim**.
+    What we actually have:
+    - **Construction-versus-empirical caveat:** VICReg's variance hinge
+      directly penalizes std < 1, which is the same quantity used in the
+      eval-std collapse criterion. When z_dyn is shaped *only* by VICReg,
+      the optimizer is being told almost exactly what the collapse metric
+      is measuring. 0% collapse under VICReg-only is therefore *partly* a
+      tautology of the chosen objective, not a clean empirical discovery.
+      The empirical content of Arm C is narrower: "removing `sim_loss_dyn`
+      does not destabilize VICReg's variance preservation under the
+      separate-backbone regime" — which is informative but is not the same
+      as "sim_loss_dyn causes collapse."
+    - **Not pre-registered:** the iter_027 pre-registration covered the
+      B-vs-baseline comparison. Arm C is an exploratory addition. A 30%
+      vs 0% delta with n=10 is suggestive (Fisher's exact p ≈ 0.21
+      approx; the difference is not formally significant at n=10).
+    - **Missing critical control:** the same `mask_dyn_sim=True` ablation
+      has not yet been run on the **shared backbone**. Without that arm,
+      we cannot distinguish "separate backbone + no sim_dyn" from "no
+      sim_dyn anywhere" as the operative intervention.
+    - **No robustness check:** Arm C has not been tested under perturbation
+      (±10% on var_weight, alternate seeds, ramped sim_weight to z_coord
+      but masked from z_dyn).
+*   **Updated mechanism hypothesis (TENTATIVE, requires iter_028
+    confirmation):** When `z_target_dyn` is *not* stop-gradiented in the
+    current JEPA implementation, gradient flow from `sim_loss_dyn` may push
+    the encoder toward predictable-but-degenerate z_dyn representations,
+    and this pressure overrides VICReg's variance hinge in ~30% of seeds.
+    This is consistent with the iter_026 observation that *increasing*
+    var_weight (25→50) worsened collapse (the JEPA pressure was already
+    dominant; pushing variance harder destabilized the joint optimization
+    further). If true, this hypothesis also aligns with the M2 mandate:
+    identity (z_dyn) should be shaped by a slowness/identity objective,
+    with prediction error treated as a *readout* signal, not as gradient
+    input to z_dyn.
+*   **Next Priority (iter_028):** Pre-registered control matrix to convert
+    the Arm C signal from suggestive to confirmed (or to refute it):
+    - C1: `mask_dyn_sim=True` on **shared backbone** (the missing arm).
+    - C2: Arm C replication with a different random seed bank (n=10).
+    - C3: Robustness perturbation of Arm C (±10% var_weight, ±10%
+      cov_weight; one ramp variant).
+    - Pre-register: collapse gate ≤10%; report train AND eval std;
+      Hungarian-primary matching; buffer=4000 (carry forward iter_026
+      confound control). Falsification: if C1 collapses ≥20%, the
+      "separate backbone" was load-bearing after all; if C2 collapses
+      ≥20%, Arm C was a seed-bank artefact; if C3 collapses ≥20%, the
+      result is not robust.
+*   **Confidence Score:** 50% (recovered slightly from 40%). One additional
+    structural hypothesis ruled out (good), one promising ablation arm
+    identified (good but unverified), the mechanism story is more
+    narrowly constrained. But: two consecutive iterations have failed
+    their primary gate; Arm C is unconfirmed; the foundation for downstream
+    Phase 1+ work is still not in place.
 
 ## 2. Strategic Insights & Lessons Learned
-*   **SINGLE-KNOB REGIME TUNING CANNOT STABILIZE THE SHARED-CNN
-    DUAL-STREAM REGIME (iter_026, NEW FINDING, CONFIRMED via pre-
-    registered null):** Best swept configuration: 30% collapse.
-    Canonical baseline: 40% collapse. The intervention class is
-    exhausted. Future regime-tuning proposals are rejected by
-    default unless they bundle ≥2 simultaneous structural changes
-    with explicit interaction-effect rationale.
-*   **STRONGER VICReg VARIANCE PRESSURE WORSENS COLLAPSE (iter_026,
-    MECHANISTIC INSIGHT):** Doubling var_weight (25→50) increased
-    collapse 40% → 60%. Interpretation: when variance pressure
-    dominates, the JEPA prediction objective cannot shape useful
-    representations, and the encoder/predictor co-adaptation
-    breaks. This is *evidence of objective competition* in the
-    shared-CNN regime — not yet proof that the shared CNN is the
-    cause, but a strong update toward that hypothesis.
-*   **TRAIN-vs-EVAL STD DISCREPANCY IS A REAL ARCHITECTURAL
-    SIGNAL (iter_026):** Runs that pass train std > 0.5 still fail
-    eval std. This is consistent with the encoder finding a narrow
-    train-manifold subspace that does not generalize. Carry this
-    diagnostic forward: any future "non-collapsed" arm must report
-    both train AND eval std.
-*   **BUFFER-CAPACITY IS A SILENT CONFOUND (iter_026):** The
-    iter_025→026 buffer change (2000→4000) plausibly drove the A0
-    regression. Future iterations must (a) hold buffer fixed, or
-    (b) sweep it explicitly as a controlled variable.
-*   **PRE-REGISTERED NULL IS A FIRST-CLASS RESULT (iter_026,
-    METHOD WIN):** iter_026 followed the protocol; the protocol
-    delivered a clean rejection of an intervention class. This
-    is the discipline the Manager has been pushing for since
-    iter_022. Carry forward as the standing methodology for all
-    future single-claim diagnostic iterations.
-*   **PRESERVED:** M2 refutation across iter_022–024 stands; M1
-    (pooled VICReg) stands; the d_max=16 capacity baseline ≈ 0.14
-    stands; Hungarian-primary matching rule stands; the 20% control-
-    collapse power threshold stands.
+*   **SHARED CNN BACKBONE IS NOT THE PRIMARY CAUSE OF Z_DYN COLLAPSE
+    (iter_027, CONFIRMED via pre-registered null):** Separate backbones
+    collapse at the same rate as shared backbones (30%) under
+    identical JEPA+VICReg objectives. Architectural decoupling at the
+    encoder level alone does not buy stability. This refutes the iter_026
+    hypothesis that drove iter_027.
+*   **THE SIM_LOSS-vs-VICReg COMPETITION IS THE NEW LEAD HYPOTHESIS
+    (iter_027, SUGGESTIVE NOT CONFIRMED):** Within the separate-backbone
+    regime, removing `sim_loss_dyn` (Arm C) eliminated collapse and
+    coincided with the highest delta_R2_color (0.18). Three caveats
+    gate any stronger claim:
+    (a) VICReg-only naturally maintains the very std metric used for the
+        collapse check — partial construction-versus-empirical concern;
+    (b) the within-architecture comparison was not pre-registered;
+    (c) the matching shared-backbone arm has not been run, so we cannot
+        yet say whether separate backbones were necessary.
+    Treat as a high-priority hypothesis to confirm in iter_028, not as
+    established fact.
+*   **REPEATED PATTERN — JEPA OBJECTIVE PRESSURE COMPETES WITH VICReg
+    (iter_026 + iter_027 cross-iteration synthesis):** iter_026 found
+    that strengthening VICReg variance worsened collapse; iter_027
+    found that weakening JEPA pressure on z_dyn (by masking
+    `sim_loss_dyn`) eliminated it. Both data points push in the same
+    direction: under the current implementation, `sim_loss_dyn` and
+    VICReg compete, and `sim_loss_dyn` wins often enough to collapse
+    z_dyn. This is mechanism-level convergent evidence (across two
+    iterations and four arms) — stronger than either iteration alone.
+*   **CONNECTION TO M2 MANDATE (RECONNECTING TO GOAL):** The iter_027
+    Arm C finding, if confirmed, is structurally aligned with the M2
+    mandate from the goal document: M2 says z_dyn should be shaped by an
+    identity/slowness objective, with JEPA-style prediction error
+    demoted to a readout. Masking `sim_loss_dyn` from the z_dyn gradient
+    path is the minimal version of that demotion. iter_028 should
+    include this framing explicitly in its pre-registration.
+*   **PRE-REGISTERED NULLS REMAIN FIRST-CLASS RESULTS (iter_026,
+    iter_027, ENFORCED):** Two consecutive iterations have produced
+    defensible nulls because they pre-declared their falsification
+    criterion. The discipline holds.
+*   **PRESERVED:** M2 stream-assignment guidance stands; M1 (pooled
+    VICReg) stands; d_max=16 capacity baseline stands; Hungarian-primary
+    matching stands; 20% control-collapse power threshold stands.
 
 ## 3. Loop & Bottleneck Detection
-*   **Identity Encoding Bottleneck (ACTIVE):** Unchanged in scope
-    but now better-localized. The bottleneck is increasingly
-    attributable to shared-parameter competition between z_coord
-    and z_dyn pathways under JEPA+VICReg, not to objective choice
-    alone.
-*   **Training-Regime-Stability Bottleneck (PARTIALLY RESOLVED, now
-    RECLASSIFIED as architectural):** iter_026 ruled out single-knob
-    regime fixes. The "stability bottleneck" is now reframed as an
-    *architectural* problem (shared CNN), not a hyperparameter
-    problem.
+*   **Identity Encoding Bottleneck (ACTIVE, MORE NARROWLY LOCALIZED):**
+    Now traced to the gradient interaction between `sim_loss_dyn` and
+    the VICReg variance term on z_dyn, regardless of backbone
+    architecture. Awaiting iter_028 confirmation.
+*   **Architectural-Cause Bottleneck (PROVISIONALLY DOWNGRADED):**
+    iter_027 found that separating the backbone alone does not resolve
+    collapse. This bottleneck is reclassified from "primary" to
+    "secondary" — it may still matter, but it is not load-bearing.
 *   **Capacity-vs-Objective Confound (RESOLVED, iter_025 v2):** Still
     closed.
 *   **Matching-Procedure Confound (RESOLVED, iter_025 v2):** Still
     closed.
-*   **Diagnostic-vs-Constructive Iteration Loop (PARTIALLY CLEARED):**
-    iter_026 was diagnostic but its pre-registered structure delivered
-    an actionable null. Continue to permit diagnostic iterations *only*
-    when they carry a pre-registered falsification criterion and
-    power-threshold check.
-*   **Buffer-Capacity Confound (NEW, NOW TRACKED):** Open. Hold buffer
-    constant in iter_027.
-*   **Objective-Swapping Loop (DORMANT, ENFORCED):** Holds. iter_027
-    tests an *architectural* change with the *current* objective set,
-    not a new objective.
-*   **Logistics:** Executor token limits persist. Tracked, not
-    blocking.
+*   **Diagnostic-vs-Constructive Iteration Loop (CLEARED):** Two
+    consecutive pre-registered diagnostic iterations produced
+    actionable nulls and a candidate mechanism. The protocol is paying
+    off; keep going.
+*   **Buffer-Capacity Confound (TRACKED):** iter_027 used buffer=4000
+    throughout (per the iter_026 instruction). Keep buffer=4000
+    constant in iter_028.
+*   **Overclaim Loop (NEW, NOW TRACKED):** iter_027 executor used
+    "breakthrough", "completely eliminated", "BEST semantic encoding",
+    and "causal driver" for an unconfirmed within-architecture
+    ablation. Manager has flagged this. iter_028 pre-registration MUST
+    explicitly hold Arm-C claims at "suggestive" until C1+C2+C3 are run.
+*   **Objective-Swapping Loop (DORMANT, ENFORCED):** Holds. iter_028
+    keeps the SFA/JEPA+VICReg objective family and varies only loss
+    masking and backbone topology.
+*   **Logistics:** Executor token limits persist. Tracked, not blocking.
 
 ## 4. Alternate Research Paths
-*   **iter_027: Separate z_dyn Encoder (IMMEDIATE PRIORITY,
-    ARCHITECTURAL):** Minimal structural change — give z_dyn its own
-    CNN branch (shared low-level features optional), keeping objective
-    stack (SFA+VICReg on z_dyn, JEPA on z_coord) unchanged. Pre-
-    register: (a) collapse gate ≤10% over ≥10 seeds for the BASELINE
-    *separate-encoder* control (no identity objective); (b) buffer
-    held at 4000 to control for the iter_026 confound; (c)
-    Hungarian-primary matching; (d) report train AND eval std. Falsification:
-    if separate-encoder control also collapses ≥20%, the architecture
-    hypothesis is rejected and the project must consider objective
-    reformulation (BYOL/SimCLR class) or decoder-free constraint
-    relaxation.
-*   **Multi-Knob Regime Stabilization (DEFERRED, low priority):** If
-    iter_027 fails, one fallback path is to revisit regime tuning
-    with simultaneous multi-knob changes (e.g., LR schedule + VICReg
-    warm-up + larger batch). Lower priority than the architectural
-    probe.
-*   **VICReg Variance Floor Re-Calibration (DEMOTED):** iter_026
-    evidence that stronger variance pressure worsens collapse
-    suggests the floor is not the issue. Lower priority.
-*   **Object-Tracking-ID Contrastive (DEFERRED to iter_028+):**
-    Conditional on iter_027 outcome.
-*   **Augmentation-Based Self-Supervision (BYOL/SimCLR) (MEDIUM
-    PRIORITY, conditional):** Becomes the lead candidate IF iter_027's
-    separate-encoder architecture also collapses.
+*   **iter_028: Sim-Loss Causal Confirmation (IMMEDIATE PRIORITY,
+    ABLATION):** Three-arm pre-registered design (C1, C2, C3 above)
+    to convert the iter_027 Arm C signal from suggestive to confirmed
+    or refuted. Buffer held at 4000; train + eval std reported;
+    Hungarian-primary matching; n=10 minimum per arm. Falsification
+    criteria as listed.
+*   **iter_029 (CONDITIONAL on iter_028 success): Promote to
+    SFA-on-z_dyn architecture (per M2 mandate):** If Arm C
+    mechanism survives iter_028, the next move is the actual M2
+    configuration: SFA slowness term (`||z_dyn(t) - z_dyn(t-1)||^2`)
+    on z_dyn instead of just VICReg-only, paired with stop-gradient
+    readout of prediction error for the surprise signal. This is the
+    goal-document's intended primary representation objective and is
+    where Phase 0 should land.
+*   **Multi-Knob Regime Stabilization (DEFERRED):** Demoted further.
+    Two structural hypotheses have produced nulls; the action now is to
+    confirm the loss-masking mechanism, not to revisit hyperparameter
+    sweeps.
+*   **Object-Tracking-ID Contrastive (DEFERRED to iter_030+):**
+    Conditional on iter_028/029 outcome.
+*   **Augmentation-Based Self-Supervision (BYOL/SimCLR) (CONDITIONAL):**
+    Becomes lead candidate IF iter_028 refutes the Arm C mechanism.
 *   **Accept Decoder-Free Constraint Relaxation (LAST RESORT):**
     Unchanged.
 *   **Micro-Columns (DEFERRED per semantic caution):** Unchanged.

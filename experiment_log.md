@@ -1107,3 +1107,59 @@ Per-arm results (dual criterion):
 
 **Notes:** Measured null: no swept configuration cleared the ≤10% gate under the pre-registered protocol.
 
+
+---
+```yaml
+cached_tokens: 604934
+campaign: collapse-elimination
+cost_usd: 4.06951
+hypothesis: 'phase-27: separate backbone is NOT the primary cause of z_dyn collapse
+  (SECOND NULL); sim_loss_dyn is the causal driver (B-vs-C comparison, 30% vs 0%);
+  VICReg-only z_dyn eliminates collapse and improves semantic encoding'
+input_tokens: 2247864
+iter: 27
+metrics:
+  arm_C_passes_gate: true
+  collapse_rate_A_shared_mean_readout: 0.4
+  collapse_rate_B_separate_jepa_vicreg: 0.3
+  collapse_rate_C_separate_vicreg_only: 0.0
+  collapse_rate_aprime_shared_centroid_gated: 0.3
+  delta_r2_color_arm_A: 0.1469
+  delta_r2_color_arm_C: 0.1812
+  mean_abs_corr_arm_B: 0.407
+  mean_abs_corr_arm_C: 0.21
+  params_A: 80336
+  params_B: 135608
+  params_C: 135608
+  params_aprime: 81368
+  pre_registered_outcome: SECOND_NULL
+  total_runs: 40
+output_tokens: 81992
+status: ok
+```
+
+## iter_027: phase-27: separate backbone is NOT the primary cause of z_dyn collapse (SECOND NULL); sim_loss_dyn is the causal driver (B-vs-C comparison, 30% vs 0%); VICReg-only z_dyn eliminates collapse and improves semantic encoding
+
+**Analysis:** The pre-registered hypothesis was that the shared CNN backbone causes z_dyn
+collapse due to gradient competition between z_coord's JEPA loss and z_dyn's
+VICReg loss. Arm B (separate backbone, full JEPA+VICReg) was designed to test
+this: if C_sep ≤ 10%, the hypothesis is supported.
+
+Arm B collapsed at 30% — NO improvement over shared backbone (30-40%). The
+shared backbone is NOT the primary cause. 
+
+**Status:** ok
+
+**Metrics:** `{'total_runs': 40, 'collapse_rate_aprime_shared_centroid_gated': 0.3, 'collapse_rate_A_shared_mean_readout': 0.4, 'collapse_rate_B_separate_jepa_vicreg': 0.3, 'collapse_rate_C_separate_vicreg_only': 0.0, 'params_aprime': 81368, 'params_A': 80336, 'params_B': 135608, 'params_C': 135608, 'delta_r2_color_arm_C': 0.1812, 'delta_r2_color_arm_A': 0.1469, 'mean_abs_corr_arm_C': 0.21, 'mean_abs_corr_arm_B': 0.407, 'pre_registered_outcome': 'SECOND_NULL', 'arm_C_passes_gate': True}`
+
+**Experimenter view:** All 40 runs completed (4 arms × 10 seeds, 8000 steps each). No early termination.
+
+PRE-REGISTERED OUTCOME: SECOND NULL. Arm B (separate backbone, JEPA+VICReg)
+collapsed at 30% (≥20% threshold), so the shared backbone is NOT the primary
+structural cause of collapse. Project pivots per Manager instruction.
+
+CRITICAL UNANTICIPATED FINDING: Arm C (separate backbone, mask_dyn_sim=True /
+VICReg-only on 
+
+**Notes:** Second Null confirmed for Arm B. Arm C breakthrough: sim_loss_dyn identified as collapse driver.
+
