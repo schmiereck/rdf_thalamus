@@ -1,36 +1,100 @@
 # Research Journal – Thalamus Project
 
 ## 1. High-Level Strategy & Trajectory
-*   **Current Phase:** Phase 0 (Objective Migration) — M2 Core Mechanism Falsified.
-*   **Active Direction:** The SFA weight sweep (iter_023) has produced a decisive null result: making z_dyn slower does NOT make it encode object identity. The slowness prior is insufficient for identity-position separation. This falsifies the core M2 mechanism (SFA → slowness → identity encoding) as implemented with consecutive-frame (k=1) SFA. The M2 mandate requires revision: slowness is a necessary but not sufficient condition, and the discriminative signal must come from elsewhere.
-*   **Next Priority:** Test multi-step SFA (k>>1, e.g. k=50) as the most principled alternative — standard SFA literature uses multi-timescale slowness, and longer horizons provide richer gradients even on quasi-static features. If multi-step SFA also fails, the slowness prior is fundamentally insufficient for this task and the representation objective must shift to a contrastive or augmentation-based approach.
-*   **Confidence Score:** 70% (Reduced from 75%. The M2 mechanism is now empirically falsified for k=1 SFA. Confidence in the characterization is high, but the path to a working representation objective is more uncertain. Multi-step SFA is the last slowness-based option before abandoning the M2 framing entirely.)
+*   **Current Phase:** Phase 0 (Objective Migration) — M2 DEFINITIVELY REFUTED across all
+    slowness formulations. Transition phase: pivot from slowness-prior to
+    identity-discrimination signal.
+*   **Active Direction:** With iter_024's double null, the entire slowness-based pathway
+    (single-step SFA, weight-swept SFA, multi-step SFA, temporal contrastive NT-Xent) has
+    failed to produce identity encoding in z_dyn (delta_R2_color ≥ 0.10 threshold never
+    cleared). The next iteration (025) pivots to object-tracking-ID contrastive learning,
+    using the physics engine's slot IDs as positive-pair anchors. This is a deliberate
+    departure from M2 as written, justified by the empirical refutation.
+*   **Next Priority:** Treat iter_025 as a **diagnostic probe to localize the bottleneck**:
+    is the failure of slowness-based objectives an objective-level problem (in which case
+    ID-contrastive should succeed), or an architecture-level problem (z_dyn cannot encode
+    identity through the shared CNN given the soft-argmax centroid head, in which case
+    ID-contrastive will also fail)? Both outcomes are informative.
+*   **Confidence Score:** 60% (Reduced from 70%. M2's core mechanism is now refuted across
+    four objective variants in three consecutive iterations. The decoder-free + identity
+    requirement now lacks a validated mechanism in this architecture. The path forward
+    is diagnostic, not constructive.)
 
 ## 2. Strategic Insights & Lessons Learned
-*   **SFA GRADIENT PROPAGATES (iter_023, CONFIRMED):** Increasing sfa_weight from 0.1 to 25.0 (with ramp) monotonically reduces z_dyn normalized temporal variance from 0.0086 to 0.0011. The 250× gradient imbalance from iter_022 was real and is fixable. SFA is not "broken" — it just doesn't do what M2 assumed.
-*   **SLOWNESS ≠ IDENTITY ENCODING (iter_023, CRITICAL NULL RESULT):** delta_R2_color is flat across the entire sfa_weight sweep (0.040–0.064 for d_max=8). Making z_dyn slower does not make it encode color/identity. The slowness prior provides no discriminative signal on already-static features — all competing representations (color-encoding, noise-encoding, constant) produce equally small SFA loss on consecutive frames. VICReg then determines the winner, pushing toward high-variance representations.
-*   **C5 IS STRUCTURALLY IMPOSSIBLE (iter_023, DEFINITIONAL IDENTITY):** z_coord normalized temporal variance is ~1e-5 (2-3 orders of magnitude below z_dyn). This is a structural property of soft-argmax centroids in [0,127]: spatial variance O(127²) dominates temporal change O(1²). VICReg prevents z_dyn from reaching comparable normalized slowness. C5 must be replaced by delta_R2_color as the primary SFA-effectiveness criterion.
-*   **RAMP STRATEGY WORKS (iter_023, PRACTICAL CONTRIBUTION):** Linearly ramping sfa_weight from 0.1 to target over 1000 steps reduces collapse from 4/5 (sfa=25 direct) to 1/5 (sfa=25 ramp). SFA-VICReg coexistence is achievable with proper initialization.
-*   **d_max=16 REMAINS BEST FOR COLOR (iter_022-023, REPLICATED):** delta_R2_color ≈ 0.137 with d_max=16, consistent across two iterations. But this improvement comes from channel capacity, not from SFA. SFA weight doesn't affect the d_max=16 result.
-*   **K=4 SUB-FEATURES STILL UNSOLVED (iter_022):** 12 active features at batch_size=32 overwhelms VICReg. Per-channel VICReg is a potential fix but untested. Do NOT test K=4 until VICReg collapse is resolved.
-*   **CONV4 SOURCE UNSTABLE (iter_022):** dyn_source="conv4" collapsed 3/5 seeds. Linear(128→1) projection produces highly correlated channels. Avoid.
-*   **Position Encoding Consistently Hurts (iter_013, iter_021):** Both under JEPA and under SFA+CGIR, adding explicit position encoding degrades performance. Robust finding across two objectives and two readout mechanisms.
-*   **Cold-Start Trilemma (Phases 16–18, PRESERVED):** M3 (fixed dimensionality + log-only GDASR) sidesteps this by design. Still active as a constraint for Phase 5.
-*   **JEPA Baseline Collapsed (iter_020):** JEPA+CCR 4/5 collapse, confirming M2's demotion of JEPA. But SFA's replacement is now also in question.
+*   **MULTI-STEP SFA AMPLIFIES, DOES NOT RESOLVE, THE SFA-VICReg CONFLICT (iter_024):**
+    Multi-step SFA at sfa_weight=10.0 produced 100% collapse, worse than single-step SFA at
+    the same weight (2/5 collapse in iter_023). Longer temporal windows give SFA a larger
+    gradient that more directly opposes VICReg's variance floor. The standard SFA-literature
+    remedy of multi-timescale slowness does not transfer to this architecture.
+*   **TEMPORAL CONTRASTIVE (NT-Xent) FIGHTS VICReg WITHOUT WINNING SEMANTICS (iter_024):**
+    NT-Xent + VICReg produced 4/5 surviving seeds but the survivors are high-variance noise
+    (within_traj_var=0.630), no semantic structure on the color probe. The contrastive
+    "push apart different timesteps" signal is incompatible with VICReg's
+    variance-decorrelation objective in a non-obvious way.
+*   **INVARIANCE-vs-DISCRIMINATION DIAGNOSTIC IS THE CORRECT TOOL (iter_024, METHOD WIN):**
+    The shuffled-frame control plus within-trajectory vs. between-trajectory variance
+    decomposition cleanly distinguished "smoother that reduces all variance" from "extractor
+    that preserves identity-discriminative variance." This diagnostic should be standard for
+    any future self-supervised objective candidate.
+*   **M2 REFUTATION IS NOW DEFINITIVE (iter_022–024 cumulative):** Four objective variants
+    tested, none clear delta_R2_color ≥ 0.10:
+      - Single-step SFA, weight sweep (iter_022–023): max 0.064
+      - Multi-step SFA, k ∈ {20, 50, 100} (iter_024): max 0.034
+      - Temporal contrastive NT-Xent (iter_024): no semantic structure
+    The slowness prior is empirically insufficient on RGB+CNN+soft-argmax inputs.
+*   **DECODER-FREE + IDENTITY-IN-z_dyn IS NOW UNDERDETERMINED (CRITICAL):** The original
+    M2 framing rested on a validated transfer from sml. The transfer has now been refuted
+    at the RGB layer. The conjunction (decoder-free × identity-encoding × dual-stream
+    shared CNN × soft-argmax centroid head) lacks any validated mechanism. iter_025 must
+    decide whether to relax decoder-free, relax shared CNN, or accept identity encoding
+    as an unsolved sub-problem.
+*   **sml TRANSFER WAS PARTIAL (NOW CONFIRMED EMPIRICALLY):** M1 (pooled VICReg) transferred
+    cleanly. M2 (SFA-primary) did not. The sml binary-input result was indeed task-specific,
+    vindicating the "measure-before-impose" caution but at the cost of the M2 mandate.
+    Prior insights (gradient propagation, ramp strategy, d_max=16 best for color)
+    preserved from earlier journal entries.
 
 ## 3. Loop & Bottleneck Detection
-*   **SFA Effectiveness Loop (PARTIALLY RESOLVED):** SFA gradient propagates (confirmed), but slowness doesn't produce identity encoding (falsified). The "does SFA work?" question is answered: yes mechanically, no functionally. The loop shifts to: "can any slowness-based objective produce identity encoding?" Multi-step SFA is the next test.
-*   **Identity Encoding Bottleneck (ACTIVE, CRITICAL):** No arm in iter_021-023 achieves delta_R2_identity ≥ 0.10. Only color is partially captured; size is not captured at all. The "identity stream" label for z_dyn is misleading. This is the fundamental bottleneck — without identity encoding, the entire M2 architecture lacks its foundation.
-*   **Metric Artifact Loop (RESOLVED):** C5 was structurally impossible. Replaced by delta_R2_color as primary criterion. No further C5-based experiments.
-*   **Gating Design Loop (STALE):** M3 sidesteps. Not the current priority.
-*   **Logistics Note (iter_020-023):** Executor token limits remain a recurring infrastructure issue. Not blocking but requires monitoring.
+*   **Identity Encoding Bottleneck (ACTIVE, FUNDAMENTAL):** No objective tested across
+    iter_021–024 produces delta_R2_color ≥ 0.10. This is now the dominant bottleneck;
+    everything downstream (gating, motor, generalization) is gated on resolving it. The
+    iter_025 ID-contrastive probe is designed to attribute the bottleneck to either the
+    objective or the architecture.
+*   **Slowness-Prior Loop (CLOSED):** Three iterations of "make SFA work harder" produced
+    monotonically improving SFA-mechanism evidence but no improvement on the downstream
+    metric. The loop is empirically closed.
+*   **Objective-vs-Architecture Disambiguation (NEW):** The next loop to avoid is repeated
+    objective swapping without ruling out the architecture. iter_025 must include an
+    architecture-independent probe (e.g., supervised linear probe on z_dyn under ID-contrastive
+    training) to put a ceiling on what the architecture can encode.
+*   **Metric Artifact Loop (CLOSED, iter_023):** C5 abandoned, delta_R2_color is the
+    primary criterion.
+*   **Gating Design Loop (STALE):** M3 still sidesteps. Not the active concern.
+*   **Logistics:** Executor token limits remain a recurring issue across iter_020–024. Not
+    blocking but should be tracked.
 
 ## 4. Alternate Research Paths
-*   **Multi-Step SFA (IMMEDIATE PRIORITY):** Use `||z_dyn(t) - z_dyn(t-k)||^2` with k=50 or k=100. Over longer timescales, scenes change (objects enter/exit, configurations shift), providing a richer SFA gradient that can discriminate between identity-preserving and identity-changing transitions. This is the standard SFA literature approach (Wiskott & Sejnowski 2002). If this also fails, the slowness prior is fundamentally insufficient.
-*   **Contrastive Identity Objective (HIGH PRIORITY if multi-step SFA fails):** Replace or augment SFA with a contrastive objective using object-level tracking IDs (available from the physics engine). Same-object representations are pulled together across time; different-object representations are pushed apart. This is a stronger supervision signal but maintains decoder-free property. Requires infrastructure for object-level labels.
-*   **Augmentation-Based SFA (MEDIUM PRIORITY):** Apply temporal augmentation (color jitter, small geometric transforms) to create artificial temporal variation in identity features, giving SFA a gradient to push against. Risk: may fight the natural invariance we want.
-*   **Temporal Coherence via Augmentation (MEDIUM PRIORITY):** Instead of SFA, use augmentation-based self-supervision: same object under different augmentations should have similar z_dyn, different objects should have different z_dyn. This is the SimCLR/BYOL approach adapted for temporal data.
-*   **d_max=16 + Better Objective (MEDIUM PRIORITY):** The channel capacity result (0.137) is the best to date. Combine d_max=16 with whatever replaces k=1 SFA as the primary objective.
-*   **Abandon Slowness, Use Direct Supervision (LOW PRIORITY):** If all slowness-based and self-supervised approaches fail, use direct color/size supervision as a supervised upper bound. This would measure the theoretical ceiling of z_dyn for identity encoding, informing whether the bottleneck is the objective or the architecture.
-*   **Micro-Columns (DEFERRED per semantic caution):** Only justified if a working objective leaves a measured gap. The gap currently exists, but the cause may be the objective, not the architecture.
-*   **Fixed-Dimensionality + M3 Regime (ACTIVE):** Already adopted per M3. GDASR runs in log-only mode, d_t frozen at target.
+*   **Object-Tracking-ID Contrastive (IMMEDIATE, iter_025):** Use physics-engine slot IDs to
+    build positive pairs (same object, different time) and negative pairs (different
+    objects, same time). This is a stronger supervisory signal than self-supervised
+    contrastive but maintains the "no pixel decoder" property. It is also a **diagnostic
+    probe**: if z_dyn cannot encode identity even under this strong signal, the bottleneck
+    is the architecture, not the objective.
+*   **Supervised Linear Probe on z_dyn (DIAGNOSTIC, parallel to iter_025):** Train an
+    ID-contrastive z_dyn, then fit a linear probe predicting object color/size from
+    z_dyn alone. The probe accuracy is the architecture's ceiling — if it is low even
+    under direct supervision, z_dyn cannot encode identity through this CNN.
+*   **Separate Identity Encoder (HIGH PRIORITY if ID-contrastive on shared CNN fails):**
+    Decouple the encoder for z_coord (current CNN + soft-argmax) from a second encoder for
+    z_dyn. This relaxes the shared-CNN constraint that may be the structural bottleneck.
+    Expensive but clean.
+*   **Augmentation-Based Self-Supervision (BYOL/SimCLR style) (MEDIUM PRIORITY):** Only
+    revisit if ID-contrastive succeeds, to recover self-supervision after using ID labels
+    as a diagnostic.
+*   **Accept Decoder-Free Constraint Relaxation (LAST RESORT):** A small pixel decoder
+    restricted to z_dyn (not z_coord) would directly force identity encoding. This breaks
+    the decoder-free principle and should only be considered if all decoder-free paths
+    fail.
+*   **Micro-Columns (DEFERRED per semantic caution):** Still gated on a working objective.
+    The objective is the active gap.
+*   **Fixed-Dimensionality + M3 Regime (ACTIVE):** Preserved.

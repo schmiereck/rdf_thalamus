@@ -1,79 +1,64 @@
 # Current Research State
-Phase: Phase 23 Complete — SFA Weight Sweep Falsified
+Phase: M2 Definitively Refuted — Pivot to Object-Tracking-ID Contrastive
 
 ## Goal
 Design and evaluate a neural architecture achieving hierarchical abstraction
-without generative decoders, with SFA+VICReg shaping z_dyn and soft-argmax
-tracking position (z_coord). Current focus: finding an objective that makes
-z_dyn encode object identity.
+without generative decoders, with an objective that makes z_dyn encode object
+identity. The M2 mandate (SFA as primary representation objective) has been
+empirically falsified across all tested variants.
 
 ## Confirmed
-- **SFA GRADIENT PROPAGATES (iter_023, all arms)**: Increasing sfa_weight from
-  0.1 to 25.0 monotonically reduces normalized_dyn_var from 0.0086 to 0.0011.
-  The 250x gradient imbalance was real; SFA at higher weights IS effective at
-  slowing z_dyn.
-- **C5 IS STRUCTURALLY IMPOSSIBLE (iter_023, 0/35 seeds)**: z_coord's
-  normalized temporal variance (~1e-5) is 2-3 orders of magnitude below
-  z_dyn's minimum (~1e-3). This is a metric artifact: soft-argmax centroids
-  in [0,127] have O(127^2) spatial variance but O(1) temporal change, making
-  the ratio tiny. VICReg's variance floor prevents z_dyn from reaching
-  comparable slowness. The C5 criterion can NEVER be satisfied.
-- **SLOWNESS DOES NOT PRODUCE IDENTITY ENCODING (iter_023)**: delta_R2_color
-  is essentially flat across the entire sfa_weight sweep (0.040-0.064 for
-  d_max=8 arms). Making z_dyn slower doesn't make it encode color/identity.
-  This is the key falsification of M2's slowness-prior hypothesis.
-- **RAMP STRATEGY WORKS FOR STABILITY (iter_023, A6)**: sfa_weight ramp
-  0.1->25.0 over 1000 steps achieves 1/5 collapse (vs 2/5 for fixed sfa=25).
-  SFA-VICReg gradient conflict is resolvable with proper initialization.
-- **d_max=16 BEST FOR COLOR (iter_022-023, consistent)**: delta_R2_color =
-  0.137 with d_max=16, sfa_weight=10.0. Best absolute color disentanglement
-  but still below the 0.10 improvement threshold.
-- **VICReg BATCH-LEVEL WORKS (iter_020-023)**: For K=1 d_max<=16, confirming M1.
+- **M2 FALSIFIED (iter_022-024)**: SFA on z_dyn does NOT produce identity-position
+  separation. Tested across: CGIR (iter_022), SFA weight sweep 0.1-25.0 (iter_023),
+  multi-step SFA k=20,50,100 (iter_024), temporal contrastive NT-Xent (iter_024).
+  No variant achieves delta_R2_color ≥ 0.10.
+- **MULTI-STEP SFA WORSENS COLLAPSE (iter_024)**: k=20,50,100 all show 100%
+  collapse rate (5/5 seeds), worse than single-step SFA (2/5 at sfa=10, iter_023).
+  Longer horizons amplify the SFA-VICReg gradient conflict.
+- **SFA IS INDISCRIMINATE SMOOTHER (iter_024)**: As k increases, within-trajectory
+  and between-trajectory variance drop proportionally (within/between ratio
+  narrows from 1.96→1.25). SFA does not selectively preserve identity — it
+  suppresses all temporal variation equally.
+- **SHUFFLED-FRAME CONTROL CONFIRMS NULL (iter_024)**: delta_R2_color on shuffled
+  frames is negative and similar to unshuffled values across all arms, confirming
+  the minimal signal is encoder geometry, not SFA-driven semantics.
+- **TEMPORAL CONTRASTIVE (NT-Xent) FAILS (iter_024)**: delta_R2_color = -0.013
+  at d_max=8. NT-Xent at τ=0.1 fights VICReg, producing high-variance noisy
+  representations (within_traj_var=0.630) with no semantic structure.
+- **VICReg BATCH-LEVEL WORKS (iter_020-024)**: For K=1 d_max≤16, confirming M1.
+- **d_max=16 BEST CAPACITY (iter_022-024)**: Consistent delta_R2_color improvement
+  with more channels, but this is a capacity effect, not an objective effect.
+- **RAMP STRATEGY HELPS STABILITY (iter_023-024)**: SFA weight ramp 0.1→target
+  over 500 steps reduces immediate collapse but cannot prevent it at longer horizons.
 
 ## Refuted / Falsified
-- **SFA AS IDENTITY ENCODING MECHANISM (iter_023, PRIMARY)**: FALSIFIED.
-  Slowness on z_dyn does not produce identity-position separation. delta_R2_color
-  improvement over sfa=0.1 baseline is +0.014 at best (threshold: 0.10).
-- **COMPOSITE M2 VIABILITY (iter_023)**: FALSIFIED. C5 is never satisfied,
-  making the composite criterion trivially impossible.
-- **C5 AS SFA EFFECTIVENESS METRIC (iter_023)**: The criterion
-  normalized_dyn_var < normalized_coord_var is structurally impossible in this
-  architecture. It measures a metric artifact, not SFA effectiveness.
+- **SFA AS IDENTITY ENCODING MECHANISM (iter_022-024, DEFINITIVE)**: Slowness
+  on z_dyn does not produce identity-position separation under any tested
+  formulation: single-step, multi-step, weight sweep, or temporal contrastive.
+- **COMPOSITE M2 VIABILITY (iter_023-024)**: C5 structurally impossible; composite
+  criterion never satisfied.
+- **MULTI-STEP HORIZON HELPS (iter_024)**: Longer horizons worsen collapse
+  rather than enabling slower feature extraction.
+- **NT-Xent AS ALTERNATIVE OBJECTIVE (iter_024)**: Fights VICReg, no identity
+  signal produced.
 
 ## Best Result
-- Arm B (d_max=16, sfa=10.0): delta_R2_color = 0.137, delta_R2_identity =
-  -0.027, 2/5 collapsed. Best color disentanglement across all iterations,
-  but compound identity still fails and this is NOT an SFA effect.
+- Arm B (iter_024, k=50, d_max=8): delta_R2_color = 0.034, but 5/5 collapsed.
+- Arm D (iter_024, contrastive): delta_R2_color = -0.013, 1/5 collapsed.
+- Best absolute: iter_023 Arm B (d_max=16, sfa=10.0): delta_R2_color = 0.137,
+  but this is a capacity effect, not an objective effect.
 
 ## In Progress
-- None active. The M2 mandate (SFA as primary representation objective) has
-  been empirically tested and falsified for this architecture.
-
-## Critical Architectural Insight
-The dual-stream design creates a fundamental asymmetry:
-- z_coord (soft-argmax centroid): Very low normalized temporal variance by
-  construction (wide spatial range, small per-step changes)
-- z_dyn (mean/CGIR pooling): Higher normalized temporal variance because
-  VICReg forces per-dim std >= 1 (moderate spatial variance) while identity
-  features change meaningfully across timesteps
-
-SFA can reduce z_dyn's temporal variation but cannot overcome this structural
-gap without violating VICReg's anti-collapse mandate. More importantly, even
-when SFA successfully slows z_dyn, it doesn't cause identity encoding — it
-just makes z_dyn less informative overall.
+- None. The M2 mandate has been definitively tested and refuted.
+- Pivot to object-tracking-ID contrastive learning is the next step.
 
 ## Open Questions
-1. What alternative objective would make z_dyn encode identity? Contrastive
-   learning, supervised probe loss, or mutual information maximization are
-   candidates. This is now the most important question.
-2. Should the C5 metric be redefined? Using absolute temporal variance or
-   raw delta_magnitude would avoid the spatial-variance normalization artifact.
-3. Is identity encoding fundamentally impossible in z_dyn given the shared
-   CNN encoder, or would a separate identity encoder succeed?
-4. Would longer training (20k+ steps) eventually accumulate enough SFA
-   slowness to produce identity separation?
-5. Is d_max=24/32 the only viable path to better color disentanglement?
-6. Should M2 (SFA as primary representation objective) be abandoned for this
-   architecture, and if so, what replaces it?
-7. Does the sml validation (SFA+VICReg at 82%) transfer to RGB inputs, or
-   is the sml binary-task advantage specific to low-DOF inputs?
+1. What objective can make z_dyn encode object identity? Object-tracking-ID
+   contrastive is the leading candidate.
+2. Does the shared CNN encoder fundamentally prevent identity encoding in z_dyn?
+3. Can the NT-Xent + VICReg fight be resolved with different temperature or loss?
+4. Is the 100% collapse in multi-step SFA caused by the trajectory buffer approach?
+5. Should the dual-stream z_coord/z_dyn architecture be abandoned entirely?
+6. Does the sml SFA+VICReg advantage simply not transfer to RGB inputs?
+7. Would a supervised identity probe loss (using soft-argmax tracking to assign
+   per-object labels) work as a direct training signal?

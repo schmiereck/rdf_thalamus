@@ -934,3 +934,66 @@ that sfa_weight=0.1 simp
 
 **Notes:** Hypothesis falsified on primary criterion. C5 is structurally impossible; SFA reduces z_dyn variance but doesn't produce identity encoding.
 
+
+---
+```yaml
+cached_tokens: 10224340
+cost_usd: 6.2986
+hypothesis: 'phase-24: Multi-step SFA (k=20,50,100) and temporal contrastive (NT-Xent)
+  both fail to produce identity encoding; M2 definitively refuted across all slowness
+  formulations'
+input_tokens: 15158406
+iter: 24
+metrics:
+  arm_a_collapse_rate: 5/5
+  arm_a_k20_delta_r2_color: -0.011
+  arm_b_between_traj_var: 0.021
+  arm_b_collapse_rate: 5/5
+  arm_b_k50_delta_r2_color: 0.034
+  arm_b_within_traj_var: 0.035
+  arm_c_between_traj_var: 0.013
+  arm_c_collapse_rate: 5/5
+  arm_c_k100_delta_r2_color: -0.074
+  arm_c_within_traj_var: 0.016
+  arm_d_between_traj_var: 0.45
+  arm_d_collapse_rate: 1/5
+  arm_d_contrastive_delta_r2_color: -0.013
+  arm_d_within_traj_var: 0.63
+  arm_e_collapse_rate: 5/5
+  arm_e_d16_delta_r2_color: 0.03
+  arm_f_collapse_rate: 1/1
+  arm_f_diagnostic_delta_r2_color: -0.077
+  best_arm: B (k=50, d_max=8)
+  best_delta_r2_color: 0.034
+  contrastive_refuted: true
+  m2_refuted: true
+  total_runs: 26
+  training_steps_per_run: 5000
+output_tokens: 201002
+status: ok
+```
+
+## iter_024: phase-24: Multi-step SFA (k=20,50,100) and temporal contrastive (NT-Xent) both fail to produce identity encoding; M2 definitively refuted across all slowness formulations
+
+**Analysis:** This iteration tested the two remaining candidates for making z_dyn encode
+identity: (1) multi-step SFA with longer temporal horizons (k=20,50,100),
+and (2) temporal contrastive learning (NT-Xent). Both failed.
+
+The multi-step SFA result is actually WORSE than the single-step SFA result
+from iter_023. While iter_023's single-step SFA at sfa_weight=10.0 had 2/5
+collapsed seeds and delta_R2_color=0.
+
+**Status:** ok
+
+**Metrics:** `{'arm_a_k20_delta_r2_color': -0.011, 'arm_b_k50_delta_r2_color': 0.034, 'arm_c_k100_delta_r2_color': -0.074, 'arm_d_contrastive_delta_r2_color': -0.013, 'arm_e_d16_delta_r2_color': 0.03, 'arm_f_diagnostic_delta_r2_color': -0.077, 'arm_a_collapse_rate': '5/5', 'arm_b_collapse_rate': '5/5', 'arm_c_collapse_rate': '5/5', 'arm_d_collapse_rate': '1/5', 'arm_e_collapse_rate': '5/5', 'arm_f_collapse_rate': '1/1', 'arm_b_within_traj_var': 0.035, 'arm_b_between_traj_var': 0.021, 'arm_c_within_traj_var': 0.016, 'arm_c_between_traj_var': 0.013, 'arm_d_within_traj_var': 0.63, 'arm_d_between_traj_var': 0.45, 'best_delta_r2_color': 0.034, 'best_arm': 'B (k=50, d_max=8)', 'm2_refuted': True, 'contrastive_refuted': True, 'total_runs': 26, 'training_steps_per_run': 5000}`
+
+**Experimenter view:** Iteration 024 tested multi-step SFA (k=20,50,100) and temporal contrastive
+(NT-Xent) on z_dyn across 6 arms × variable seeds × 5000 steps (26 total runs).
+
+PART A — MULTI-STEP SFA: All arms (A-C, E) showed 100% collapse rate (5/5
+seeds per arm), with per_dim_std values around 0.02-0.14, well below the 0.5
+threshold. Multi-step SFA at sfa_weight=10.0 with ramp 0.1→10.0 over 500 steps
+completely des
+
+**Notes:** Double null result. Both multi-step SFA and temporal contrastive failed definitively. 100% collapse in multi-step SFA arms is a new severe finding.
+
