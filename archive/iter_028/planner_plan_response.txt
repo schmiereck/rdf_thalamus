@@ -1,0 +1,462 @@
+
+[Tool Call: read_iteration({'iter_num': 27})]
+
+[Tool Result: ```yaml
+cached_tokens: 604934
+campaign: collapse-elimination
+cost_usd: 4.06951
+hypothesis: 'phase-27: separate backbone is NOT the primary cause of z_dyn collapse
+  (SECOND NULL); sim_loss_dyn is the causal driver (B-vs-C comparison, 30% vs 0%);
+  VICReg-only z_dyn eliminates collapse and improves semantic encoding'
+input_tokens: 2247864
+iter: 27
+metrics:
+  arm_C_passes_gate: true
+  collapse_rate_A_shared_mean_readout: 0.4
+  collapse_rate_B_separate_jepa_vicreg: 0.3
+  collapse_rate_C_separate_vicreg_only: 0.0
+  collapse_rate_aprime_shared_centroid_gated: 0.3
+  delta_r2_color_arm_A: 0.1469
+  delta_r2_color_arm_C: 0.1812
+  mean_abs_corr_arm_B: 0.407
+  mean_abs_corr_arm_C: 0.21
+  params_A: 80336
+  params_B: 135608
+  params_C: 135608
+  params_aprime: 81368
+  pre_registered_outcome: SECOND_NULL
+  total_runs: 40
+output_tokens: 81992
+status: ok
+```
+
+## iter_027: phase-27: separate backbone is NOT the primary cause of z_dyn collapse (SECOND NULL); sim_loss_dyn is the causal driver (B-vs-C comp...]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_multistep.py
+      run_phase0_sfa_recovery.py
+      run_phase0_sfa_sweep.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      r...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase0_separate_dyn.py'})]
+
+[Tool Result: #!/usr/bin/env python3
+"""
+Iter_027 Separate z_dyn Encoder Architectural Probe.
+
+4 arms x 10 seeds to test whether the shared CNN backbone causes z_dyn collapse.
+Arms: Aprime (shared, centroid_gated), A (shared, mean), B (separate, JEPA+VICReg), C (separate, VICReg-only)
+"""
+
+import os, sys, json, random, argparse, collections, warnings, concurrent.futures
+import numpy as np, pandas as pd, torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
+from scipy.optimize import linear_sum_assignment
+warnings.filterwarnings("ignore", category=UserWarning)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.environment import PhysicsSandbox
+from src.models_dual_stream import NonParametricJEPASpatial
+from src.models_separate_dyn import NonParametricJEPASpatialSeparateDyn
+
+class ExtendedReplayBuffer:
+    def __init__(self, capacity=4000):
+        self.capacity = capacity; self.buffer = []; self.position = 0
+    def push(self, x_hist, x_target, po...]
+
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 027
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+
+We conjecture that shared-parameter gradient competition contributes to collapse;
+the experiment tests the observable consequence C_sep ≤ 0.10, not the mechanism
+directly. A successful collapse-rate change is **consistent with** the mechanism,
+not a demonstration of it.
+
+The shared CNN backbone (conv1–conv4) is the primary structural cause of z_dyn
+collapse in the NonParametricJEPASpatial encoder. When z_dyn and z_coord share
+backbone parameters, the JEPA similarity loss gradient (which predominantly shapes
+z_coord's spatial selectivity) dominates the shared parameter updates, leaving
+z_dyn's VICReg variance/covariance gradient under-supported. Giving z_dyn an
+independent CNN backbone (same architecture: 4-layer Conv1d with kernel-5 stride-2,
+1x1 projection head, mean-spatial readout; separate parameters) will reduce the
+z_dyn collapse rate from ~30% (iter...]
+
+
+[Tool Call: read_file({'path': 'src/models_separate_dyn.py'})]
+
+[Tool Result: """
+Separate z_dyn Encoder Architecture for Iteration 027.
+
+Provides two classes:
+  - SeparateDynEncoder: Two independent CNN backbones (coord + dyn)
+  - NonParametricJEPASpatialSeparateDyn: JEPA model using SeparateDynEncoder
+"""
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+from src.models_dual_stream import (
+    calculate_centroid_and_variance,
+    add_positional_encoding,
+    DualStreamPredictor,
+    NonParametricJEPASpatial,
+)
+
+
+class SeparateDynEncoder(nn.Module):
+    """
+    Encoder with TWO independent CNN backbones:
+      (a) coord_backbone: conv1->conv2->conv3->conv4->conv_spatial
+          Produces z_coord via soft-argmax centroid from spatial feature map.
+      (b) dyn_backbone: conv1_dyn->conv2_dyn->conv3_dyn->conv4_dyn->conv_identity_dyn
+          Same architecture, SEPARATE parameters.
+          Produces z_dyn via mean pooling over the spatial dimension.
+
+    Both backbones process the SAME RGB input independe...]
+
+
+[Tool Call: read_result_file({'filename': 'results/final_analysis.md', 'iter_num': 27})]
+
+[Tool Result: # Iter_027 Separate z_dyn Encoder Architectural Probe — Analysis
+**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train
+**Sanity disqualification:** final_train_loss > 50 counted as collapsed
+**Arms:** Aprime (shared, centroid_gated), A (shared, mean), B (separate, JEPA+VICReg), C (separate, VICReg-only)
+**Gate threshold:** ≤10% collapse rate (dual criterion)
+
+---
+## Per-Arm Summary
+### Aprime (shared, centroid_gated)
+- N seeds: 10
+- Collapse rate (dual): 0.30 (3/10)
+- Collapse rate (eval-only): 0.30 (3/10)
+- Collapse rate (train-only): 0.20 (2/10)
+- Mean final train loss: 4.7470 +/- 5.6087
+- Centroid MSE (REF ONLY): 174.86
+- delta_R2_color (REF ONLY): -0.0158
+- Mean abs corr: 0.318
+- Parameter count: 81368
+
+### A (shared, mean readout)
+- N seeds: 10
+- Collapse rate (dual): 0.40 (4/10)
+- Collapse rate (eval-only): 0.40 (4/10)
+- Collapse rate (train-only): 0.20 (2/10)
+- Mean final train loss: 8.7341 +/- 9.2575
+- Centroid MSE (REF ONLY): 170.2...]
+
+Let me examine the specific iter_027 result data and the models_separate_dyn implementation to understand the `mask_dyn_sim` mechanism precisely.
+
+[Tool Call: read_result_file({'filename': 'results/summary_iter_027.csv', 'iter_num': 27})]
+
+[Tool Result: arm,seed,collapsed_eval,per_dim_std,vicreg_per_dim_std,vicreg_mean_abs_corr,centroid_mse_mean,centroid_r_mean,delta_r2_color,r2_dyn_color,r2_coord_color,r2_dyn_pos,r2_coord_pos,r2_dyn_identity,r2_coord_identity,delta_r2_identity,dim_to_obj,final_train_loss,final_sim_loss,final_var_loss,final_cov_loss,param_count,collapsed_train,per_dim_std_train,collapsed,disqualified
+"Aprime (shared, centroid_gated)",31,False,"[0.6900812983512878, 0.5087348222732544, 0.8297139406204224]","[0.6900812983512878, 0.5087348222732544, 0.8297139406204224]",0.1879449878440521,241.93517839133617,0.4389097548307359,-0.09831859157280984,-0.3072366616979287,-0.20891807012511884,0.02119637009661705,-0.04868364801721581,0.038382390453413594,0.12142569057127046,-0.08304330011785688,"{0: 0, 1: 2, 2: 1}",0.5577345490455627,0.018740419298410416,0.0,0.0028332166839390993,81368,False,"[1.044479489326477, 1.132667899131775, 1.0485161542892456]",False,False
+"Aprime (shared, centroid_gated)",53,True,"[1.091073989868164, 0...]
+
+Now let me check the current `pre_registration.md` and the `current_state.md` to make sure I have the latest context:
+
+[Tool Call: read_file({'path': 'src/current_state.md'})]
+
+[Tool Result: Error: File not found: src/current_state.md]
+
+
+[Tool Call: list_dir({'path': '.'})]
+
+[Tool Result: [DIR] -p
+[DIR] .antigravitycli
+[DIR] .git
+      .gitignore
+[DIR] .pytest_cache
+[DIR] .venv
+[DIR] __pycache__
+      apply_fix.py
+[DIR] archive
+[DIR] cache
+      config.toml
+      crash.log
+      current_state.md
+      experiment.log
+      experiment_log.md
+      find_files.py
+      fix_theta.py
+      goal.md
+      hello.py
+      manager_log.md
+      patch_thalamus.py
+      patch_thalamus_sync.py
+[DIR] pictures
+      print_summary.py
+      README.md
+      RESEARCH-RESULT-002.md
+      RESEARCH-RESULT-003.md
+      RESEARCH-RESULT-004.md
+      RESEARCH-RESULT-005.md
+      RESEARCH-RESULT-006.md
+      RESEARCH-RESULT-007.md
+      RESEARCH-RESULT-008.md
+      RESEARCH-RESULT-009.md
+      RESEARCH-RESULT-010.md
+      RESEARCH-RESULT-011.md
+      RESEARCH-RESULT-012.md
+      RESEARCH-RESULT-013.md
+      RESEARCH-RESULT-014.md
+      RESEARCH-RESULT-015.md
+      RESEARCH-RESULT-016.md
+      RESEARCH-RESULT-017.md
+      RESEARCH-RESULT-018.md
+      RESEARCH-RESULT-020.md
+      RESEARCH-RESULT-023....]
+
+
+[Tool Call: read_file({'path': 'current_state.md'})]
+
+[Tool Result: # Current Research State
+Phase: sim_loss_dyn identified as collapse driver; separate backbone refuted
+
+## Goal
+Achieve a training regime where the NonParametricJEPASpatial encoder collapses on ≤10% of seeds over ≥10 seeds (dual criterion). Ultimately: build a decoder-free, curiosity-driven representation agent.
+
+## Confirmed (iter_027, agents 27.1 + 27.3)
+- SHARED BACKBONE IS NOT THE PRIMARY COLLAPSE CAUSE: Arm B (separate backbone, full JEPA+VICReg) collapses at 30% (3/10), identical to shared-backbone arms (iter_027 27.3). Pre-registered SECOND NULL confirmed.
+- SIM_LOSS_DYN IS THE CAUSAL DRIVER: Arm C (separate backbone, VICReg-only on z_dyn, mask_dyn_sim=True) achieves 0% collapse (0/10) across all seeds. The B-vs-C comparison (same architecture 135,608 params, same backbone, only mask_dyn_sim differs) provides controlled evidence that sim_loss_dyn causes collapse (iter_027 27.3).
+- VICReg-ONLY z_dyn PRODUCES BEST SEMANTIC ENCODING: Arm C delta_R2_color = 0.1812, highest across all...]
+
+Now I have a complete picture. Let me analyze the situation and design the iter_028 plan according to the Research Manager's precise directives.
+
+**Key context:**
+1. Iter_027 found that `mask_dyn_sim=True` (removing sim_loss_dyn) on the **separate** backbone gives 0% collapse (Arm C), while the shared backbone still collapses at 30-40%.
+2. The critical unanswered question: does `mask_dyn_sim=True` also eliminate collapse on the **shared** backbone? This isolates the sim_loss_dyn effect from the separate-backbone confound.
+3. The Manager's hints are very specific: run C1/C2/C3 control matrix only. C1 is the primary arm. No new objectives (no SFA). Pre-register verdict language. Ban overclaiming words. Require an independent readout beyond the VICReg-enforced std gate.
+
+Let me also check what the `mask_dyn_sim` flag does in the shared-backbone model — the current `NonParametricJEPASpatial` doesn't have this flag, only the separate model does.
+
+[Tool Call: grep_search({'pattern': 'mask_dyn_sim', 'include_pattern': '*.py'})]
+
+[Tool Result: src\models_separate_dyn.py:125: Adds `mask_dyn_sim` parameter: when True, the JEPA sim_loss_dyn term
+src\models_separate_dyn.py:133: mask_dyn_sim=False):
+src\models_separate_dyn.py:151: self.mask_dyn_sim = mask_dyn_sim
+src\models_separate_dyn.py:185: Override forward to handle mask_dyn_sim.
+src\models_separate_dyn.py:207: if self.mask_dyn_sim:
+src\models_separate_dyn.py:230: mask_dyn_sim=self.mask_dyn_sim,
+src\run_phase0_separate_dyn.py:203: model_type = arm_config.get("model_type", "shared"); mask_dyn_sim = arm_config.get("mask_dyn_sim", False)
+src\run_phase0_separate_dyn.py:213: dyn_readout=dyn_readout, sub_features=1, dyn_source="spatial", mask_dyn_sim=mask_dyn_sim)
+src\run_phase0_separate_dyn.py:267: {"name": "Aprime (shared, centroid_gated)", "model_type": "shared", "lr": 3e-4, "var_weight": 25.0, "cov_weight": 25.0, "sim_weight": 25.0, "batch_size": 64, "d_max": 8, "d_t": 3, "dyn_readout": "centroid_gated", "pos_encoding": "none", "ccr_mode": "covariance", "ccr_smooth_weight": 10...]
+
+Now I have all the information needed. Let me synthesize the plan.
+
+**Summary of key facts for iter_028:**
+
+1. **iter_027 result**: Arm C (separate backbone + `mask_dyn_sim=True`) achieved 0% collapse. But this confounds two interventions: separate backbone AND removing `sim_loss_dyn`. The critical isolate — does `mask_dyn_sim=True` alone on the shared backbone prevent collapse? — was NOT tested.
+
+2. **Manager's directive**: Run C1/C2/C3 control matrix. C1 = `mask_dyn_sim=True` on shared backbone (primary arm). C2 = fresh seeds (robustness). C3 = ±10% weight perturbation (robustness). Hold weights at 25/25/1. No SFA or new objectives.
+
+3. **Constructional concern**: VICReg's variance hinge (std ≥ 1) directly enforces the quantity measured by the std-based collapse gate (std < 0.5). An independent readout (delta_R2_color) is mandatory to confirm semantic encoding, not just maintained variance.
+
+4. **Weight change**: Manager specifies 25/25/1 (canonical VICReg), but iter_027 used 25/25/25. A weight-change anchor arm (D0) is necessary to isolate the `mask_dyn_sim` effect from the cov_weight change.
+
+5. **Implementation**: `mask_dyn_sim` is only in `NonParametricJEPASpatialSeparateDyn`. For the shared backbone, I'll implement it in the runner by adjusting the loss tensor after `forward()` (subtract `sim_weight * sim_loss_dyn`), identical to how the separate model does it. No modification to `models_dual_stream.py`.
+
+```yaml
+hypothesis: |
+  Removing the JEPA similarity loss gradient on z_dyn (mask_dyn_sim=True) from the
+  shared-backbone NonParametricJEPASpatial encoder does not destabilize the
+  VICReg-maintained per-dimension variance of z_dyn, AND z_dyn retains meaningful
+  identity encoding as measured by an independent (non-VICReg-enforced) readout.
+  
+  Formally: Let C_C1 be the dual-criterion collapse rate of arm C1 (shared backbone,
+  mask_dyn_sim=True, weights 25/25/1) over 10 seeds. Let ΔR²_C1 be the mean
+  delta_R2_color of C1 across non-collapsed seeds. The hypothesis is:
+  (H1) C_C1 ≤ 0.10 (std-based collapse gate)
+  (H2) ΔR²_C1 ≥ 0.10 (independent semantic readout gate)
+  
+  Both conditions must hold. This is the critical isolate that iter_027's Arm C
+  could not provide (it confounded separate-backbone with mask_dyn_sim).
+  
+  Constructional acknowledgment: VICReg's variance hinge (γ - std, hinge at γ=1)
+  directly enforces per-dimension std ≥ 1, which trivially satisfies the collapse
+  gate (std < 0.5). Even a fully-confirmed C1+C2+C3 result will be reported as
+  "removing sim_loss_dyn from the z_dyn gradient path does not destabilize
+  VICReg-maintained variance" — NOT as "sim_loss_dyn causes collapse."
+
+falsification_criterion: |
+  Four independent falsification conditions, any one of which refutes the hypothesis
+  or downgrades its interpretation:
+  
+  F1: C1 collapse rate ≥ 0.20 (dual criterion) → mask_dyn_sim alone is insufficient
+      on the shared backbone; the separate-backbone architecture was load-bearing.
+      The Arm C signal from iter_027 collapses to that confound.
+  
+  F2: C2 collapse rate ≥ 0.20 (fresh seed bank) → the C1 result is seed-dependent,
+      not general.
+  
+  F3: C3 collapse rate ≥ 0.20 (±10% weight perturbation) → the C1 result is not
+      robust to reasonable hyperparameter variation.
+  
+  F4: C1 passes the std gate (C_C1 ≤ 0.10) BUT ΔR²_C1 < 0.05 → the VICReg-maintained
+      variance is constructional; z_dyn has variance but no semantic content. The
+      mechanism is downgraded regardless of the std-collapse numbers. Only if C1
+      passes BOTH the std gate AND the independent readout does the iter_029
+      promotion to M2-style SFA-on-z_dyn become justified.
+  
+  Additional guard: D0 (shared backbone, mask_dyn_sim=False, weights 25/25/1).
+  If D0 collapse rate < 0.20, then the cov_weight change (25→1) alone reduces
+  collapse, confounding the C1 attribution. The report must state this.
+
+proposed_method: |
+  Step-by-step experimental protocol:
+  
+  1. CREATE src/run_phase0_mask_dyn_sim_shared.py — the experiment runner.
+     Based on run_phase0_separate_dyn.py, simplified to shared-backbone only.
+     Implements mask_dyn_sim via loss adjustment after forward():
+       adjusted_loss = loss_dict["loss"] - sim_weight * loss_dict["sim_loss_dyn"]
+     This is identical to NonParametricJEPASpatialSeparateDyn's approach.
+     No modification to models_dual_stream.py.
+  
+  2. FOUR ARMS (10 seeds each, 40 total runs):
+  
+     D0 — Weight-change anchor (shared backbone, mask_dyn_sim=False, weights 25/25/1):
+       NonParametricJEPASpatial, dyn_readout="mean", d_max=8, d_t=3,
+       pos_encoding="none", primary_objective="jepa", lr=3e-4, batch_size=64,
+       buffer=4000, 8000 steps, gradient clipping max_norm=1.0,
+       ccr_mode="covariance", ccr_smooth_weight=10, ccr_spatial_weight=10,
+       gdasr_log_only=True, sim_weight=25, var_weight=25, cov_weight=1,
+       seeds=[7, 17, 31, 53, 71, 83, 97, 113, 127, 149].
+       Purpose: Establish shared-backbone collapse rate with cov_weight=1.
+       If D0 ≈ 30-40% (like iter_027), the weight change alone doesn't help.
+  
+     C1 — Primary arm (shared backbone, mask_dyn_sim=True, weights 25/25/1):
+       Same as D0 but mask_dyn_sim=True. Same seeds.
+       The critical isolate: does removing sim_loss_dyn prevent collapse
+       without the separate-backbone confound?
+  
+     C2 — Seed robustness (shared backbone, mask_dyn_sim=True, weights 25/25/1):
+       Same as C1 but fresh seed bank: [101, 103, 107, 109, 131, 137, 139,
+       151, 157, 163]. Tests whether C1's result is seed-dependent.
+  
+     C3 — Weight robustness (shared backbone, mask_dyn_sim=True, weights 27.5/27.5/1.1):
+       Same as C1 but var_weight=27.5, cov_weight=1.1 (+10% perturbation).
+       Original seeds. Tests sensitivity to weight variation.
+  
+  3. EVALUATION at step 8000 (same protocol as iter_027):
+     - Dual collapse criterion: collapsed_eval OR collapsed_train (per-dim std < 0.5)
+     - Train-vs-eval std gap: report per-seed, co-equally with collapse rates
+     - Hungarian-primary matching for semantic probes
+     - Semantic probes: delta_R2_color (INDEPENDENT READOUT, pre-declared gate ≥0.10),
+       r2_dyn_color, r2_coord_color, r2_dyn_pos, r2_coord_pos,
+       r2_dyn_identity, delta_r2_identity
+     - VICReg health: per_dim_std, mean_abs_corr
+     - Centroid MSE (reference only, NOT used for arm selection)
+     - Training loss sanity: mean total loss at step 8000, loss > 50 → disqualified
+     - Parameter count per arm (logged before runs start)
+  
+  4. STOP RULE: All 40 runs complete. No early termination.
+  
+  5. PRE-REGISTERED OUTCOME CLASSIFICATION:
+     - If C1 ≤ 10% AND ΔR²_C1 ≥ 0.10: CONFIRMED — mask_dyn_sim on shared
+       backbone does not destabilize VICReg-maintained variance AND preserves
+       semantic encoding. Promotion to M2-style SFA (iter_029) is justified.
+     - If C1 ≥ 20%: FALSIFIED — mask_dyn_sim alone insufficient; separate
+       backbone was load-bearing.
+     - If C1 ≤ 10% BUT ΔR²_C1 < 0.05: DOWNGRADED — VICReg variance is
+       constructional; no semantic content despite maintained variance.
+     - If C2 ≥ 20%: SEED-DEPENDENT — C1 result does not generalize.
+     - If C3 ≥ 20%: NOT ROBUST — C1 result sensitive to weight perturbation.
+  
+  6. LANGUAGE CONSTRAINTS (tracked failure mode from iter_027 overclaim):
+     - Use "does not destabilize VICReg-maintained variance" or "is consistent
+       with"; do NOT use "breakthrough", "causal driver", "eliminated", "BEST",
+       "proves", "demonstrates", or "resolves."
+     - Even a fully-confirmed C1+C2+C3 result is reported per the constructional
+       framing in the hypothesis, not as "sim_loss_dyn causes collapse."
+  
+  FILES TO CREATE:
+  - src/run_phase0_mask_dyn_sim_shared.py (NEW): experiment runner
+  
+  FILES TO MODIFY:
+  - src/pre_registration.md (UPDATE with iter_028 plan)
+  
+  FILES NOT TO MODIFY:
+  - src/models_dual_stream.py (mask_dyn_sim handled in runner, not model)
+  - src/models_separate_dyn.py (not needed for this experiment)
+  - src/environment.py
+  
+  Total runs: 4 arms × 10 seeds = 40 runs × 8000 steps each.
+  Expected wall time: ~30-40 minutes with parallel workers (CPU).
+
+pre_registration_file: "src/pre_registration.md"
+```

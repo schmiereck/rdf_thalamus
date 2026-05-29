@@ -1,9 +1,20 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 028
 
-*   **Iteration:** 028
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 028 -> Planner [Pre-Planning Hints]
 
-## 1. Hypothesis
+Manager's Pre-Planning Hints (for the iter_028 Planner)
+
+1. Directional — run the pre-registered C1/C2/C3 control matrix and nothing else. The single most important arm is C1 (`mask_dyn_sim=True` on the **shared** backbone): without it we cannot distinguish "separate backbone was load-bearing" from "removing `sim_loss_dyn` is what matters." Treat C1 as the iteration's primary arm; C2 (fresh seed bank, n=10) and C3 (±10% var/cov perturbation) are the robustness gates. Hold buffer=4000, Hungarian-primary, d_max=8, d_t=3, sim_weight/var_weight/cov_weight=25/25/1 constant. Do not introduce SFA, slowness, or new objectives in this iteration — that is iter_029 territory and would confound the diagnostic.
+
+2. Scientific discipline — pre-register the verdict language in the plan itself, not after the fact. Required falsification thresholds (carry forward from the journal): C1 collapses ≥20% → separate-backbone *was* load-bearing and the Arm-C signal collapses to that confound; C2 collapses ≥20% → seed-bank artefact; C3 collapses ≥20% → not robust. The plan must also explicitly state, before running, that Arm C's relationship to the std-based collapse criterion is partially constructional (VICReg's variance hinge enforces the same quantity the gate measures), and that even a fully-confirmed C1+C2+C3 result will be reported as "removing `sim_loss_dyn` from the z_dyn gradient path does not destabilize VICReg-maintained variance" — *not* as "sim_loss_dyn causes collapse." Ban the words "breakthrough", "causal driver", "eliminated", and "BEST" from the result write-up; the iter_027 overclaim loop is now a tracked failure mode and the plan must show it has been internalized.
+
+3. Discipline-on-metrics — beyond the std-based collapse gate, the plan must pre-declare at least one *independent* readout that is not directly enforced by VICReg: e.g. delta_R2_color (already used in iter_027), per-channel covariance off-diagonals, or a held-out identity-decoding probe. If C1 passes the std gate but the independent readout shows no improvement over the collapsed baseline, the Arm-C mechanism is downgraded regardless of the std-collapse numbers. This is the guard against the constructional concern. Only if C1 passes *both* the std gate and the independent readout does the iter_029 promotion to M2-style SFA-on-`z_dyn` become justified.
+
+---
+
+## Iteration 028 -> Manager [Proposed Research Plan]
+
+**Proposed Hypothesis:**
 Removing the JEPA similarity loss gradient on z_dyn (mask_dyn_sim=True) from the
 shared-backbone NonParametricJEPASpatial encoder does not destabilize the
 VICReg-maintained per-dimension variance of z_dyn, AND z_dyn retains meaningful
@@ -24,7 +35,7 @@ gate (std < 0.5). Even a fully-confirmed C1+C2+C3 result will be reported as
 "removing sim_loss_dyn from the z_dyn gradient path does not destabilize
 VICReg-maintained variance" — NOT as "sim_loss_dyn causes collapse."
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 Four independent falsification conditions, any one of which refutes the hypothesis
 or downgrades its interpretation:
 
@@ -48,7 +59,7 @@ Additional guard: D0 (shared backbone, mask_dyn_sim=False, weights 25/25/1).
 If D0 collapse rate < 0.20, then the cov_weight change (25→1) alone reduces
 collapse, confounding the C1 attribution. The report must state this.
 
-## 3. Proposed Method
+**Proposed Method:**
 Step-by-step experimental protocol:
 
 1. CREATE src/run_phase0_mask_dyn_sim_shared.py — the experiment runner.
@@ -130,4 +141,20 @@ Total runs: 4 arms × 10 seeds = 40 runs × 8000 steps each.
 Expected wall time: ~30-40 minutes with parallel workers (CPU).
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 028 -> Planner [Strategic Guidance]
+
+Manager's Note (iter_028 — Plan Critique)
+
+The proposed plan is structurally sound and internalizes the iter_027 discipline (pre-registered thresholds, banned-language list, dual-gate H1+H2, D0 weight-change anchor). Approve in principle, with **three required corrections before execution**.
+
+1. **The D0 anchor as drafted does not isolate what you claim.** D0 is described as "shared backbone, mask_dyn_sim=False, weights 25/25/1," and its stated purpose is to test whether the cov_weight change (25→1) alone reduces collapse. But iter_026/027 baselines were *already* run at cov_weight=1 (that is the canonical setting), so D0 reproduces the existing 30–40% baseline rather than isolating a weight delta. If you actually want to rule out a cov_weight confound, D0 must vary the weight that *changed* between iter_027's reference and C1 — and since C1 uses the same 25/25/1 as iter_027's baselines, **there is no weight delta to confound, and D0 collapses to a baseline replication.** Either (a) re-label D0 honestly as "shared-backbone JEPA+VICReg baseline replication" and drop the cov_weight-confound rationale from the falsification text, or (b) re-specify D0 to actually vary cov_weight if you genuinely suspect that confound. Pick one; do not ship the current mismatch between rationale and arm definition.
+
+2. **The independent readout (H2 / F4) needs a pre-declared null reference, not just a threshold.** ΔR²_color ≥ 0.10 is reasonable but the gate is only meaningful relative to what a *collapsed* or *random-projection* z_dyn yields on the same probe. iter_025 showed ΔR² values in the −0.10 to +0.14 range across configurations; +0.10 is near the noise floor of that distribution. Required additions to the pre-registration before execution: (i) report ΔR²_color for D0 alongside C1/C2/C3 as the in-iteration null reference; (ii) state F4 as "C1 passes std gate AND ΔR²_C1 < D0_ΔR²_color + 0.05" or similar relative form, not an absolute 0.05/0.10 number floating free; (iii) include `mean_abs_corr` in the H2 gate — iter_027 Arm C's 0.21 vs Arm B's 0.41 was at least as informative as ΔR². A representation that passes the std gate but matches a collapsed baseline on independent readouts is exactly the construction-vs-empirical failure mode you flagged, and the threshold must be calibrated to detect it.
+
+3. **Scientific-discipline reminders (mandatory).** (a) **Pre-registration:** before running any code, write the final hypothesis (H1 ∧ H2), the four falsification conditions (F1–F4) with the relative-threshold correction from point 2, the seed banks, the arm specifications, and the banned-language list to `src/pre_registration.md` and commit it. The Orchestrator will commit this file automatically — do not run experiments before that file exists on disk. (b) **Language hygiene under success:** even if all four conditions pass, the result write-up uses "is consistent with" / "does not destabilize" / "does not refute"; the words "breakthrough," "causal driver," "eliminated," "BEST," "proves," "demonstrates," "resolves" remain banned, exactly as you listed. (c) **n=10 power caveat must appear in the report:** Fisher's exact for 0/10 vs 3/10 gives p ≈ 0.21; the design cannot formally distinguish 0% from 10–20% at this sample size. State this limit in the pre-registration so the result write-up cannot quietly elide it. (d) **Do not introduce SFA, slowness, or any new objective in this iteration** — that is iter_029 territory and would confound the diagnostic; the plan correctly stays within JEPA+VICReg ± mask, keep it that way.
+
+A clean null on C1 (≥20% collapse) is a fully acceptable outcome that closes the Arm-C mechanism cleanly and is a success of the protocol — propagate it as such, do not re-frame it as partial progress.
+
+---
+
