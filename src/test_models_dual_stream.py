@@ -572,6 +572,38 @@ def test_sfa_mode_with_pos_encoding():
         
     print("Positional encodings verification: PASSED")
 
+def test_contrastive_mode():
+    print("Testing contrastive mode...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    model = NonParametricJEPASpatial(
+        d_max=d_max, h=H,
+        primary_objective="contrastive",
+        contrastive_weight=15.0,
+        temperature=0.2
+    )
+    assert model.primary_objective == "contrastive"
+    assert model.contrastive_weight == 15.0
+    assert model.temperature == 0.2
+
+    # Test cloning
+    cloned = model.clone()
+    assert cloned.primary_objective == "contrastive"
+    assert cloned.contrastive_weight == 15.0
+    assert cloned.temperature == 0.2
+
+    # Test forward pass
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target)
+
+    assert "contrastive_loss" in loss_dict
+    assert loss_dict["contrastive_loss"].item() >= 0.0
+    # check that we can override in forward pass
+    loss_dict_override, _, _ = model(x_hist, x_target, contrastive_weight=10.0, temperature=0.1)
+    assert "contrastive_loss" in loss_dict_override
+    print("Contrastive mode tests: PASSED")
+
 if __name__ == "__main__":
     print("=" * 60)
     print("RUNNING DUAL-STREAM ARCHITECTURE TESTS")
@@ -593,6 +625,7 @@ if __name__ == "__main__":
     test_sfa_weight_parameter()
     test_clone_sfa_parameters()
     test_sfa_mode_with_pos_encoding()
+    test_contrastive_mode()
     print("=" * 60)
     print("ALL TESTS PASSED SUCCESSFULLY!")
     print("=" * 60)
