@@ -4,16 +4,25 @@
 *   **Pre-Registration File:** src/pre_registration.md
 
 ## 1. Hypothesis
+
 The SFA objective has been functionally disabled by a 250× gradient imbalance
 (sfa_weight=0.1 vs var_weight=25.0). Increasing sfa_weight to parity with
 var_weight will activate SFA, causing normalized_dyn_var to drop below
-normalized_coord_var (C5 criterion: z_dyn becomes slower than z_coord). With
-functional SFA, the slow identity stream will begin to separate from the fast
-position stream, producing delta_R2_color ≥ 0.10 (improvement over
-sfa_weight=0.1 baseline of +0.050).
+normalized_coord_var (C5 criterion: z_dyn becomes slower than z_coord).
+
+**Manager's key directive:** Once sfa_weight is large enough that C5 passes,
+z_dyn *must* become slower by construction. Therefore, passing C5 only confirms
+gradient propagation — it does not confirm identity encoding. The meaningful
+test is whether functional SFA produces measurable identity–position separation.
+
+We test whether SFA at parity produces measurable identity–position separation,
+as evidenced by delta_R2_color improvement over the sfa_weight=0.1 baseline.
+Delta_R2_color ≥ 0.10 over baseline is the primary falsification criterion.
 
 Specifically:
-- At sfa_weight ≥ 5.0, normalized_dyn_var < normalized_coord_var (SFA effective).
+- At sfa_weight ≥ 5.0, normalized_dyn_var < normalized_coord_var (SFA gradient
+  reaches z_dyn). This is a prerequisite (gradient propagation), not a sufficient
+  condition for the hypothesis.
 - At sfa_weight = 25.0 (parity with var_weight), SFA-VICReg gradient conflict
   may cause instability or collapse; if so, a linear ramp from 0.1 to 25.0
   over the first 1000 steps will resolve it.
@@ -21,25 +30,36 @@ Specifically:
   achieve delta_R2_color ≥ 0.15 and delta_R2_identity ≥ 0.0 (breaking the
   negative identity trend from iter 022).
 
-## 2. Falsification Criterion
-PRIMARY FALSIFICATION: If no sfa_weight value in the sweep [0.1, 1.0, 5.0,
-10.0, 25.0] produces normalized_dyn_var < normalized_coord_var across ≥ 3/5
-seeds, then SFA cannot shape z_dyn even at gradient parity, and the
-hypothesis is falsified. This would mean the SFA objective itself (not its
-weight) is structurally incompatible with the CNN architecture or the
-z_dyn readout.
+## 2. Falsification Criteria
 
-SECONDARY FALSIFICATION: If sfa_weight achieves C5 (SFA effective) but the
-best delta_R2_color improvement over the sfa_weight=0.1 baseline is < 0.05,
-then functional SFA does not translate to semantic disentanglement — the
-slowness prior does not separate identity from position in this architecture.
+**PRIMARY FALSIFICATION (delta_R2_color):** If no sfa_weight value in the sweep
+[0.1, 1.0, 5.0, 10.0, 25.0] produces delta_R2_color improvement over the
+sfa_weight=0.1 (A1) baseline of ≥ 0.10, the hypothesis is falsified. This means
+that even when SFA is functionally active (C5 passes), the slowness prior does
+not separate identity from position in this architecture.
 
-TERTIARY FALSIFICATION: If all sfa_weight ≥ 5.0 arms collapse in ≥ 3/5 seeds
-(even with ramping), the SFA-VICReg gradient conflict is unresolvable at
-effective SFA strengths, and the hypothesis that SFA can coexist with
-batch VICReg at parity is falsified.
+**COMPOSITE M2 VIABILITY CRITERION:** There exists an sfa_weight ∈ [0.1, 25.0]
+such that ≥ 3/5 seeds simultaneously satisfy:
+  (a) C5: normalized_dyn_var < normalized_coord_var (SFA gradient reaches z_dyn),
+  (b) delta_R2_color improvement ≥ 0.10 over A1 baseline,
+  (c) per-dim std > 0.5 (non-collapse).
+
+If no such sfa_weight exists, SFA + batch VICReg cannot jointly shape z_dyn into
+a slow identity representation in this architecture.
+
+**TERTIARY FALSIFICATION (unresolvable conflict):** If all sfa_weight ≥ 5.0 arms
+collapse in ≥ 3/5 seeds (even with ramping), the SFA-VICReg gradient conflict is
+unresolvable at effective SFA strengths, and the hypothesis that SFA can coexist
+with batch VICReg at parity is falsified.
+
+**C5 REINTERPRETED:** C5 (normalized_dyn_var < normalized_coord_var) is a
+gradient-propagation verification check — necessary but **not sufficient** for
+hypothesis support. Passing C5 only confirms that the SFA gradient reaches z_dyn;
+it does not confirm that SFA encodes identity. The C5 criterion has been demoted
+from primary to tertiary status.
 
 ## 3. Proposed Method
+
 EXPERIMENT DESIGN: 7 arms × 5 seeds × 5000 steps. Seeds: [42, 123, 456, 789, 999].
 
 ARM CONFIGURATIONS:
@@ -67,19 +87,19 @@ Arm A6 (sfa=25.0 ramp): d_max=8, CGIR, CCR, d_t=3, sfa_weight ramp 0.1→25.0 ov
   compute effective_sfa_weight = 0.1 + (25.0 - 0.1) * min(1.0, step / 1000)
   and pass it via the sfa_weight forward-call override.
 
-Arm B (d_max=16 at best sfa): d_max=16, CGIR, CCR, d_t=3, sfa_weight=<BEST>
-  → Secondary arm using the best sfa_weight from A2–A6 (determined by C5 pass
-  rate + lowest collapse rate + best delta_R2_color). If multiple pass, use
-  the lowest effective weight. If none pass C5, use sfa_weight=10.0 as the
-  most likely candidate. Tests whether expanded channels + functional SFA
-  compound positively.
+Arm B (d_max=16 sfa=10.0): d_max=16, CGIR, CCR, d_t=3, sfa_weight=10.0
+  → Secondary arm pre-set to sfa_weight=10.0. Tests whether expanded channels
+  + functional SFA compound positively. **Pre-commitment note:** This arm is
+  pre-set to sfa_weight=10.0. If the optimal sfa_weight (from A-arms) is between
+  5.0 and 10.0, Arm B may fail for the wrong reason. Do not interpret Arm B
+  failure alone as falsifying the compound hypothesis.
 
 ALL ARMS PRESERVE:
 - primary_objective="sfa"
 - sim_weight=25.0 (JEPA readout, stop-gradient per M2)
 - var_weight=25.0, cov_weight=25.0 (batch VICReg, M1)
 - dyn_readout="centroid_gated" (CGIR)
-- ccr_mode="covariance", ccr_smooth=10, ccr_spatial=10
+- ccr_mode="covariance", ccr_smooth_weight=10.0, ccr_spatial_weight=10.0
 - pos_encoding="none"
 - sub_features=1, dyn_source="spatial"
 - d_t=3 frozen, gdasr_log_only=True
@@ -87,16 +107,16 @@ ALL ARMS PRESERVE:
 - 5000 training steps
 
 METRICS (same as iter_022, directly comparable):
-1. C5 (SFA effective): normalized_dyn_var < normalized_coord_var per seed
+1. C5 (gradient propagation): normalized_dyn_var < normalized_coord_var per seed
 2. C1 (Collapse): per_dim_std < 0.5 in < 2/5 seeds per arm
-3. C2 (Centroid MSE): arm MSE ≤ 1.10 × A1 MSE
-4. C3 (Color): delta_R2_color improvement(Arm - A1) ≥ 0.05
-5. C4 (Identity): delta_R2_identity improvement(Arm - A1) ≥ 0.05
-6. Normalized temporal variance (dyn and coord) — primary C5 indicator
-7. Slowness ratio (dyn_delta / coord_delta)
+3. Centroid MSE
+4. delta_R2_color (primary criterion — improvement over A1 baseline)
+5. delta_R2_identity
+6. Normalized temporal variance (dyn and coord)
+7. Slowness ratio
 8. Per-dim std, collapse counts
-9. Tracking quality (delta_corr, level_corr)
-10. GDASR growth-point logs (log-only per M3)
+9. Tracking quality
+10. GDASR growth-point logs
 
 CODE CHANGES:
 1. src/run_phase0_sfa_sweep.py (NEW): Main experiment runner.
@@ -104,8 +124,7 @@ CODE CHANGES:
    - 7 arms × 5 seeds × 5000 steps.
    - Ramp schedule for Arm A6: compute effective sfa_weight per step,
      pass via forward() sfa_weight parameter override.
-   - Arm B determined after A-arms complete (two-phase execution),
-     or pre-set to sfa_weight=10.0 if single-phase preferred.
+   - Arm B pre-set to sfa_weight=10.0 (single-phase, no sequential dependency).
    - Same evaluation suite: normalized temporal variance, semantic probes,
      collapse checks, centroid MSE, tracking quality.
    - Results saved to archive/iter_023/results/.
@@ -114,13 +133,15 @@ CODE CHANGES:
    The sfa_weight parameter already supports per-forward-call override.
    The ramp schedule is implemented in the training loop, not the model.
 
-3. src/pre_registration.md: Update with this plan.
+3. src/pre_registration.md: Updated with this plan.
 
-TWO-PHASE vs SINGLE-PHASE:
-Single-phase preferred (all 7 arms run simultaneously with Arm B pre-set
-to sfa_weight=10.0). This avoids sequential dependency and produces all
-results in one run. If sfa_weight=10.0 turns out suboptimal, the A-arms
+SINGLE-PHASE EXECUTION: All 7 arms run simultaneously. Arm B is pre-set to
+sfa_weight=10.0. If sfa_weight=10.0 turns out suboptimal, the A-arms
 provide the data to identify the correct weight for a follow-up.
+
+**Arm B pre-commitment caveat:** If optimal_sfa ∈ (5.0, 10.0), Arm B may fail
+for the wrong reason. Arm B failure should not be interpreted as falsifying
+the compound hypothesis on its own; the A-arm data supersedes it.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
