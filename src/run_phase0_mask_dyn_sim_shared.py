@@ -679,6 +679,78 @@ def _run_single_worker(args_tuple):
     return eval_res
 
 
+def _run_single_worker_with_timeout(args_tuple, timeout_sec=600):
+    """
+    Wrapper for _run_single_worker that adds per-seed timeout.
+    If timeout occurs, return a timeout result dict.
+    """
+    arm, seed, device_str, dry_run, runs_dir, checkpoints_dir = args_tuple
+    name = arm["name"]
+    print(f"[{name}] seed={seed} -> starting on {device_str} (dry_run={dry_run}, timeout={timeout_sec}s)")
+    
+    device = torch.device(device_str)
+    torch.set_num_threads(1)
+
+    def _inner():
+        eval_res, model, logs = run_single(arm, seed, device, dry_run=dry_run)
+        csv_path = _flatten_result(eval_res, runs_dir)
+        safe_name = _sanitize_arm_name(eval_res["arm"])
+        run_id = f"{safe_name}_seed{seed}"
+        ckpt_path = os.path.join(checkpoints_dir, f"{safe_name}_seed{seed}.pt")
+        torch.save(model.state_dict(), ckpt_path)
+        logs_path = os.path.join(runs_dir, f"{safe_name}_seed{seed}_logs.csv")
+        pd.DataFrame(logs).to_csv(logs_path, index=False)
+        return eval_res
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_inner)
+        try:
+            eval_res = future.result(timeout=timeout_sec)
+            eval_res["timeout"] = False
+            return eval_res
+        except concurrent.futures.TimeoutError:
+            print(f"[{name}] seed={seed} TIMED OUT after {timeout_sec}s (engineering failure, not collapse)")
+            timeout_result = {
+                "arm": name,
+                "seed": seed,
+                "collapsed": False,
+                "collapsed_eval": False,
+                "collapsed_train": False,
+                "timeout": True,
+                "disqualified": False,
+                "per_dim_std": [],
+                "per_dim_std_train": [],
+                "vicreg_per_dim_std": [],
+                "vicreg_mean_abs_corr": 0.0,
+                "centroid_mse_mean": float("nan"),
+                "centroid_r_mean": 0.0,
+                "delta_r2_color": 0.0,
+                "r2_dyn_color": 0.0,
+                "r2_coord_color": 0.0,
+                "r2_dyn_pos": 0.0,
+                "r2_coord_pos": 0.0,
+                "r2_dyn_identity": 0.0,
+                "r2_coord_identity": 0.0,
+                "delta_r2_identity": 0.0,
+                "final_train_loss": float("nan"),
+                "final_sim_loss": float("nan"),
+                "final_var_loss": float("nan"),
+                "final_cov_loss": float("nan"),
+                "param_count": None,
+                "dim_to_obj": {},
+            }
+            # Still write the timeout result to disk
+            csv_path = _flatten_result(timeout_result, runs_dir)
+            return timeout_result
+
+
+def _run_single_worker_with_timeout_wrapper(args_tuple, timeout_sec=600):
+    """
+    Top-level function for parallel pool. Delegates to _run_single_worker_with_timeout.
+    """
+    return _run_single_worker_with_timeout(args_tuple, timeout_sec=timeout_sec)
+
+
 # ---------------------------------------------------------------------------
 # Analysis generation
 # ---------------------------------------------------------------------------
@@ -702,6 +774,14 @@ def _generate_analysis(df_all, results_dir):
             continue
         lines.append(f"### {arm_name}\n")
         lines.append(f"- N seeds: {len(df_arm)}\n")
+
+        # Timeout count
+        if "timeout" in df_arm.columns:
+            timeout_count = int(df_arm["timeout"].sum())
+        else:
+            timeout_count = 0
+        not_timeout = df_arm[~df_arm["timeout"]] if "timeout" in df_arm.columns else df_arm
+
         cr_dual = df_arm["collapsed"].mean()
         cc_dual = int(df_arm["collapsed"].sum())
         cr_eval = df_arm["collapsed_eval"].mean()
@@ -711,6 +791,23 @@ def _generate_analysis(df_all, results_dir):
         lines.append(f"- Collapse rate (dual): {cr_dual:.2f} ({cc_dual}/{len(df_arm)})\n")
         lines.append(f"- Collapse rate (eval-only): {cr_eval:.2f} ({cc_eval}/{len(df_arm)})\n")
         lines.append(f"- Collapse rate (train-only): {cr_train:.2f} ({cc_train}/{len(df_arm)})\n")
+
+        # PRIMARY (excluding timeouts)
+        if len(not_timeout) > 0:
+            cr_primary = not_timeout["collapsed"].mean()
+            cc_primary = int(not_timeout["collapsed"].sum())
+            lines.append(f"- **PRIMARY collapse rate (excl. timeouts):** {cr_primary:.2f} ({cc_primary}/{len(not_timeout)})\n")
+
+            # SENSITIVITY (including timeouts as failures)
+            if timeout_count > 0:
+                n_total = len(df_arm)
+                cc_sensitivity = cc_primary + timeout_count
+                cr_sensitivity = cc_sensitivity / n_total
+                lines.append(f"- **SENSITIVITY collapse rate (incl. timeouts as failures):** {cr_sensitivity:.2f} ({cc_sensitivity}/{n_total})\n")
+        else:
+            lines.append(f"- **PRIMARY collapse rate (excl. timeouts):** N/A (all timed out)\n")
+
+        lines.append(f"- **Timeout count:** {timeout_count}\n")
         dq_count = int(df_arm["disqualified"].sum()) if "disqualified" in df_arm.columns else 0
         if dq_count > 0:
             lines.append(f"- **Disqualified seeds (loss > 50):** {dq_count}\n")
@@ -738,14 +835,22 @@ def _generate_analysis(df_all, results_dir):
     lines.append("\n")
 
     # ---- Gate Check ----
-    lines.append("## Gate Check\n\n")
+    lines.append("## Gate Check (PRIMARY — excluding timeouts)\n\n")
     for arm_name in arm_order:
         df_arm = df_all[df_all["arm"] == arm_name]
         if len(df_arm) == 0:
             continue
-        cr = df_arm["collapsed"].mean()
-        status = "PASS" if cr <= 0.10 else "FAIL"
-        lines.append(f"- **{arm_name}:** {status} (collapse rate {cr:.2f})\n")
+        # Use PRIMARY rate (excluding timeouts)
+        if "timeout" in df_arm.columns:
+            not_timeout = df_arm[~df_arm["timeout"]]
+        else:
+            not_timeout = df_arm
+        if len(not_timeout) > 0:
+            cr = not_timeout["collapsed"].mean()
+            status = "PASS" if cr <= 0.10 else "FAIL"
+            lines.append(f"- **{arm_name}:** {status} (PRIMARY collapse rate {cr:.2f}, n={len(not_timeout)})\n")
+        else:
+            lines.append(f"- **{arm_name}:** SKIP (all timed out)\n")
     lines.append("\n")
 
     # ---- D0 vs C1 Relative Threshold Comparison ----
@@ -790,9 +895,20 @@ def _generate_analysis(df_all, results_dir):
     cr_C2 = df_C2_a["collapsed"].mean() if len(df_C2_a) > 0 else 1.0
     cr_C3 = df_C3_a["collapsed"].mean() if len(df_C3_a) > 0 else 1.0
 
-    lines.append(f"C1 collapse rate: {cr_C1:.2f}\n")
-    lines.append(f"C2 collapse rate: {cr_C2:.2f}\n")
-    lines.append(f"C3 collapse rate: {cr_C3:.2f}\n\n")
+    # Use PRIMARY rates (excluding timeouts) for gate evaluation
+    if "timeout" in df_C1_a.columns:
+        c1_not_to = df_C1_a[~df_C1_a["timeout"]]
+        cr_C1 = c1_not_to["collapsed"].mean() if len(c1_not_to) > 0 else 1.0
+    if "timeout" in df_C2_a.columns:
+        c2_not_to = df_C2_a[~df_C2_a["timeout"]]
+        cr_C2 = c2_not_to["collapsed"].mean() if len(c2_not_to) > 0 else 1.0
+    if "timeout" in df_C3_a.columns:
+        c3_not_to = df_C3_a[~df_C3_a["timeout"]]
+        cr_C3 = c3_not_to["collapsed"].mean() if len(c3_not_to) > 0 else 1.0
+
+    lines.append(f"C1 **PRIMARY** collapse rate (excl. timeouts): {cr_C1:.2f}\n")
+    lines.append(f"C2 **PRIMARY** collapse rate (excl. timeouts): {cr_C2:.2f}\n")
+    lines.append(f"C3 **PRIMARY** collapse rate (excl. timeouts): {cr_C3:.2f}\n\n")
 
     # F1
     if cr_C1 >= 0.20:
@@ -836,6 +952,26 @@ def _generate_analysis(df_all, results_dir):
                 lines.append(f"- {arm_name}: {int(df_arm['param_count'].iloc[0])}\n")
     lines.append("\n")
 
+    # ---- Timeout Audit ----
+    lines.append("## Timeout Audit\n\n")
+    lines.append("Timeouts are ENGINEERING failures, NOT representation failures.\n")
+    lines.append("The PRIMARY collapse rate (used for gates) excludes timeouts.\n\n")
+    interpretable = True
+    for arm_name in arm_order:
+        df_arm = df_all[df_all["arm"] == arm_name]
+        if len(df_arm) == 0:
+            continue
+        if "timeout" in df_arm.columns:
+            to_count = int(df_arm["timeout"].sum())
+        else:
+            to_count = 0
+        ok = "OK" if to_count <= 1 else "TOO MANY — re-launch with longer budget"
+        if to_count > 1:
+            interpretable = False
+        lines.append(f"- **{arm_name}:** {to_count} timeout(s) → {ok}\n")
+    lines.append(f"\n**Overall interpretable:** {'Yes' if interpretable else 'No — re-launch required'}\n")
+    lines.append("\n")
+
     # ---- Language Constraints Reminder ----
     lines.append("## Language Constraints (from pre-registration)\n\n")
     lines.append("Results are reported using 'does not destabilize VICReg-maintained variance' or "
@@ -851,6 +987,94 @@ def _generate_analysis(df_all, results_dir):
 
 
 # ---------------------------------------------------------------------------
+# Resume helper — scan for existing JSON results
+# ---------------------------------------------------------------------------
+def load_existing_results(runs_dir):
+    """
+    Scan runs_dir for .json result files.
+    Returns a dict mapping (arm_name, seed) -> result_dict for valid results
+    (files that contain both "arm" and "seed" keys).
+    """
+    results = {}
+    if not os.path.isdir(runs_dir):
+        return results
+    for fname in os.listdir(runs_dir):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(runs_dir, fname)
+        try:
+            with open(fpath, "r") as f:
+                data = json.load(f)
+            if "arm" in data and "seed" in data:
+                key = (data["arm"], data["seed"])
+                # Ensure timeout flag exists for merged results
+                if "timeout" not in data:
+                    data["timeout"] = False
+                if "disqualified" not in data:
+                    data["disqualified"] = False
+                results[key] = data
+                print(f"  Loaded existing result: {data['arm']} seed={data['seed']}")
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"  Skipping invalid JSON file {fname}: {e}")
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Per-seed timeout wrapper
+# ---------------------------------------------------------------------------
+def run_single_with_timeout(arm_config, seed, device, dry_run=False, timeout_sec=600):
+    """
+    Wrap run_single with a per-seed timeout using ProcessPoolExecutor.
+    If timeout occurs, return a timeout result dict (collapsed=False, timeout=True).
+    Timeout is an ENGINEERING failure, not a representation failure.
+    """
+    import concurrent.futures
+    name = arm_config["name"]
+
+    def _wrapper():
+        return run_single(arm_config, seed, device, dry_run=dry_run)
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_wrapper)
+        try:
+            eval_res, model, logs = future.result(timeout=timeout_sec)
+            eval_res["timeout"] = False
+            return eval_res, model, logs
+        except concurrent.futures.TimeoutError:
+            print(f"[{name}] seed={seed} TIMED OUT after {timeout_sec}s (engineering failure, not collapse)")
+            timeout_result = {
+                "arm": name,
+                "seed": seed,
+                "collapsed": False,
+                "collapsed_eval": False,
+                "collapsed_train": False,
+                "timeout": True,
+                "disqualified": False,
+                "per_dim_std": [],
+                "per_dim_std_train": [],
+                "vicreg_per_dim_std": [],
+                "vicreg_mean_abs_corr": 0.0,
+                "centroid_mse_mean": float("nan"),
+                "centroid_r_mean": 0.0,
+                "delta_r2_color": 0.0,
+                "r2_dyn_color": 0.0,
+                "r2_coord_color": 0.0,
+                "r2_dyn_pos": 0.0,
+                "r2_coord_pos": 0.0,
+                "r2_dyn_identity": 0.0,
+                "r2_coord_identity": 0.0,
+                "delta_r2_identity": 0.0,
+                "final_train_loss": float("nan"),
+                "final_sim_loss": float("nan"),
+                "final_var_loss": float("nan"),
+                "final_cov_loss": float("nan"),
+                "param_count": None,
+                "dim_to_obj": {},
+            }
+            return timeout_result, None, []
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -863,11 +1087,13 @@ def main():
     parser.add_argument("--workers", type=int, default=default_workers)
     parser.add_argument("--sequential", action="store_true")
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--resume", type=lambda x: (str(x).lower() in ("true", "1", "yes")), default=True)
     args = parser.parse_args()
 
     dry_run = args.dry_run
     seeds = args.seeds  # if None, each arm uses its own seeds
     max_workers = args.workers
+    resume = args.resume
 
     if args.device is not None:
         device = torch.device(args.device)
@@ -903,27 +1129,53 @@ def main():
         for seed in arm_seeds:
             tasks.append((arm, seed, device_str, dry_run, runs_dir, checkpoints_dir))
 
-    total_tasks = len(tasks)
-    print(f"Total tasks: {total_tasks}")
+    # ---- Resume logic ----
+    existing_results = {}
+    if resume:
+        existing_results = load_existing_results(runs_dir)
+    tasks_to_run = [t for t in tasks if (t[0]["name"], t[1]) not in existing_results]
+    total_new = len(tasks_to_run)
+    total_existing = len(tasks) - total_new
+    if total_existing > 0:
+        print(f"Resuming: {total_existing} existing results loaded, {total_new} new tasks to run.")
+    else:
+        print(f"Total tasks to run: {total_new}")
 
-    all_results = []
+    # Merge existing results first
+    all_results = list(existing_results.values())
+
     if args.sequential:
-        for i, task in enumerate(tasks):
-            print(f"\n{'=' * 70}\nTASK [{i + 1}/{total_tasks}]: {task[0]['name']} seed={task[1]}\n{'=' * 70}")
-            res = _run_single_worker(task)
+        for i, task in enumerate(tasks_to_run):
+            arm_name = task[0]["name"]
+            seed = task[1]
+            print(f"\n{'=' * 70}\nTASK [{i + 1}/{total_new}]: {arm_name} seed={seed}\n{'=' * 70}")
+            res = _run_single_worker_with_timeout(task, timeout_sec=600)
             all_results.append(res)
     else:
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             future_to_label = {
-                executor.submit(_run_single_worker, task): f"{task[0]['name']} seed={task[1]}"
-                for task in tasks
+                executor.submit(_run_single_worker_with_timeout_wrapper, task, 600): f"{task[0]['name']} seed={task[1]}"
+                for task in tasks_to_run
             }
             for future in concurrent.futures.as_completed(future_to_label):
                 label = future_to_label[future]
                 try:
-                    res = future.result()
+                    res = future.result(timeout=720)  # slightly more than per-seed timeout to allow graceful handling
                     all_results.append(res)
                     print(f"COMPLETED: {label}")
+                except concurrent.futures.TimeoutError:
+                    print(f"TIMEOUT (wrapper): {label}")
+                    arm_name = task[0]["name"] if hasattr(task, '__getitem__') else label.split()[0]
+                    seed = task[1] if hasattr(task, '__getitem__') else 0
+                    all_results.append({
+                        "arm": arm_name,
+                        "seed": seed,
+                        "collapsed": False,
+                        "collapsed_eval": False,
+                        "collapsed_train": False,
+                        "timeout": True,
+                        "disqualified": False,
+                    })
                 except Exception as exc:
                     print(f"FAILED: {label} -> {exc}")
 

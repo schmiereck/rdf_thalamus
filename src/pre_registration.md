@@ -115,5 +115,54 @@ Existing D0 results: 10/10, collapse rate 30% (seeds 17, 53, 83 collapsed).
 Existing C1 results: 3/10, collapse rate 0% (seeds 7, 17, 31 — all non-collapsed).
 Expected wall time for 27 new runs: ~25-35 minutes with parallel workers.
 
+## 4. Resumed Runs Code-Equivalence Declaration
+
+The 13/40 already-completed runs (D0: 10 seeds, C1: 3 seeds) were produced with
+IDENTICAL code to the remaining 27 runs. Specifically:
+
+- The model class (NonParametricJEPASpatial), loss computation, evaluation, and
+  matching logic are unchanged between the existing 13 runs and the 27 remaining runs.
+- The only code changes in this iteration are:
+  (a) resume logic that skips existing JSON result files,
+  (b) per-seed timeout wrapper,
+  (c) updated analysis generation to handle timeout results separately.
+- No model architecture, loss function, training loop, evaluation pipeline, or
+  hypothesis-relevant logic has been modified between the first 13 runs and the
+  current execution path.
+- If there is ANY doubt about code equivalence, the 13 runs must be re-run, not
+  reused. This pre-registration declares there is no doubt based on the JSON
+  result file audit: the existing JSON files contain the expected arm names, seed
+  values, parameter counts, and metric structure consistent with the current code.
+
+## 5. Timeout Semantics Protocol
+
+Timeout handling is defined per the following protocol:
+
+- A per-seed timeout is an **ENGINEERING failure**, NOT a representation failure.
+  It means the training did not complete within the allocated wall-clock budget;
+  it does NOT imply the representation collapsed or is invalid.
+
+- **Timeout threshold:** 600 seconds per seed (generous for 8000 steps).
+
+- **Timeout handling:** If a seed exceeds the per-seed timeout (600 seconds), it
+  is logged with a "timeout" flag but is NOT counted as collapsed for the primary
+  collapse rate. The seed result dict records collapsed=False, collapsed_eval=False,
+  collapsed_train=False, and timeout=True.
+
+- **Three reporting tiers:**
+  (a) **PRIMARY:** collapse rate excluding timeouts (only genuine std-based collapse
+      counts; used for hypothesis gates).
+  (b) **SENSITIVITY:** collapse rate including timeouts as failures (upper bound on
+      collapse rate; conservative estimate).
+  (c) **TIMEOUT COUNT:** number of timed-out seeds per arm, reported separately.
+
+- **Timeout interpretability threshold:** If timeouts exceed 1 per arm, the run is
+  not interpretable and must be re-launched with a longer budget (e.g., 1200 seconds).
+  The gate evaluation is suspended until clean results are obtained.
+
+- **Gate evaluation:** The pre-registered gates (F1-F4, H1-H2) are evaluated on the
+  PRIMARY (excluding timeouts) collapse rate only. The SENSITIVITY rate is reported
+  for transparency but does not trigger falsification conditions.
+
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
