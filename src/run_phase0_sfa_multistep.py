@@ -30,6 +30,7 @@ import random
 import argparse
 import collections
 import warnings
+import concurrent.futures
 
 import numpy as np
 import pandas as pd
@@ -989,10 +990,108 @@ def _sanitize_arm_name(name):
     return name.lower().replace(' ', '_').replace('(', '').replace(')', '').replace('+', '').replace('=', '_')
 
 
+def _flatten_result(res, runs_dir):
+    """Flatten a result dict and save per-run CSV."""
+    flat = {k: v for k, v in res.items() if k not in (
+        "gdasr_growth_points", "centroid_mse_per_object",
+        "centroid_r_per_object", "r2_per_dim", "dim_to_obj",
+        "tracking_delta_per_dim", "tracking_level_per_dim",
+        "sub_feature_r2_matrix",
+    )}
+    flat["gdasr_growth_point_count"] = len(res.get("gdasr_growth_points", []))
+    flat["centroid_mse_obj0"] = res.get("centroid_mse_per_object", [])[0] if len(res.get("centroid_mse_per_object", [])) > 0 else None
+    flat["centroid_mse_obj1"] = res.get("centroid_mse_per_object", [])[1] if len(res.get("centroid_mse_per_object", [])) > 1 else None
+    flat["centroid_mse_obj2"] = res.get("centroid_mse_per_object", [])[2] if len(res.get("centroid_mse_per_object", [])) > 2 else None
+    flat["centroid_r_obj0"] = res.get("centroid_r_per_object", [])[0] if len(res.get("centroid_r_per_object", [])) > 0 else None
+    flat["centroid_r_obj1"] = res.get("centroid_r_per_object", [])[1] if len(res.get("centroid_r_per_object", [])) > 1 else None
+    flat["centroid_r_obj2"] = res.get("centroid_r_per_object", [])[2] if len(res.get("centroid_r_per_object", [])) > 2 else None
+    flat["per_dim_std"] = str(res.get("per_dim_std", []))
+    flat["tracking_delta_per_dim"] = str(res.get("tracking_delta_per_dim", []))
+    flat["tracking_level_per_dim"] = str(res.get("tracking_level_per_dim", []))
+
+    r2pd = res.get("r2_per_dim", [])
+    dim_map = res.get("dim_to_obj", {})
+    for d_idx, probe_d in enumerate(r2pd):
+        flat[f"r2_dim{d_idx}_dyn_color"] = probe_d.get("dyn_color", None)
+        flat[f"r2_dim{d_idx}_coord_color"] = probe_d.get("coord_color", None)
+        flat[f"r2_dim{d_idx}_dyn_pos"] = probe_d.get("dyn_pos", None)
+        flat[f"r2_dim{d_idx}_coord_pos"] = probe_d.get("coord_pos", None)
+        flat[f"r2_dim{d_idx}_dyn_identity"] = probe_d.get("dyn_identity", None)
+        flat[f"r2_dim{d_idx}_coord_identity"] = probe_d.get("coord_identity", None)
+        flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
+    flat["dim_to_obj"] = json.dumps(dim_map, default=str)
+
+    cp_label = f"_cp{res['checkpoint_step']}" if res.get("checkpoint_step") else ""
+    safe_name = _sanitize_arm_name(res["arm"])
+    run_id = f"{safe_name}_seed{res['seed']}{cp_label}"
+    csv_path = os.path.join(runs_dir, f"{run_id}.csv")
+    json_path = os.path.join(runs_dir, f"{run_id}.json")
+
+    df_row = pd.DataFrame([flat])
+    df_row.to_csv(csv_path, index=False)
+
+    with open(json_path, "w") as f:
+        json.dump(res, f, indent=2, default=str)
+
+    return csv_path
+
+
+def _run_single_worker(args_tuple):
+    """
+    Worker function for ProcessPoolExecutor.
+
+    Each worker:
+      1. Sets torch.set_num_threads(1) to prevent thread oversubscription.
+      2. Runs run_single(arm, seed, device, dry_run).
+      3. Saves per-run CSV, JSON, checkpoint, and log files.
+      4. Returns collected result dicts.
+    """
+    arm, seed, device_str, dry_run, runs_dir, checkpoints_dir = args_tuple
+    device = torch.device(device_str)
+
+    # Prevent PyTorch thread oversubscription inside each worker
+    torch.set_num_threads(1)
+
+    name = arm["name"]
+    print(f"[{name}] seed={seed} -> starting on {device} (dry_run={dry_run})")
+
+    results_list, model, logs = run_single(arm, seed, device, dry_run=dry_run)
+
+    # Return value containers
+    result_entries = []  # list of (res_dict, csv_path)
+
+    for res in results_list:
+        csv_path = _flatten_result(res, runs_dir)
+        result_entries.append((res, csv_path))
+        name = res["arm"]
+        safe_name = _sanitize_arm_name(name)
+        cp_label = f"_cp{res['checkpoint_step']}" if res.get("checkpoint_step") else ""
+        run_id = f"{safe_name}_seed{res['seed']}{cp_label}"
+        json_path = os.path.join(runs_dir, f"{run_id}.json")
+        print(f"  -> Saved {run_id}  ({csv_path}, {json_path})")
+
+    # Save model checkpoint
+    safe_name = _sanitize_arm_name(arm["name"])
+    ckpt_path = os.path.join(checkpoints_dir, f"{safe_name}_seed{seed}.pt")
+    torch.save(model.state_dict(), ckpt_path)
+    print(f"  -> Saved checkpoint {ckpt_path}")
+
+    # Save training logs
+    logs_path = os.path.join(runs_dir, f"{safe_name}_seed{seed}_logs.csv")
+    logs_df = pd.DataFrame(logs)
+    logs_df.to_csv(logs_path, index=False)
+    print(f"  -> Saved training logs {logs_path}")
+
+    return result_entries
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
+    cpu_count = os.cpu_count() or 2
+    default_workers = min(cpu_count - 1, 8)
+
     parser = argparse.ArgumentParser(
         description="Phase 0 Multi-Step SFA Runner"
     )
@@ -1008,17 +1107,44 @@ def main():
         default=None,
         help="Override seed list (default: [42, 123, 456, 789, 999]).",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=default_workers,
+        help=f"Number of parallel workers (default: min(cpu_count-1, 8)={default_workers}).",
+    )
+    parser.add_argument(
+        "--sequential",
+        action="store_true",
+        help="Run sequentially (no parallelism). Useful for debugging.",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Force device: 'cpu' or 'cuda'. Default: auto-detect.",
+    )
     args = parser.parse_args()
 
     dry_run = args.dry_run
     seeds = args.seeds if args.seeds is not None else SEEDS
+    max_workers = args.workers
+    sequential = args.sequential
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device is not None:
+        device = torch.device(args.device)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device_str = str(device)
+
+    print(f"CPU count: {cpu_count}")
     print(f"Using device: {device}")
     print(f"CUDA available: {torch.cuda.is_available()}")
     print(f"Dry-run mode: {dry_run}")
     print(f"Seeds: {seeds}")
     print(f"Arms: {[a['name'] for a in ARMS]}")
+    if not sequential:
+        print(f"Parallel workers: {max_workers}")
     print()
 
     results_dir = "archive/iter_024/results"
@@ -1029,79 +1155,65 @@ def main():
     os.makedirs(figs_dir, exist_ok=True)
     os.makedirs(checkpoints_dir, exist_ok=True)
 
-    all_results = []
-    checkpoint_results = []
-
+    # ------------------------------------------------------------------ #
+    # Build flat task list: (arm, seed, device, dry_run, runs_dir, checkpoints_dir)
+    # ------------------------------------------------------------------ #
+    tasks = []
+    task_labels = []
     for arm in ARMS:
         name = arm["name"]
         arm_seeds = seeds if name != "F (Diagnostic sim=0 k=50 d_max=8)" else [42]
-
-        print(f"{'='*70}")
-        print(f"ARM: {name}")
-        print(f"{'='*70}")
         for seed in arm_seeds:
-            print(f"\n--- {name}, seed={seed} ---")
-            results_list, model, logs = run_single(arm, seed, device, dry_run=dry_run)
+            tasks.append((arm, seed, device_str, dry_run, runs_dir, checkpoints_dir))
+            task_labels.append(f"{name} seed={seed}")
 
-            for res in results_list:
-                all_results.append(res)
-                if res["checkpoint_step"] == 2000:
-                    checkpoint_results.append(res)
+    total_tasks = len(tasks)
+    print(f"Total tasks to run: {total_tasks}")
+    for i, label in enumerate(task_labels, 1):
+        print(f"  [{i:2d}] {label}")
+    print()
 
-                # Save per-run details
-                cp_label = f"_cp{res['checkpoint_step']}" if res.get("checkpoint_step") else ""
-                safe_name = _sanitize_arm_name(name)
-                run_id = f"{safe_name}_seed{seed}{cp_label}"
-                csv_path = os.path.join(runs_dir, f"{run_id}.csv")
-                json_path = os.path.join(runs_dir, f"{run_id}.json")
+    all_result_entries = []  # list of (res_dict, csv_path) tuples from all workers
 
-                flat = {k: v for k, v in res.items() if k not in (
-                    "gdasr_growth_points", "centroid_mse_per_object",
-                    "centroid_r_per_object", "r2_per_dim", "dim_to_obj",
-                    "tracking_delta_per_dim", "tracking_level_per_dim",
-                    "sub_feature_r2_matrix",
-                )}
-                flat["gdasr_growth_point_count"] = len(res.get("gdasr_growth_points", []))
-                flat["centroid_mse_obj0"] = res.get("centroid_mse_per_object", [])[0] if len(res.get("centroid_mse_per_object", [])) > 0 else None
-                flat["centroid_mse_obj1"] = res.get("centroid_mse_per_object", [])[1] if len(res.get("centroid_mse_per_object", [])) > 1 else None
-                flat["centroid_mse_obj2"] = res.get("centroid_mse_per_object", [])[2] if len(res.get("centroid_mse_per_object", [])) > 2 else None
-                flat["centroid_r_obj0"] = res.get("centroid_r_per_object", [])[0] if len(res.get("centroid_r_per_object", [])) > 0 else None
-                flat["centroid_r_obj1"] = res.get("centroid_r_per_object", [])[1] if len(res.get("centroid_r_per_object", [])) > 1 else None
-                flat["centroid_r_obj2"] = res.get("centroid_r_per_object", [])[2] if len(res.get("centroid_r_per_object", [])) > 2 else None
-                flat["per_dim_std"] = str(res.get("per_dim_std", []))
-                flat["tracking_delta_per_dim"] = str(res.get("tracking_delta_per_dim", []))
-                flat["tracking_level_per_dim"] = str(res.get("tracking_level_per_dim", []))
+    if sequential:
+        # Sequential execution (for debugging)
+        for i, task in enumerate(tasks):
+            arm, seed = task[0], task[1]
+            print(f"\n{'='*70}")
+            print(f"TASK [{i+1}/{total_tasks}]: {arm['name']} seed={seed}")
+            print(f"{'='*70}")
+            entries = _run_single_worker(task)
+            all_result_entries.extend(entries)
+    else:
+        # Parallel execution via ProcessPoolExecutor
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_label = {}
+            for i, task in enumerate(tasks):
+                future = executor.submit(_run_single_worker, task)
+                future_to_label[future] = task_labels[i]
 
-                r2pd = res.get("r2_per_dim", [])
-                dim_map = res.get("dim_to_obj", {})
-                for d_idx, probe_d in enumerate(r2pd):
-                    flat[f"r2_dim{d_idx}_dyn_color"] = probe_d.get("dyn_color", None)
-                    flat[f"r2_dim{d_idx}_coord_color"] = probe_d.get("coord_color", None)
-                    flat[f"r2_dim{d_idx}_dyn_pos"] = probe_d.get("dyn_pos", None)
-                    flat[f"r2_dim{d_idx}_coord_pos"] = probe_d.get("coord_pos", None)
-                    flat[f"r2_dim{d_idx}_dyn_identity"] = probe_d.get("dyn_identity", None)
-                    flat[f"r2_dim{d_idx}_coord_identity"] = probe_d.get("coord_identity", None)
-                    flat[f"dim{d_idx}_matched_obj"] = dim_map.get(d_idx, None)
-                flat["dim_to_obj"] = json.dumps(dim_map, default=str)
+            # Collect results as they complete
+            done_count = 0
+            for future in concurrent.futures.as_completed(future_to_label):
+                label = future_to_label[future]
+                done_count += 1
+                try:
+                    entries = future.result()
+                    all_result_entries.extend(entries)
+                    print(f"\n[{done_count}/{total_tasks}] COMPLETED: {label}")
+                except Exception as exc:
+                    print(f"\n[{done_count}/{total_tasks}] FAILED: {label} -> {exc}")
 
-                df_row = pd.DataFrame([flat])
-                df_row.to_csv(csv_path, index=False)
-
-                with open(json_path, "w") as f:
-                    json.dump(res, f, indent=2, default=str)
-                print(f"  -> Saved {csv_path}")
-
-            # Save model checkpoint at final step
-            safe_name = _sanitize_arm_name(name)
-            ckpt_path = os.path.join(checkpoints_dir, f"{safe_name}_seed{seed}.pt")
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"  -> Saved checkpoint {ckpt_path}")
-
-            # Save training logs
-            logs_path = os.path.join(runs_dir, f"{safe_name}_seed{seed}_logs.csv")
-            logs_df = pd.DataFrame(logs)
-            logs_df.to_csv(logs_path, index=False)
-            print(f"  -> Saved training logs {logs_path}")
+    # ------------------------------------------------------------------ #
+    # Flatten results
+    # ------------------------------------------------------------------ #
+    all_results = []
+    checkpoint_results = []
+    for res, _csv_path in all_result_entries:
+        all_results.append(res)
+        if res["checkpoint_step"] == 2000:
+            checkpoint_results.append(res)
 
     # ------------------------------------------------------------------ #
     # Compile aggregate results (FINAL step=5000 only)
