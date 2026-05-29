@@ -1175,10 +1175,11 @@ class NonParametricJEPASpatial(nn.Module):
         labels_expanded = labels_flat.unsqueeze(0) == labels_flat.unsqueeze(1)  # (N_total, N_total)
         positive_mask = labels_expanded & ~mask_self
 
-        # Numerical stability
-        sim_matrix = sim_matrix - sim_matrix.max(dim=1, keepdim=True)[0].detach()
+        # Numerical stability (avoid in-place modification of sim_matrix)
+        sim_max = sim_matrix.max(dim=1, keepdim=True)[0].detach()
+        sim_shifted = sim_matrix - sim_max
 
-        exp_sim = torch.exp(sim_matrix)
+        exp_sim = torch.exp(sim_shifted)
         exp_sim = exp_sim.masked_fill(mask_self, 0.0)
 
         log_prob = torch.log(exp_sim.sum(dim=1) + 1e-8)

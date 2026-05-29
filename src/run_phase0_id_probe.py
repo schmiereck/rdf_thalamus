@@ -801,6 +801,14 @@ def run_single(arm_config, seed, device, dry_run=False):
     supervised_weight = arm_config.get("supervised_weight", 0.0)
     contrastive_weight = arm_config.get("contrastive_weight", 0.0)
 
+    # Ramp supervised weight 0.1 -> target over first 500 steps to prevent collapse
+    def _ramped_supervised_weight(step):
+        if supervised_weight <= 0.0:
+            return 0.0
+        if step <= 500:
+            return 0.1 + (supervised_weight - 0.1) * (step / 500.0)
+        return supervised_weight
+
     set_seed(seed)
 
     total_steps = 5 if dry_run else 5000
@@ -899,17 +907,18 @@ def run_single(arm_config, seed, device, dry_run=False):
             "contrastive_loss_sorted": 0.0,
             "contrastive_loss_hungarian": 0.0,
             "mismatch_rate": 0.0,
-            "supervised_weight": supervised_weight,
+            "supervised_weight": _ramped_supervised_weight(step),
             "contrastive_weight": contrastive_weight,
         }
 
         # Additional supervised/contrastive losses
-        if supervised_weight > 0.0:
+        current_supervised_weight = _ramped_supervised_weight(step)
+        if current_supervised_weight > 0.0:
             sup_loss_sorted, _ = model.compute_supervised_color_loss(
                 z_target_coord, z_target_dyn, pos_t, colors_t,
                 d_t=model.d_t, N=3, matching_mode="sorted"
             )
-            total_loss = total_loss + supervised_weight * sup_loss_sorted
+            total_loss = total_loss + current_supervised_weight * sup_loss_sorted
 
             with torch.no_grad():
                 sup_loss_hungarian, _ = model.compute_supervised_color_loss(
@@ -948,7 +957,7 @@ def run_single(arm_config, seed, device, dry_run=False):
 
         if step % 1000 == 0 or step == total_steps:
             extra = ""
-            if supervised_weight > 0.0:
+            if current_supervised_weight > 0.0:
                 extra = f"  sup_s={log_entry['supervised_loss_sorted']:.4f}  sup_h={log_entry['supervised_loss_hungarian']:.4f}  mm={log_entry['mismatch_rate']:.3f}"
             elif contrastive_weight > 0.0:
                 extra = f"  cont_s={log_entry['contrastive_loss_sorted']:.4f}  cont_h={log_entry['contrastive_loss_hungarian']:.4f}  mm={log_entry['mismatch_rate']:.3f}"
@@ -1371,24 +1380,29 @@ def _generate_analysis(df_all, noise_floor_results, threshold, results_dir):
                 return "N/A", "N/A"
             return float(np.mean(vals)), float(np.std(vals))
 
+        def _fmt(val, fmt=".4f"):
+            if isinstance(val, str):
+                return val
+            return f"{val:{fmt}}"
+
         mean_collapse, std_collapse = _agg("has_collapsed")
-        lines.append(f"- Collapse rate: {mean_collapse:.2f} (std={std_collapse:.2f})\n")
+        lines.append(f"- Collapse rate: {_fmt(mean_collapse, '.2f')} (std={_fmt(std_collapse, '.2f')})\n")
 
         mean_drc, std_drc = _agg("delta_r2_color")
-        lines.append(f"- delta_R2_color (greedy): {mean_drc:.4f} +/- {std_drc:.4f}\n")
+        lines.append(f"- delta_R2_color (greedy): {_fmt(mean_drc)} +/- {_fmt(std_drc)}\n")
 
         if "delta_r2_color_sorted" in df_arm.columns:
             mean_drc_s, std_drc_s = _agg("delta_r2_color_sorted")
-            lines.append(f"- delta_R2_color (sorted): {mean_drc_s:.4f} +/- {std_drc_s:.4f}\n")
+            lines.append(f"- delta_R2_color (sorted): {_fmt(mean_drc_s)} +/- {_fmt(std_drc_s)}\n")
         if "delta_r2_color_hungarian" in df_arm.columns:
             mean_drc_h, std_drc_h = _agg("delta_r2_color_hungarian")
-            lines.append(f"- delta_R2_color (Hungarian): {mean_drc_h:.4f} +/- {std_drc_h:.4f}\n")
+            lines.append(f"- delta_R2_color (Hungarian): {_fmt(mean_drc_h)} +/- {_fmt(std_drc_h)}\n")
         if "eval_mismatch_rate" in df_arm.columns:
             mean_mm, std_mm = _agg("eval_mismatch_rate")
-            lines.append(f"- Eval mismatch rate: {mean_mm:.3f} +/- {std_mm:.3f}\n")
+            lines.append(f"- Eval mismatch rate: {_fmt(mean_mm, '.3f')} +/- {_fmt(std_mm, '.3f')}\n")
 
-        lines.append(f"- Centroid MSE: {_agg('centroid_mse_mean')[0]:.2f}\n")
-        lines.append(f"- Tracking level corr: {_agg('tracking_level_corr')[0]:.3f}\n")
+        lines.append(f"- Centroid MSE: {_fmt(_agg('centroid_mse_mean')[0], '.2f')}\n")
+        lines.append(f"- Tracking level corr: {_fmt(_agg('tracking_level_corr')[0], '.3f')}\n")
         lines.append("\n")
 
     # Falsification checks
@@ -1472,17 +1486,17 @@ def _generate_analysis(df_all, noise_floor_results, threshold, results_dir):
         h2_pass = len(non_collapsed_c) > 0 and non_collapsed_c["delta_r2_color"].mean() >= threshold and df_c["has_collapsed"].mean() <= 0.2
 
     if h1_pass and h2_pass:
-        lines.append("|   ✓   |   ✓   | H1+H2 confirmed. Continue developing ID-contrastive. |\n")
+        lines.append("|  YES  |  YES  | H1+H2 confirmed. Continue developing ID-contrastive. |\n")
     elif h1_pass and not h2_pass:
-        lines.append("|   ✓   |   ✗   | H1 confirmed, H2 refuted. Try direct supervised objective. |\n")
+        lines.append("|  YES  |  NO   | H1 confirmed, H2 refuted. Try direct supervised objective. |\n")
     elif not h1_pass and h2_pass:
-        lines.append("|   ✗   |   ✓   | Unexpected: supervised < contrastive. Debug matching/contrastive impl. |\n")
+        lines.append("|  NO   |  YES  | Unexpected: supervised < contrastive. Debug matching/contrastive impl. |\n")
     else:
-        lines.append("|   ✗   |   ✗   | Architecture-level bottleneck suspected (conditional on matching scheme). Next: separate z_dyn encoder. |\n")
+        lines.append("|  NO   |  NO   | Architecture-level bottleneck suspected (conditional on matching scheme). Next: separate z_dyn encoder. |\n")
     lines.append("\n")
 
     analysis_path = os.path.join(results_dir, "analysis.md")
-    with open(analysis_path, "w") as f:
+    with open(analysis_path, "w", encoding="utf-8") as f:
         f.write("".join(lines))
     print(f"Saved analysis to {analysis_path}")
 
