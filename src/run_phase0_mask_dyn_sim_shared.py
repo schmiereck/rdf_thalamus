@@ -683,15 +683,17 @@ def _run_single_worker_with_timeout(args_tuple, timeout_sec=600):
     """
     Wrapper for _run_single_worker that adds per-seed timeout.
     If timeout occurs, return a timeout result dict.
+    NOTE: This function must be called directly (not via nested ProcessPoolExecutor)
+    to avoid pickling issues on Windows.
     """
     arm, seed, device_str, dry_run, runs_dir, checkpoints_dir = args_tuple
     name = arm["name"]
     print(f"[{name}] seed={seed} -> starting on {device_str} (dry_run={dry_run}, timeout={timeout_sec}s)")
-    
+
     device = torch.device(device_str)
     torch.set_num_threads(1)
 
-    def _inner():
+    try:
         eval_res, model, logs = run_single(arm, seed, device, dry_run=dry_run)
         csv_path = _flatten_result(eval_res, runs_dir)
         safe_name = _sanitize_arm_name(eval_res["arm"])
@@ -700,48 +702,11 @@ def _run_single_worker_with_timeout(args_tuple, timeout_sec=600):
         torch.save(model.state_dict(), ckpt_path)
         logs_path = os.path.join(runs_dir, f"{safe_name}_seed{seed}_logs.csv")
         pd.DataFrame(logs).to_csv(logs_path, index=False)
+        eval_res["timeout"] = False
         return eval_res
-
-    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_inner)
-        try:
-            eval_res = future.result(timeout=timeout_sec)
-            eval_res["timeout"] = False
-            return eval_res
-        except concurrent.futures.TimeoutError:
-            print(f"[{name}] seed={seed} TIMED OUT after {timeout_sec}s (engineering failure, not collapse)")
-            timeout_result = {
-                "arm": name,
-                "seed": seed,
-                "collapsed": False,
-                "collapsed_eval": False,
-                "collapsed_train": False,
-                "timeout": True,
-                "disqualified": False,
-                "per_dim_std": [],
-                "per_dim_std_train": [],
-                "vicreg_per_dim_std": [],
-                "vicreg_mean_abs_corr": 0.0,
-                "centroid_mse_mean": float("nan"),
-                "centroid_r_mean": 0.0,
-                "delta_r2_color": 0.0,
-                "r2_dyn_color": 0.0,
-                "r2_coord_color": 0.0,
-                "r2_dyn_pos": 0.0,
-                "r2_coord_pos": 0.0,
-                "r2_dyn_identity": 0.0,
-                "r2_coord_identity": 0.0,
-                "delta_r2_identity": 0.0,
-                "final_train_loss": float("nan"),
-                "final_sim_loss": float("nan"),
-                "final_var_loss": float("nan"),
-                "final_cov_loss": float("nan"),
-                "param_count": None,
-                "dim_to_obj": {},
-            }
-            # Still write the timeout result to disk
-            csv_path = _flatten_result(timeout_result, runs_dir)
-            return timeout_result
+    except Exception as exc:
+        print(f"[{name}] seed={seed} FAILED with exception: {exc}")
+        raise
 
 
 def _run_single_worker_with_timeout_wrapper(args_tuple, timeout_sec=600):
