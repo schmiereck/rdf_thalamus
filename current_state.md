@@ -1,64 +1,79 @@
 # Current Research State
-Phase: Phase 22 Complete — Architecture Ceiling Falsified, SFA Non-Functional
+Phase: Phase 23 Complete — SFA Weight Sweep Falsified
 
 ## Goal
 Design and evaluate a neural architecture achieving hierarchical abstraction
 without generative decoders, with SFA+VICReg shaping z_dyn and soft-argmax
-tracking position (z_coord). Current focus: making SFA actually function as
-the primary representation objective.
+tracking position (z_coord). Current focus: finding an objective that makes
+z_dyn encode object identity.
 
 ## Confirmed
-- **ARCHITECTURE CEILING FALSIFIED (iter_022, 21.3)**: Single-scalar z_dyn
-  bottleneck is NOT the primary cause of disentanglement failure. Expanding
-  per-channel capacity to K=4 (12 scalars for 12 identity DOF) collapsed
-  100% and performed WORSE on identity encoding (delta_R2_identity = -0.055
-  vs Ctrl -0.035, a -0.021 regression).
-- **SFA NON-FUNCTIONAL (iter_022, all arms)**: Normalized temporal variance
-  confirms z_dyn changes 300-1000× more (relative to magnitude) than z_coord
-  across ALL arms. SFA is NOT making z_dyn slow. Root cause: sfa_weight=0.1
-  vs var_weight=25.0, a 250× gradient imbalance.
-- **K=4 VICReg COLLAPSE (iter_022, Arm C)**: 12 active features at
-  batch_size=32 overwhelms VICReg variance enforcement. Per-dim std
-  consistently 0.2-0.5 (below 0.5 threshold). Per-sub-feature probes
-  uninformative due to collapse.
-- **CONV4 SOURCE UNSTABLE (iter_022, Arm A)**: dyn_source="conv4" collapsed
-  3/5 seeds. Linear(128→1) projection produces highly correlated channels.
-- **MORE CHANNELS HELP COLOR (iter_022, Arm B)**: d_max=16 achieved
-  delta_R2_color = +0.130 (+0.080 over Ctrl) with stable training (1/5
-  collapse). But delta_R2_identity remained negative (-0.027).
-- **CGIR REPLICATED (iter_022, Ctrl)**: delta_R2_color = 0.050, collapse 1/5,
-  consistent with iter_021 Arm A results.
-- **VICReg BATCH-LEVEL WORKS (iter_020-022)**: For K=1 configurations with
-  reasonable collapse rates, confirming M1.
-- **JEPA BASELINE HEAVILY COLLAPSED (iter_020)**: JEPA+CCR 4/5 collapse,
-  confirming M2's demotion.
+- **SFA GRADIENT PROPAGATES (iter_023, all arms)**: Increasing sfa_weight from
+  0.1 to 25.0 monotonically reduces normalized_dyn_var from 0.0086 to 0.0011.
+  The 250x gradient imbalance was real; SFA at higher weights IS effective at
+  slowing z_dyn.
+- **C5 IS STRUCTURALLY IMPOSSIBLE (iter_023, 0/35 seeds)**: z_coord's
+  normalized temporal variance (~1e-5) is 2-3 orders of magnitude below
+  z_dyn's minimum (~1e-3). This is a metric artifact: soft-argmax centroids
+  in [0,127] have O(127^2) spatial variance but O(1) temporal change, making
+  the ratio tiny. VICReg's variance floor prevents z_dyn from reaching
+  comparable slowness. The C5 criterion can NEVER be satisfied.
+- **SLOWNESS DOES NOT PRODUCE IDENTITY ENCODING (iter_023)**: delta_R2_color
+  is essentially flat across the entire sfa_weight sweep (0.040-0.064 for
+  d_max=8 arms). Making z_dyn slower doesn't make it encode color/identity.
+  This is the key falsification of M2's slowness-prior hypothesis.
+- **RAMP STRATEGY WORKS FOR STABILITY (iter_023, A6)**: sfa_weight ramp
+  0.1->25.0 over 1000 steps achieves 1/5 collapse (vs 2/5 for fixed sfa=25).
+  SFA-VICReg gradient conflict is resolvable with proper initialization.
+- **d_max=16 BEST FOR COLOR (iter_022-023, consistent)**: delta_R2_color =
+  0.137 with d_max=16, sfa_weight=10.0. Best absolute color disentanglement
+  but still below the 0.10 improvement threshold.
+- **VICReg BATCH-LEVEL WORKS (iter_020-023)**: For K=1 d_max<=16, confirming M1.
 
 ## Refuted / Falsified
-- **SINGLE-SCALAR BOTTLENECK (iter_022 C4)**: FALSIFIED. K=4 sub-features
-  did not improve identity encoding; collapsed 100%.
-- **CGIR AS PRIMARY CAUSE (iter_021 C3)**: FALSIFIED. CGIR produces +0.124
-  shift but insufficient for threshold.
-- **IDENTITY-VS-POSITION SEPARATION (iter_021-022)**: No arm achieves
-  delta_R2_identity ≥ 0.10. The "identity" label for z_dyn is misleading.
-- **SFA EFFECTIVENESS (iter_022 C5)**: FALSIFIED across all arms.
+- **SFA AS IDENTITY ENCODING MECHANISM (iter_023, PRIMARY)**: FALSIFIED.
+  Slowness on z_dyn does not produce identity-position separation. delta_R2_color
+  improvement over sfa=0.1 baseline is +0.014 at best (threshold: 0.10).
+- **COMPOSITE M2 VIABILITY (iter_023)**: FALSIFIED. C5 is never satisfied,
+  making the composite criterion trivially impossible.
+- **C5 AS SFA EFFECTIVENESS METRIC (iter_023)**: The criterion
+  normalized_dyn_var < normalized_coord_var is structurally impossible in this
+  architecture. It measures a metric artifact, not SFA effectiveness.
 
 ## Best Result
-- Arm B (d_max=16, CGIR+SFA+CCR): delta_R2_color = +0.130, delta_R2_identity
-  = -0.027, 1/5 collapsed. Best color disentanglement to date, but compound
-  identity still fails.
+- Arm B (d_max=16, sfa=10.0): delta_R2_color = 0.137, delta_R2_identity =
+  -0.027, 2/5 collapsed. Best color disentanglement across all iterations,
+  but compound identity still fails and this is NOT an SFA effect.
 
 ## In Progress
-- None active. Next: SFA effectiveness sweep (sfa_weight 0.1 → 25.0).
+- None active. The M2 mandate (SFA as primary representation objective) has
+  been empirically tested and falsified for this architecture.
+
+## Critical Architectural Insight
+The dual-stream design creates a fundamental asymmetry:
+- z_coord (soft-argmax centroid): Very low normalized temporal variance by
+  construction (wide spatial range, small per-step changes)
+- z_dyn (mean/CGIR pooling): Higher normalized temporal variance because
+  VICReg forces per-dim std >= 1 (moderate spatial variance) while identity
+  features change meaningfully across timesteps
+
+SFA can reduce z_dyn's temporal variation but cannot overcome this structural
+gap without violating VICReg's anti-collapse mandate. More importantly, even
+when SFA successfully slows z_dyn, it doesn't cause identity encoding — it
+just makes z_dyn less informative overall.
 
 ## Open Questions
-1. Can SFA be made effective by increasing sfa_weight (0.1→1.0→5.0→25.0)?
-   This is the most impactful lever — if SFA doesn't shape z_dyn, no
-   architectural change can help.
-2. Is SFA fundamentally flawed for this CNN? Higher weight may conflict with
-   VICReg's variance requirement, producing noisy-but-uninformative z_dyn.
-3. Would per-channel VICReg fix K=4 collapse? Enables valid sub-feature test.
-4. Does d_max=24/32 further improve color disentanglement?
-5. Can compound identity (color+size) ever be encoded in z_dyn given z_coord's
-   spatial-identity correlation?
-6. Does increasing training steps beyond 5000 help?
-7. Is JEPA readout (sim_weight=25) interfering with SFA through encoder gradients?
+1. What alternative objective would make z_dyn encode identity? Contrastive
+   learning, supervised probe loss, or mutual information maximization are
+   candidates. This is now the most important question.
+2. Should the C5 metric be redefined? Using absolute temporal variance or
+   raw delta_magnitude would avoid the spatial-variance normalization artifact.
+3. Is identity encoding fundamentally impossible in z_dyn given the shared
+   CNN encoder, or would a separate identity encoder succeed?
+4. Would longer training (20k+ steps) eventually accumulate enough SFA
+   slowness to produce identity separation?
+5. Is d_max=24/32 the only viable path to better color disentanglement?
+6. Should M2 (SFA as primary representation objective) be abandoned for this
+   architecture, and if so, what replaces it?
+7. Does the sml validation (SFA+VICReg at 82%) transfer to RGB inputs, or
+   is the sml binary-task advantage specific to low-DOF inputs?

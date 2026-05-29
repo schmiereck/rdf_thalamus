@@ -866,3 +866,71 @@ features at batc
 
 **Notes:** Architecture ceiling hypothesis falsified. SFA not effective in any arm. K=4 collapses 100%.
 
+
+---
+```yaml
+cached_tokens: 626820
+cost_usd: 1.58059
+hypothesis: 'phase-23: SFA weight sweep falsified — SFA gradient propagates but slowness
+  does not produce identity encoding; C5 is structurally impossible due to z_coord
+  metric artifact'
+input_tokens: 3004893
+iter: 23
+metrics:
+  a1_baseline_delta_r2_color: 0.05
+  a1_collapse_rate: 1/5
+  a1_normalized_coord_var: 1.74e-05
+  a1_normalized_dyn_var: 0.00856
+  a2_collapse_rate: 2/5
+  a2_normalized_dyn_var: 0.00521
+  a2_sfa1_delta_r2_color: 0.048
+  a3_collapse_rate: 2/5
+  a3_normalized_dyn_var: 0.00433
+  a3_sfa5_delta_r2_color: 0.051
+  a4_collapse_rate: 3/5
+  a4_normalized_dyn_var: 0.00309
+  a4_sfa10_delta_r2_color: 0.06
+  a5_collapse_rate: 2/5
+  a5_normalized_dyn_var: 0.00149
+  a5_sfa25_delta_r2_color: 0.064
+  a6_collapse_rate: 1/5
+  a6_normalized_dyn_var: 0.00112
+  a6_ramp_delta_r2_color: 0.04
+  b_d16_collapse_rate: 2/5
+  b_d16_delta_r2_color: 0.137
+  b_d16_normalized_dyn_var: 0.00372
+  best_delta_r2_diff_over_a1: 0.014
+  c5_pass_rate_all_arms: 0.0
+  composite_m2_pass: false
+  primary_pass: false
+  tertiary_triggered: false
+  total_runs: 35
+  training_steps_per_run: 5000
+output_tokens: 58521
+status: ok
+```
+
+## iter_023: phase-23: SFA weight sweep falsified — SFA gradient propagates but slowness does not produce identity encoding; C5 is structurally impossible due to z_coord metric artifact
+
+**Analysis:** The SFA weight sweep tested the hypothesis that increasing sfa_weight from 0.1
+to parity with var_weight (25.0) would activate SFA, cause z_dyn to become
+slower than z_coord (C5), and produce identity-position separation (delta_R2_color
+>= 0.10). Three key findings emerged:
+
+1. SFA IS FUNCTIONAL: Normalized temporal variance of z_dyn drops monotonically
+   from 0.0086 (sfa=0.1) to 0.0011 (sfa=25 r
+
+**Status:** ok
+
+**Metrics:** `{'a1_baseline_delta_r2_color': 0.05, 'a1_normalized_dyn_var': 0.00856, 'a1_normalized_coord_var': 1.74e-05, 'a1_collapse_rate': '1/5', 'a2_sfa1_delta_r2_color': 0.048, 'a2_normalized_dyn_var': 0.00521, 'a2_collapse_rate': '2/5', 'a3_sfa5_delta_r2_color': 0.051, 'a3_normalized_dyn_var': 0.00433, 'a3_collapse_rate': '2/5', 'a4_sfa10_delta_r2_color': 0.06, 'a4_normalized_dyn_var': 0.00309, 'a4_collapse_rate': '3/5', 'a5_sfa25_delta_r2_color': 0.064, 'a5_normalized_dyn_var': 0.00149, 'a5_collapse_rate': '2/5', 'a6_ramp_delta_r2_color': 0.04, 'a6_normalized_dyn_var': 0.00112, 'a6_collapse_rate': '1/5', 'b_d16_delta_r2_color': 0.137, 'b_d16_normalized_dyn_var': 0.00372, 'b_d16_collapse_rate': '2/5', 'best_delta_r2_diff_over_a1': 0.014, 'c5_pass_rate_all_arms': 0.0, 'primary_pass': False, 'composite_m2_pass': False, 'tertiary_triggered': False, 'total_runs': 35, 'training_steps_per_run': 5000}`
+
+**Experimenter view:** The SFA weight sweep ran 7 arms x 5 seeds x 5000 steps across sfa_weight
+values [0.1, 1.0, 5.0, 10.0, 25.0 fixed, 25.0 ramp, and d_max=16 at sfa=10].
+
+KEY FINDING: SFA IS working — normalized_dyn_var decreases monotonically from
+0.0086 (sfa=0.1) to 0.0011 (sfa=25 ramp), confirming the SFA gradient
+propagates and shapes z_dyn temporal dynamics. This falsifies the hypothesis
+that sfa_weight=0.1 simp
+
+**Notes:** Hypothesis falsified on primary criterion. C5 is structurally impossible; SFA reduces z_dyn variance but doesn't produce identity encoding.
+
