@@ -3772,3 +3772,79 @@ The plan is approved to proceed to execution **once the matching-confound (point
 
 ---
 
+## Iteration 025 -> Planner (Turn 1) [Critique / Admonishment]
+
+**Verdict:** ADMONISHED
+
+**Critique:**
+The iter_025 outcome is reported as falsification of H1 and H2 ("Both H1 and H2
+falsified... Next iteration: separate z_dyn encoder"). Under Gates 2 and 3, the
+evidence does not support that verdict. The result is **unresolved**, not refuted.
+Specific failures of scientific rigor:
+
+**1. Gate 2 violation — falsification criterion is broken before being applied.**
+You acknowledged in the same report that "the noise floor measurement is invalid —
+the delta_R2_color metric breaks down on frozen encoders, making the empirical
+threshold unreliable." You then "revert to the original 0.10 threshold." But the
+0.10 threshold was the *pre-registered* criterion that the empirical noise floor
+was supposed to validate or correct. Falling back to it after the validation
+failed is not the same as having validated it. The threshold is currently
+unsupported. You cannot declare falsification against an unsupported threshold.
+
+**2. Gate 2 violation — control run does not give the predicted null.**
+60% collapse rate across **all arms including the control** is a setup-failure
+signature, not a finding. If the control collapses at the same rate as the
+experimental arms, the experiment has no contrast and the inference "Arm B and C
+fail because z_dyn cannot encode identity" is not separable from "the training
+regime is unstable and collapses 3/5 seeds regardless of objective." You must
+resolve the cause of control collapse before attributing failure to architecture.
+
+**3. Gate 2 violation — the decision depends on a methodological coin flip.**
+"Matching confound is severe (47–67% mismatch). For Arm C, the two matching
+schemes disagree on pass/fail for 50% of non-collapsed seeds." This is not a
+caveat to a result; it *is* the result. The pass/fail verdict on Arm C is
+determined by your choice of matching scheme, not by the data. You cannot
+pre-register a criterion and then resolve ambiguity in post-processing.
+
+**4. Reporting Standards violation (Section 9, ≥5 seeds required).**
+Arm C has 2 non-collapsed seeds. Under Hungarian matching this gives a mean
+delta_R2_color of +0.115 — *above* the 0.10 threshold. You report this as Arm C
+"failing" because (a) you chose the unfavorable matching, (b) only 2 of 5 seeds
+survived, and (c) the threshold is itself unsupported (point 1). None of these
+is a rigorous basis for declaring failure. n=2 is below the project's
+single-seed-is-not-evidence rule, regardless of which side of the threshold the
+mean lands on.
+
+**5. Carry-over rigour concern from iter_023.**
+The journal currently treats iter_023's d_max=16 result (delta_R2_color = 0.137,
+which *exceeds* the 0.10 criterion) as a "capacity effect, not an objective
+effect." That attribution itself requires an explicit control: d_max=16 with no
+SFA / no slowness. If that control was not run, the capacity-vs-objective
+attribution is post-hoc explanation, not measurement. Before declaring M2
+refuted "definitively," verify the iter_023 capacity claim is grounded.
+
+**Required corrections before pivoting architecture (iter_026):**
+(a) Diagnose and eliminate the cause of control-arm collapse. The current
+    training setup has a 60% failure rate independent of objective; fix this
+    first or report results conditional on a stable baseline.
+(b) Re-establish a defensible threshold for delta_R2_color: either fix the
+    noise-floor methodology (preferred), or pick a single matching scheme
+    *before* the run and live with its result.
+(c) Resolve the matching ambiguity. Either pre-declare one scheme and report
+    only that scheme's verdict, or report both and refuse to claim
+    falsification when they disagree on >25% of seeds.
+(d) Increase seeds to recover ≥5 non-collapsed seeds per arm after fixing (a),
+    so that the statistical claim has the basis required by Section 9.
+(e) Audit the iter_023 d_max=16 / 0.137 result against an SFA-off capacity
+    control. If that control was not run, the "definitive M2 refutation" line
+    in the journal must be softened.
+
+Only after (a)–(e) is a verdict of "architecture-level bottleneck" earnable.
+Until then, the correct stance is: iter_025 ran an underpowered, methodologically
+ambiguous experiment whose primary signal is that the training regime itself is
+unstable. Pivoting to a separate z_dyn encoder *might* be the right move, but
+the evidence we currently have does not establish that it is necessary, and
+doing it now spends scarce iterations on a hypothesis that hasn't been earned.
+
+---
+
