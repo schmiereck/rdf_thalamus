@@ -1,39 +1,47 @@
 # Current Research State
-Phase: sim_loss_dyn identified as collapse driver; separate backbone refuted
+Phase: mask_dyn_sim on shared backbone falsified; hard-seed pattern identified
 
 ## Goal
 Achieve a training regime where the NonParametricJEPASpatial encoder collapses on ≤10% of seeds over ≥10 seeds (dual criterion). Ultimately: build a decoder-free, curiosity-driven representation agent.
 
-## Confirmed (iter_027, agents 27.1 + 27.3)
-- SHARED BACKBONE IS NOT THE PRIMARY COLLAPSE CAUSE: Arm B (separate backbone, full JEPA+VICReg) collapses at 30% (3/10), identical to shared-backbone arms (iter_027 27.3). Pre-registered SECOND NULL confirmed.
-- SIM_LOSS_DYN IS THE CAUSAL DRIVER: Arm C (separate backbone, VICReg-only on z_dyn, mask_dyn_sim=True) achieves 0% collapse (0/10) across all seeds. The B-vs-C comparison (same architecture 135,608 params, same backbone, only mask_dyn_sim differs) provides controlled evidence that sim_loss_dyn causes collapse (iter_027 27.3).
-- VICReg-ONLY z_dyn PRODUCES BEST SEMANTIC ENCODING: Arm C delta_R2_color = 0.1812, highest across all arms. Mean absolute correlation = 0.210, lowest across all arms. Removing sim_loss_dyn IMPROVES identity encoding (iter_027 27.3).
-- NO TRAIN-vs-EVAL STD GAP IN ARM C: All 10 seeds have train stds > 0.98 and eval stds > 0.50. The representation is genuinely stable, not narrow (iter_027 27.3).
-- CAPACITY CONFOUND ADDRESSED: Arm B and Arm C have identical parameter counts (135,608). Different collapse rates are NOT attributable to capacity (iter_027 27.3).
-- READOUT EFFECT: centroid_gated (30% collapse) vs mean (40% collapse) on shared backbone — a +10pp difference suggesting centroid_gated provides slight protection (iter_027 27.3).
-- PARAMETER COUNTS: Shared arms ~80K, separate arms ~136K (iter_027 27.3).
+## Confirmed (iter_028, agents 28.1 + 28.2)
+- MASK_DYN_SIM ALONE ON SHARED BACKBONE IS INSUFFICIENT: C1 (shared backbone, mask_dyn_sim=True) collapses at 20% (2/10: seeds 53, 71). Pre-registered F1 falsified. The post-forward loss subtraction does not by itself prevent z_dyn collapse (iter_028 28.2).
+- HARD-SEED PATTERN: Seeds 53 and 71 collapse consistently across C1 and C3 (same hard seeds, different weight perturbation). Seed 53 also collapsed in D0; seed 71 did NOT collapse in D0 but did collapse in C1/C3. The collapse mode under mask_dyn_sim is more severe (std ~0.01) than under full JEPA+VICReg (std ~0.45) (iter_028 28.2).
+- SEED-DEPENDENCE: C2 (fresh seeds, same config as C1) achieved 0% collapse (0/10). The original seed bank contains hard seeds; the fresh seed bank does not. The result is seed-dependent, not deterministic (iter_028 28.2).
+- NOT WEIGHT-ROBUST: C3 (perturbed weights 27.5/27.5/1.1) also showed 20% collapse with the same hard seeds (53, 71). F3 triggered (iter_028 28.2).
+- H2 RELATIVE GATE PASSED: C1 shows dramatically better semantic encoding than D0 when it does not collapse (ΔR²_color 0.23 vs 0.05, mean_abs_corr 0.52 vs 0.99). Removing sim_loss_dyn improves representation quality when collapse does not occur (iter_028 28.2).
+- SEPARATE-BACKBONE IS LOAD-BEARING: The complete 2×2 table shows 30%→20% (shared backbone, sim_dyn ON→MASKED) vs 30%→0% (separate backbone, sim_dyn ON→MASKED). The separate-backbone architecture provides a structural benefit beyond the loss adjustment alone (iter_027 + iter_028).
+- C2 BEST SEMANTIC ENCODING: C2 (fresh seeds, mask_dyn_sim) achieved ΔR²_color=0.514, mean_abs_corr=0.435, centroid_mse=99.68 — the best across all arms (iter_028 28.2).
+- ZERO TIMEOUTS: All 40 runs completed with zero timeouts. Results are fully interpretable (iter_028 28.2).
+
+## Confirmed (prior iterations, still valid)
+- SHARED BACKBONE IS NOT THE PRIMARY COLLAPSE CAUSE (iter_027 Arm B, separate backbone + full JEPA+VICReg still collapses at 30%)
+- VICReg-ONLY z_dyn ON SEPARATE BACKBONE: 0% collapse (iter_027 Arm C)
+- ITER 023-026: Single-knob regime variations, SFA, multi-step SFA, temporal contrastive, supervised probes, and capacity increases all failed to reduce collapse below 10% on the shared backbone
 
 ## Refuted
-- HYPOTHESIS: The shared CNN backbone is the primary structural cause of z_dyn collapse. FALSIFIED by Arm B (separate backbone + full JEPA+VICReg still collapses at 30%) (iter_027 27.3).
-- PRIOR ITERATIONS (023-026): Single-knob regime variations, SFA, multi-step SFA, temporal contrastive (NT-Xent), supervised probes, and capacity increases (d_max=16) all failed to reduce collapse below 10%. None identified the sim_loss_dyn pressure as the cause.
+- HYPOTHESIS (pre-registered): mask_dyn_sim alone on the shared backbone prevents z_dyn collapse. FALSIFIED by C1 (20% collapse, iter_028 28.2). F1 triggered.
+- PRIOR: Shared backbone as primary structural cause (iter_027 Arm B)
 
 ## Best Result
-- Arm C (separate backbone, VICReg-only on z_dyn): 0% collapse rate (0/10), delta_R2_color=0.18, mean_abs_corr=0.21. First zero-collapse configuration in project history.
+- C2 (shared backbone, mask_dyn_sim, fresh seeds): 0% collapse, ΔR²_color=0.514, mean_abs_corr=0.435. But this is seed-dependent — the original seed bank shows 20% collapse under the same config.
+- iter_027 Arm C (separate backbone, VICReg-only z_dyn): 0% collapse, ΔR²_color=0.18, robust across the original seed bank.
 
 ## NOT Established
-- Whether mask_dyn_sim=True eliminates collapse on the SHARED backbone (the critical isolate — combines two interventions in Arm C)
-- Whether VICReg-only z_dyn is sufficient for downstream tasks beyond color encoding
-- Whether Arm C's 0% collapse rate holds at longer training (16000+ steps)
-- Whether a stop-gradient on z_target_dyn (instead of removing sim_loss_dyn entirely) also prevents collapse
+- Whether the separate-backbone architecture provides gradient isolation (beyond capacity) that stabilizes VICReg
+- Why seeds 53 and 71 are hard seeds under mask_dyn_sim but seed 71 survives under D0
+- Whether increasing VICReg weight compensates for the loss of sim_loss_dyn on hard seeds
+- Whether a stop-gradient on z_target_dyn achieves the same effect as mask_dyn_sim
+- Whether C2's 0% collapse holds at longer training (16000+ steps)
 
 ## In Progress
-- None. iter_027 complete.
+- None. iter_028 complete.
 
 ## Open Questions (ordered by expected value)
-1. Does mask_dyn_sim=True eliminate collapse on the SHARED backbone? (Critical next test — isolates sim_loss_dyn from separate-backbone effect.)
-2. Is VICReg-only z_dyn semantically useful for downstream tasks (causal sensitivity, generalization)?
-3. Can stop-gradient on z_target_dyn (instead of full removal) prevent collapse while still training the predictor?
-4. What is the gradient magnitude ratio of sim_loss_dyn vs VICReg on z_dyn? (Mechanism analysis.)
-5. Does longer training reveal late collapse in Arm C?
-6. How does this finding relate to M2's SFA mandate? VICReg-only is a weaker objective than SFA+VICReg.
-7. Is the iter_010 DSDT failure explained by the absence of VICReg on the decoupled stream?
+1. Can the separate-backbone architecture be shown to provide gradient-isolation (not just capacity) that stabilizes VICReg? (This is the key remaining structural question.)
+2. Why do seeds 53 and 71 collapse under mask_dyn_sim but seed 71 survives under D0? (Different collapse modes?)
+3. Can increasing VICReg var_weight on the shared backbone compensate for sim_loss_dyn removal on hard seeds?
+4. Does a stop-gradient on z_target_dyn (preserving predictor training) achieve the same collapse prevention as mask_dyn_sim?
+5. What is the gradient magnitude ratio of sim_loss_dyn vs VICReg on z_dyn during early training on hard vs easy seeds?
+6. Does C2's 0% result hold at longer training?
+7. How does this finding relate to M2's SFA mandate? VICReg-only is a weaker objective than SFA+VICReg, and SFA was already refuted (iter_023-024).

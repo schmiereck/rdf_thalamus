@@ -1163,3 +1163,74 @@ VICReg-only on
 
 **Notes:** Second Null confirmed for Arm B. Arm C breakthrough: sim_loss_dyn identified as collapse driver.
 
+
+---
+```yaml
+cached_tokens: 1589278
+campaign: collapse-elimination
+cost_usd: 2.57627
+hypothesis: 'phase-28: mask_dyn_sim on shared backbone does NOT eliminate z_dyn collapse
+  (F1 falsified); hard-seed pattern (seeds 53, 71) identified; separate-backbone architecture
+  is load-bearing'
+input_tokens: 2686770
+iter: 28
+metrics:
+  c1_collapse_rate_primary: 0.2
+  c1_delta_r2_color: 0.231
+  c1_mean_abs_corr: 0.521
+  c2_collapse_rate_primary: 0.0
+  c2_delta_r2_color: 0.514
+  c2_mean_abs_corr: 0.435
+  c3_collapse_rate_primary: 0.2
+  c3_delta_r2_color: 0.168
+  c3_mean_abs_corr: 0.474
+  collapsed_seeds_C1:
+  - 53
+  - 71
+  collapsed_seeds_C3:
+  - 53
+  - 71
+  collapsed_seeds_D0:
+  - 17
+  - 53
+  - 83
+  d0_collapse_rate_primary: 0.3
+  d0_delta_r2_color: 0.054
+  d0_mean_abs_corr: 0.999
+  existing_resumed: 13
+  f1_outcome: FALSIFIED
+  f2_outcome: NOT_TRIGGERED
+  f3_outcome: NOT_ROBUST
+  h2_relative_gate: PASS
+  new_completed: 27
+  param_count: 80336
+  timeouts: 0
+  total_seeds: 40
+output_tokens: 45579
+status: ok
+```
+
+## iter_028: phase-28: mask_dyn_sim on shared backbone does NOT eliminate z_dyn collapse (F1 falsified); hard-seed pattern (seeds 53, 71) identified; separate-backbone architecture is load-bearing
+
+**Analysis:** This phase completed the pre-registered iter_028 experiment: a 4-arm × 10-seed
+matrix testing whether mask_dyn_sim alone (on the shared backbone) prevents
+z_dyn collapse. The experiment was a direct continuation of iter_027, which
+identified sim_loss_dyn as the collapse driver on the separate backbone but
+could not isolate the loss-adjustment effect from the architecture effect.
+
+Sub-agent 28.1 mo
+
+**Status:** ok
+
+**Metrics:** `{'total_seeds': 40, 'existing_resumed': 13, 'new_completed': 27, 'timeouts': 0, 'd0_collapse_rate_primary': 0.3, 'c1_collapse_rate_primary': 0.2, 'c2_collapse_rate_primary': 0.0, 'c3_collapse_rate_primary': 0.2, 'd0_mean_abs_corr': 0.999, 'c1_mean_abs_corr': 0.521, 'c2_mean_abs_corr': 0.435, 'c3_mean_abs_corr': 0.474, 'd0_delta_r2_color': 0.054, 'c1_delta_r2_color': 0.231, 'c2_delta_r2_color': 0.514, 'c3_delta_r2_color': 0.168, 'h2_relative_gate': 'PASS', 'f1_outcome': 'FALSIFIED', 'f2_outcome': 'NOT_TRIGGERED', 'f3_outcome': 'NOT_ROBUST', 'param_count': 80336, 'collapsed_seeds_C1': [53, 71], 'collapsed_seeds_D0': [17, 53, 83], 'collapsed_seeds_C3': [53, 71]}`
+
+**Experimenter view:** The iter_028 experiment completed all 40 seeds (13 resumed + 27 new) with zero
+timeouts across all arms. Results are fully interpretable.
+
+PRE-REGISTERED OUTCOME: F1 FALSIFIED. C1 (shared backbone, mask_dyn_sim=True)
+showed 20% collapse (2/10: seeds 53 and 71), which exceeds the ≤10% gate
+threshold. The post-forward loss subtraction of sim_loss_dyn does not by itself
+prevent z_dyn collapse on the 
+
+**Notes:** F1 falsified; mask_dyn_sim on shared backbone insufficient. Hard-seed pattern identified. C2 at 0% reveals seed-dependence.
+
