@@ -13,7 +13,7 @@ Formally: Let C_C1 be the dual-criterion collapse rate of arm C1 (shared backbon
 mask_dyn_sim=True, weights 25/25/1) over 10 seeds. Let ΔR²_C1 be the mean
 delta_R2_color of C1 across non-collapsed seeds. The hypothesis is:
 (H1) C_C1 ≤ 0.10 (std-based collapse gate)
-(H2) ΔR²_C1 ≥ 0.10 (independent semantic readout gate)
+(H2) ΔR²_C1 ≥ D0_ΔR²_color + 0.05 AND mean_abs_corr_C1 ≤ mean_abs_corr_D0 + 0.05 (C1 outperforms D0 on independent readouts)
 
 Both conditions must hold. This is the critical isolate that iter_027's Arm C
 could not provide (it confounded separate-backbone with mask_dyn_sim).
@@ -38,15 +38,14 @@ F2: C2 collapse rate ≥ 0.20 (fresh seed bank) → the C1 result is seed-depend
 F3: C3 collapse rate ≥ 0.20 (±10% weight perturbation) → the C1 result is not
     robust to reasonable hyperparameter variation.
 
-F4: C1 passes the std gate (C_C1 ≤ 0.10) BUT ΔR²_C1 < 0.05 → the VICReg-maintained
-    variance is constructional; z_dyn has variance but no semantic content. The
-    mechanism is downgraded regardless of the std-collapse numbers. Only if C1
-    passes BOTH the std gate AND the independent readout does the iter_029
-    promotion to M2-style SFA-on-z_dyn become justified.
+F4: C1 passes the std gate (C_C1 ≤ 0.10) BUT (ΔR²_C1 < D0_ΔR²_color + 0.05 OR mean_abs_corr_C1 > mean_abs_corr_D0 + 0.05) → VICReg-maintained variance is constructional; z_dyn has variance but no meaningful semantic content improvement over the collapsing baseline.
 
-Additional guard: D0 (shared backbone, mask_dyn_sim=False, weights 25/25/1).
-If D0 collapse rate < 0.20, then the cov_weight change (25→1) alone reduces
-collapse, confounding the C1 attribution. The report must state this.
+**Note:** Lower mean_abs_corr = better decorrelation, so "mean_abs_corr_C1 ≤ mean_abs_corr_D0 + 0.05" means C1 is at least as well decorrelated (within 0.05 tolerance) as the in-iteration null reference D0.
+
+Additional guard: D0 (shared-backbone JEPA+VICReg baseline replication).
+D0 serves as the in-iteration null reference for the independent readout comparison.
+ΔR² and mean_abs_corr values from D0 are the baselines against which C1's relative
+performance is assessed (F4 and H2 gates use the relative thresholds above).
 
 ## 3. Proposed Method
 Step-by-step experimental protocol:
@@ -60,15 +59,17 @@ Step-by-step experimental protocol:
 
 2. FOUR ARMS (10 seeds each, 40 total runs):
 
-   D0 — Weight-change anchor (shared backbone, mask_dyn_sim=False, weights 25/25/1):
+   D0 — Shared-backbone JEPA+VICReg baseline replication (shared backbone, mask_dyn_sim=False, weights 25/25/1):
      NonParametricJEPASpatial, dyn_readout="mean", d_max=8, d_t=3,
      pos_encoding="none", primary_objective="jepa", lr=3e-4, batch_size=64,
      buffer=4000, 8000 steps, gradient clipping max_norm=1.0,
      ccr_mode="covariance", ccr_smooth_weight=10, ccr_spatial_weight=10,
      gdasr_log_only=True, sim_weight=25, var_weight=25, cov_weight=1,
      seeds=[7, 17, 31, 53, 71, 83, 97, 113, 127, 149].
-     Purpose: Establish shared-backbone collapse rate with cov_weight=1.
-     If D0 ≈ 30-40% (like iter_027), the weight change alone doesn't help.
+     Purpose: In-iteration null reference for the independent readout comparison.
+     D0 is the canonical cov_weight=1 setting from iter_026/027 baselines; there is
+     no weight delta to confound. Its ΔR² and mean_abs_corr serve as the in-iteration
+     baselines for F4 and H2 relative-threshold gates.
 
    C1 — Primary arm (shared backbone, mask_dyn_sim=True, weights 25/25/1):
      Same as D0 but mask_dyn_sim=True. Same seeds.
@@ -81,13 +82,13 @@ Step-by-step experimental protocol:
 
    C3 — Weight robustness (shared backbone, mask_dyn_sim=True, weights 27.5/27.5/1.1):
      Same as C1 but var_weight=27.5, cov_weight=1.1 (+10% perturbation).
-     Original seeds. Tests sensitivity to weight variation.
+     Original seeds. sim_weight stays at 25. Tests sensitivity to weight variation.
 
 3. EVALUATION at step 8000 (same protocol as iter_027):
    - Dual collapse criterion: collapsed_eval OR collapsed_train (per-dim std < 0.5)
    - Train-vs-eval std gap: report per-seed, co-equally with collapse rates
    - Hungarian-primary matching for semantic probes
-   - Semantic probes: delta_R2_color (INDEPENDENT READOUT, pre-declared gate ≥0.10),
+   - Semantic probes: delta_R2_color (INDEPENDENT READOUT, relative gate vs D0),
      r2_dyn_color, r2_coord_color, r2_dyn_pos, r2_coord_pos,
      r2_dyn_identity, delta_r2_identity
    - VICReg health: per_dim_std, mean_abs_corr
@@ -98,17 +99,22 @@ Step-by-step experimental protocol:
 4. STOP RULE: All 40 runs complete. No early termination.
 
 5. PRE-REGISTERED OUTCOME CLASSIFICATION:
-   - If C1 ≤ 10% AND ΔR²_C1 ≥ 0.10: CONFIRMED — mask_dyn_sim on shared
+   - If C1 ≤ 10% AND H2 passes (ΔR² relative threshold AND mean_abs_corr relative threshold): CONFIRMED — mask_dyn_sim on shared
      backbone does not destabilize VICReg-maintained variance AND preserves
      semantic encoding. Promotion to M2-style SFA (iter_029) is justified.
    - If C1 ≥ 20%: FALSIFIED — mask_dyn_sim alone insufficient; separate
      backbone was load-bearing.
-   - If C1 ≤ 10% BUT ΔR²_C1 < 0.05: DOWNGRADED — VICReg variance is
+   - If C1 ≤ 10% BUT F4 triggers (relative threshold on ΔR² and/or mean_abs_corr not met): DOWNGRADED — VICReg variance is
      constructional; no semantic content despite maintained variance.
    - If C2 ≥ 20%: SEED-DEPENDENT — C1 result does not generalize.
    - If C3 ≥ 20%: NOT ROBUST — C1 result sensitive to weight perturbation.
 
-6. LANGUAGE CONSTRAINTS (tracked failure mode from iter_027 overclaim):
+6. SAMPLE-SIZE CAVEAT:
+   Fisher's exact test for 0/10 vs 3/10 gives p ≈ 0.21; the design cannot formally
+   distinguish 0% from 10–20% at this sample size. Results are reported as point
+   estimates with this limit explicitly noted.
+
+7. LANGUAGE CONSTRAINTS (tracked failure mode from iter_027 overclaim):
    - Use "does not destabilize VICReg-maintained variance" or "is consistent
      with"; do NOT use "breakthrough", "causal driver", "eliminated", "BEST",
      "proves", "demonstrates", or "resolves."
