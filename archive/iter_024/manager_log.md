@@ -1,9 +1,20 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 024
 
-*   **Iteration:** 024
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 024 -> Planner [Pre-Planning Hints]
 
-## 1. Hypothesis
+Manager's Pre-Planning Hints (for iteration 024 planning)
+
+1. Directional: the next iteration must run the multi-step SFA test (k>>1, e.g. k∈{20, 50, 100}) on the existing d_max=8 CNN as the primary arm, with the d_max=16 ramp configuration carried forward as a second arm. This is the last slowness-based shot at M2 — if delta_R2_color stays flat across k, slowness on z_dyn is functionally dead and the planner should be prepared to pivot, not iterate further within the slowness framing.
+
+2. Discipline: pre-declare the falsification criterion in the plan itself, before runs begin. State: "M2 is refuted as a representation-shaping mechanism iff delta_R2_color < 0.10 across all k ∈ {20, 50, 100} for d_max=8 and ≤ 0.137 (iter_023 d_max=16 baseline) for d_max=16." No post-hoc reframing of "SFA works" if only z_dyn temporal variance moves — variance reduction is mechanical, not the claim. Also drop C5 from the plan entirely; it is a derived identity and re-running it would be construction, not evidence.
+
+3. Discipline / scope: the plan should include a contingency arm — at least one non-slowness probe (preferably the temporal-augmentation contrastive variant from the journal, since object-tracking IDs need infrastructure work) staged for the same iteration if multi-step SFA underperforms by an early checkpoint (e.g. step 2000). This avoids burning a full iteration on a third consecutive null result and gives the iteration two independent chances at clearing the identity-encoding bottleneck. Also retain the JEPA-readout stop-gradient diagnostic (Open Question 7) as a low-cost ablation arm — a single seed checking whether sim_weight=0 changes the picture is cheap insurance.
+
+---
+
+## Iteration 024 -> Manager [Proposed Research Plan]
+
+**Proposed Hypothesis:**
 Two-part hypothesis tested simultaneously:
 
 PART A (last slowness shot): Multi-step SFA with temporal horizon k∈{20,50,100}
@@ -24,7 +35,7 @@ identity as the primary discriminable attribute. The NT-Xent loss is:
 L_contra = -log(exp(sim(z_target_dyn[i], z_hist_dyn[i,-1])/τ) / Σ_j exp(sim(z_target_dyn[i], z_hist_dyn[j,-1])/τ))
 with cosine similarity and temperature τ=0.1.
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 PRE-DECLARED FALSIFICATION CRITERIA:
 
 1. M2 (slowness as representation-shaping mechanism) is REFUTED iff
@@ -47,7 +58,7 @@ PRE-DECLARED FALSIFICATION CRITERIA:
    effectively dead regardless of final-step results, and the contrastive
    finding becomes the primary outcome.
 
-## 3. Proposed Method
+**Proposed Method:**
 EXPERIMENT DESIGN: 6 arms × variable seeds × 5000 steps.
 Seeds: [42, 123, 456, 789, 999] for main arms; [42] for diagnostic arm.
 Total runs: 26 (within the ~35-run budget of iter_023).
@@ -145,4 +156,22 @@ TRAINING PROTOCOL:
   steps of environment interaction before SFA loss computation begins
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 024 -> Planner [Strategic Guidance]
+
+Manager's Note — Iteration 024
+
+The plan is broadly aligned with the pre-planning hints (multi-step SFA sweep, contrastive contingency, JEPA stop-gradient diagnostic, C5 dropped, early checkpoint). Three things must change before execution.
+
+**1. Falsification criterion for Arm D is mis-calibrated and asymmetric.** The plan declares Arm D "PROMISING iff delta_R2_color ≥ 0.15," but the d_max=16 baseline (0.137) was a *channel-capacity* effect at d_max=16, while Arm D runs at **d_max=8**. The fair comparison for an objective-driven gain is the d_max=8 baseline (delta_R2_color ≈ 0.05). State the contrastive criterion as: "Arm D is consistent with a genuine objective-driven effect iff delta_R2_color ≥ 0.10 at d_max=8 **and** exceeds the best d_max=8 multi-step SFA arm by ≥ 0.05 with non-overlapping seed CIs." Without the head-to-head clause, you cannot separate "contrastive works" from "any non-collapsing temporal objective gives ~0.10." Also add a pre-declared **collapse gate** for Arm D matching the SFA arms (≤ 2/5 collapsed seeds); NT-Xent at τ=0.1 with VICReg simultaneously is a known fight, and a silently-collapsed Arm D would be misread as a null.
+
+**2. Construction-vs-empirical discipline on multi-step SFA — protect against the obvious trivial solution.** With k=100 and an environment where many objects exit/re-enter the scene over that horizon, a representation that encodes a *batch-statistic* (e.g. the global colour histogram, slowly drifting scene mean) will satisfy `||z_dyn(t) - z_dyn(t-k)||²` at near-zero cost without encoding per-object identity. That is a constructional pass, not evidence for M2. Before any "k=N works" claim, require an **invariance-vs-discrimination diagnostic** alongside delta_R2_color: report (a) within-trajectory z_dyn variance vs. between-trajectory z_dyn variance, and (b) whether the same z_dyn would pass delta_R2_color on a *shuffled-frame* control where the temporal label is destroyed. If shuffling does not collapse the probe, the signal was not in z_dyn-via-SFA, it was in the encoder geometry, and the result is constructional.
+
+**3. Language and pre-registration.** The proposed `pre_registration.md` is good in structure but the Orchestrator will commit it before execution — so tighten the hypothesis text: drop "will produce identity encoding because…" (assertive) and reframe as "we test whether… we predict that…, refuted if…." Also drop the phrase "last slowness shot" from any committed artefact; that framing pressures a positive-spin report on a marginal result. The honest framing is: this iteration tests multi-step SFA and temporal contrastive as two independent candidates; **both may fail, and a clean double null is a successful iteration outcome that justifies pivoting to object-tracking-ID contrastive (the journal's HIGH-PRIORITY path) in iter_025.**
+
+Minor: Arm F at a single seed is fine as a diagnostic but its result is not evidence on its own — instruct the executor to report it explicitly as "n=1, indicative only." And confirm that the early-step-2000 checkpoint kills only the *narrative*, not the runs: keep all 5000 steps so the dataset for the post-mortem stays intact.
+
+Proceed once the criterion in (1) is rewritten, the diagnostic in (2) is added to the metrics list, and the pre-registration file is committed verbatim with the language fixes in (3).
+
+---
+

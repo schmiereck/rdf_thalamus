@@ -1,0 +1,1556 @@
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: iter | status          | hypothesis
+-----|-----------------|----------
+002  | ok              | phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
+003  | ok              | phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
+004  | ok              | phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
+005  | ok              | phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
+006  | ok              | phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
+007  | ok              | phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
+008  | ok              | phase-8: evaluate unsupervised spatial bottlenecks and close...]
+
+
+[Tool Call: read_file({'path': 'current_state.md'})]
+
+[Tool Result: # Current Research State
+Phase: Phase 23 Complete — SFA Weight Sweep Falsified
+
+## Goal
+Design and evaluate a neural architecture achieving hierarchical abstraction
+without generative decoders, with SFA+VICReg shaping z_dyn and soft-argmax
+tracking position (z_coord). Current focus: finding an objective that makes
+z_dyn encode object identity.
+
+## Confirmed
+- **SFA GRADIENT PROPAGATES (iter_023, all arms)**: Increasing sfa_weight from
+  0.1 to 25.0 monotonically reduces normalized_dyn_var from 0.0086 to 0.0011.
+  The 250x gradient imbalance was real; SFA at higher weights IS effective at
+  slowing z_dyn.
+- **C5 IS STRUCTURALLY IMPOSSIBLE (iter_023, 0/35 seeds)**: z_coord's
+  normalized temporal variance (~1e-5) is 2-3 orders of magnitude below
+  z_dyn's minimum (~1e-3). This is a metric artifact: soft-argmax centroids
+  in [0,127] have O(127^2) spatial variance but O(1) temporal change, making
+  the ratio tiny. VICReg's variance floor prevents z_dyn from reaching
+  comparable slowness....]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_recovery.py
+      run_phase0_sfa_sweep.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      ...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa_sweep.py'})]
+
+[Tool Result: #!/usr/bin/env python3
+"""
+Phase 0 SFA Weight Sweep Runner.
+
+Sweeps sfa_weight across [0.1, 1.0, 5.0, 10.0, 25.0] to find where SFA
+becomes effective. Tests whether gradient parity between SFA and VICReg
+produces measurable identity-position separation.
+
+7 arms x 5 seeds x 5000 steps.
+Seeds: [42, 123, 456, 789, 999]
+Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000
+d_t=3, gdasr_log_only=True
+
+Arm A1 (Ctrl sfa=0.1):     d_max=8, CGIR, CCR, d_t=3, sfa_weight=0.1
+Arm A2 (sfa=1.0):           d_max=8, CGIR, CCR, d_t=3, sfa_weight=1.0
+Arm A3 (sfa=5.0):           d_max=8, CGIR, CCR, d_t=3, sfa_weight=5.0
+Arm A4 (sfa=10.0):          d_max=8, CGIR, CCR, d_t=3, sfa_weight=10.0
+Arm A5 (sfa=25.0 fixed):    d_max=8, CGIR, CCR, d_t=3, sfa_weight=25.0
+Arm A6 (sfa=25.0 ramp):     d_max=8, CGIR, CCR, d_t=3, sfa_weight ramp 0.1->25.0 over 1000 steps
+Arm B  (d_max=16 sfa=10.0): d_max=16, CGIR, CCR, d_t=3, sfa_weight=10.0
+
+Results saved to archive/iter_023/results/
+"""
+
+import os
+impor...]
+
+Let me now examine the iter_023 results and the companion project for contrastive learning approaches:
+
+[Tool Call: read_iteration({'iter_num': 23})]
+
+[Tool Result: ```yaml
+cached_tokens: 626820
+cost_usd: 1.58059
+hypothesis: 'phase-23: SFA weight sweep falsified — SFA gradient propagates but slowness
+  does not produce identity encoding; C5 is structurally impossible due to z_coord
+  metric artifact'
+input_tokens: 3004893
+iter: 23
+metrics:
+  a1_baseline_delta_r2_color: 0.05
+  a1_collapse_rate: 1/5
+  a1_normalized_coord_var: 1.74e-05
+  a1_normalized_dyn_var: 0.00856
+  a2_collapse_rate: 2/5
+  a2_normalized_dyn_var: 0.00521
+  a2_sfa1_delta_r2_color: 0.048
+  a3_collapse_rate: 2/5
+  a3_normalized_dyn_var: 0.00433
+  a3_sfa5_delta_r2_color: 0.051
+  a4_collapse_rate: 3/5
+  a4_normalized_dyn_var: 0.00309
+  a4_sfa10_delta_r2_color: 0.06
+  a5_collapse_rate: 2/5
+  a5_normalized_dyn_var: 0.00149
+  a5_sfa25_delta_r2_color: 0.064
+  a6_collapse_rate: 1/5
+  a6_normalized_dyn_var: 0.00112
+  a6_ramp_delta_r2_color: 0.04
+  b_d16_collapse_rate: 2/5
+  b_d16_delta_r2_color: 0.137
+  b_d16_normalized_dyn_var: 0.00372
+  best_delta_r2_diff_over_a1: 0.014
+  c5_pass_rate_all_...]
+
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 023
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+
+The SFA objective has been functionally disabled by a 250× gradient imbalance
+(sfa_weight=0.1 vs var_weight=25.0). Increasing sfa_weight to parity with
+var_weight will activate SFA, causing normalized_dyn_var to drop below
+normalized_coord_var (C5 criterion: z_dyn becomes slower than z_coord).
+
+**Manager's key directive:** Once sfa_weight is large enough that C5 passes,
+z_dyn *must* become slower by construction. Therefore, passing C5 only confirms
+gradient propagation — it does not confirm identity encoding. The meaningful
+test is whether functional SFA produces measurable identity–position separation.
+
+We test whether SFA at parity produces measurable identity–position separation,
+as evidenced by delta_R2_color improvement over the sfa_weight=0.1 baseline.
+Delta_R2_color ≥ 0.10 over baseline is the primary falsification criterion.
+
+Specifically:
+- At sfa...]
+
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_b...]
+
+
+[Tool Call: read_file({'path': 'src/train.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import time
+import random
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Ensure src directory is in the path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import FixedJEPA, DynamicJEPA
+
+# Replay Buffer storing (x_hist, x_target)
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        x_hist_batch, x_target_bat...]
+
+Let me check the companion project and look at previous iteration details for the contrastive learning approach:
+
+[Tool Call: list_dir({'path': '..'})]
+
+[Tool Result: [DIR] ba_arduino_controller_moveit_config
+[DIR] ba_autocalib
+[DIR] ba_calib_model_train
+[DIR] ba_camera_bridge
+[DIR] ba_depth_node
+[DIR] ba_perception_pipeline
+[DIR] ba_training
+[DIR] BAArduinoController
+[DIR] GraphSort
+[DIR] hex_field_map
+[DIR] Hexapod_Brain
+[DIR] open-brain
+[DIR] rdf-test-dry
+[DIR] rdf-test-wet
+[DIR] rdf-test-wet - Kopie
+[DIR] rdf_digital_physic
+[DIR] rdf_thalamus
+[DIR] rdf_thalamus_sml
+[DIR] Test
+[DIR] uroboros-rdf
+[DIR] vlm_memory_map]
+
+
+[Tool Call: read_iteration({'iter_num': 21})]
+
+[Tool Result: ```yaml
+cached_tokens: 3318800
+campaign: Thalamus
+cost_usd: 1.4126
+hypothesis: 'phase-22: single-scalar bottleneck falsified as primary cause; SFA objective
+  itself non-functional at current hyperparameters (sfa_weight=0.1 vs var_weight=25)'
+input_tokens: 5007974
+iter: 21
+metrics:
+  arm_a_collapsed_seeds: 3
+  arm_a_delta_r2_color: 0.09
+  arm_a_delta_r2_identity: -0.017
+  arm_b_collapsed_seeds: 1
+  arm_b_delta_r2_color: 0.13
+  arm_b_delta_r2_identity: -0.027
+  arm_c_collapsed_seeds: 5
+  arm_c_delta_r2_color: 0.1
+  arm_c_delta_r2_identity: -0.055
+  arm_c_normalized_coord_var: 1.9e-05
+  arm_c_normalized_dyn_var: 0.01771
+  c1_collapse_pass: false
+  c2_mse_pass: true
+  c3_color_improvement: 0.05
+  c4_identity_improvement: -0.021
+  c5_sfa_effective: false
+  ctrl_collapsed_seeds: 1
+  ctrl_delta_r2_color: 0.05
+  ctrl_delta_r2_identity: -0.035
+  ctrl_normalized_coord_var: 1.74e-05
+  ctrl_normalized_dyn_var: 0.00856
+  overall_validated: false
+  total_runs: 20
+  training_steps_per_run: 5000
+outp...]
+
+
+[Tool Call: list_dir({'path': '../rdf_thalamus_sml'})]
+
+[Tool Result: [DIR] -p
+[DIR] .git
+      .gitignore
+[DIR] .venv
+      _check_csv.py
+      _compute_stats.py
+      _debug.txt
+      _fix_encoding.py
+      _fix_rho.py
+      _fix_st.py
+      _gen_report.py
+      _profile_fast.py
+      _profile_mid.py
+      _profile_speed.py
+      _time_one.py
+      _tst.txt
+[DIR] archive
+      config.toml
+      current_state.md
+      experiment_log.md
+      goal.md
+      hyper_search.py
+      manager_log.md
+      phase3_diagnostic_report.md
+      phase3_run.log
+[DIR] phase_0
+[DIR] phase_1
+[DIR] phase_2
+[DIR] phase_3
+[DIR] phase_4
+[DIR] phase_5
+      RESEARCH-RESULT-001.md
+      RESEARCH-RESULT-002.md
+      RESEARCH-RESULT-003.md
+      RESEARCH-RESULT-004.md
+      RESEARCH-RESULT-005.md
+      RESEARCH-RESULT-006.md
+      RESEARCH-RESULT-007.md
+      RESEARCH-RESULT-008.md
+      research_journal.md
+      run_phase3_bg.py
+[DIR] src
+      test_raw_accuracy.py
+      test_scale.py
+      test_training.py
+      tmp_launch.py
+      tmp_run_bg.py
+      tmp_test_sa.py
+      tmp_t...]
+
+
+[Tool Call: read_file({'path': '../rdf_thalamus_sml/research_journal.md'})]
+
+[Tool Result: # Research Manager Journal & Strategic State
+
+## 1. High-Level Strategy & Trajectory
+*   **Current Phase:** Phase 5 (Vector Semantics Investigation) is now RESOLVED. This concludes the primary gated phase plan of the HSUN research project.
+*   **Active Direction:** With the completion of Phase 5, we have mapped the entire trajectory of the Hierarchical Sparse Universal Node (HSUN) architecture. The project has moved from the initial smoke tests (Phase 0) to establishing spatial/temporal properties (Phases 1–3), optimizing the local learning objective (Phase 4), and finally probing the internal semantic structure of the codes (Phase 5). The final phase has revealed that the high semantic consistency across spatial positions is an inherent structural prior of the shared-weight architecture rather than an emergent property of unsupervised training.
+*   **Confidence Score:** 95% (Extremely high confidence, supported by rigorous control runs, cross-validation, and triggered pre-registered f...]
+
+
+[Tool Call: grep_search({'include_pattern': '*.md', 'pattern': 'contrastive|augment|temporal.*augment'})]
+
+[Tool Result: goal.md:334: `std_x_mean > 5.0`), augmented with the per-dimension std of the batch
+manager_log.md:1130: *   **The Grounding Requirement:** A representational channel cannot organize itself into physically meaningful spatial coordinates purely based on local statistics (entropy minimization/contrastive spread) if it lacks a functional link to physical dynamics. Prediction or reconstruction gradients are not just "tasks"—they are the essential grounding mechanisms that bind latent dimensions to physical reality.
+manager_log.md:1288: - However, the fact that the underlying plastic dynamics stream self-organizes its spatial activations to localize distinct entities *without any explicit spatial localization losses* (MSE, reconstruction, or contrastive coordinate losses) is a **genuine empirical finding**. The temporal predictive loss alone forces the network to develop localized spatial representations in its intermediate channels.
+manager_log.md:1481: *   **Active Direction:** Shifting f...]
+
+Now let me look at the detailed metrics from iter_023's final results to understand the exact baseline numbers:
+
+[Tool Call: read_result_file({'filename': 'results/audit_phase0_sfa_sweep.json', 'iter_num': 23})]
+
+[Tool Result: {
+  "primary_delta_r2_color_pass": false,
+  "primary_a1_baseline": 0.04983072761238547,
+  "best_delta_r2_color_arm": "A5 (sfa=25.0 fixed)",
+  "best_delta_r2_color_diff": 0.014043827183940302,
+  "composite_m2_viable_pass": false,
+  "best_composite_arm": null,
+  "best_composite_seed_count": 0,
+  "tertiary_all_heavy_collapse": false,
+  "a1_baseline": {
+    "collapsed": 1,
+    "n": 5,
+    "mse_mean": 117.84627808047529,
+    "delta_r2_color": 0.04983072761238547,
+    "delta_r2_identity": -0.034620769649982355,
+    "normalized_dyn_var": 0.008556666783988476,
+    "normalized_coord_var": 1.7434886103728786e-05,
+    "sfa_effective_count": 0,
+    "sfa_effective_rate": 0.0
+  },
+  "arms": {
+    "a2_sfa1": {
+      "collapsed": 2,
+      "n": 5,
+      "mse_mean": 121.29235360563825,
+      "delta_r2_color": 0.04807437081857197,
+      "delta_r2_identity": -0.05028380102172782,
+      "normalized_dyn_var": 0.005212225951254368,
+      "normalized_coord_var": 1.2121405234211124e...]
+
+Let me examine a few more critical details - the environment reset mechanism and how VICReg interacts with single-episode training:
+
+[Tool Call: read_file({'end_line': 90, 'path': 'src/models_dual_stream.py', 'start_line': 62})]
+
+[Tool Result: --- lines 62 to 90 of 1077 ---
+        we detach the output of conv4 before passing to conv_spatial_coord.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        # Detach before conv_spatial_coord to stop gradients flowing to conv1-4
+        x_coord = self.conv_spatial_coord(x.detach())  # (B, d_max, 8)
+        x_coord = F.interpolate(x_coord, size=128, mode='linear', align_corners=False) # (B, d_max, 128)
+        return x_coord
+
+    def forward_dynamics(self, x):
+        """
+        Returns the dynamics representation of shape (B, d_max).
+        Gradients on this stream flow back to conv_spatial_dyn and conv1-4.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        x_dyn = self.conv_spatial_dyn(x) # (B, d_max, 8)
+        return x_dyn.mean(...]
+
+
+[Tool Call: grep_search({'include_pattern': '*.py', 'pattern': 'env\\.reset|PhysicsSandbox\\(N='})]
+
+[Tool Result: src\run_phase0_sfa.py:137: obs = test_env.reset()
+src\run_phase0_sfa.py:243: env = PhysicsSandbox(N=3, seed=env_seed)
+src\run_phase0_sfa.py:246: obs = env.reset()
+src\run_phase0_sfa.py:454: env = PhysicsSandbox(N=3, seed=seed)
+src\run_phase0_sfa.py:455: obs = env.reset()
+src\run_phase0_sfa.py:535: eval_env = PhysicsSandbox(N=3, seed=seed + 10000)
+src\run_phase0_sfa.py:537: obs = eval_env.reset()
+src\run_phase0_sfa.py:568: test_env = PhysicsSandbox(N=3, seed=seed + 20000)
+src\run_phase0_sfa.py:570: obs = test_env.reset()
+src\run_phase0_sfa_archceiling.py:299: obs = test_env.reset()
+src\run_phase0_sfa_archceiling.py:370: env = PhysicsSandbox(N=3, seed=env_seed)
+src\run_phase0_sfa_archceiling.py:373: obs = env.reset()
+src\run_phase0_sfa_archceiling.py:553: eval_env = PhysicsSandbox(N=3, seed=seed + 10000)
+src\run_phase0_sfa_archceiling.py:555: obs = eval_env.reset()
+src\run_phase0_sfa_archceiling.py:591: test_env = PhysicsSandbox(N=3, seed=seed + 20000)
+src\run_phase0_sfa_archceiling.py:5...]
+
+Now I have a comprehensive understanding of the architecture, training setup, and the critical insight about the VICReg variance problem in single-episode batches. Let me formulate the complete plan.
+
+Let me verify one more detail about how the NT-Xent loss would work:
+
+[Tool Call: read_file({'end_line': 425, 'path': 'src/models_dual_stream.py', 'start_line': 370})]
+
+[Tool Result: --- lines 370 to 425 of 1077 ---
+                    else:
+                        self.d_t = target_dim + 1
+                        self.steps_since_recruitment = 0
+                        print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+
+    def clone(self):
+        """
+        Self-cloning capability: Returns a copy of this model with identical parameters and dynamic state.
+        """
+        import copy
+        cloned = DualStreamJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        cloned.gdasr_log...]
+
+Now I have a thorough understanding of the complete codebase and state. Let me formulate my plan.
+
+The key insight from iter_023 is:
+1. SFA (slowness) works mechanically but does NOT produce identity encoding
+2. Multi-step SFA is the last slowness-based shot
+3. A contrastive contingency arm is mandated
+4. A JEPA-readout stop-gradient diagnostic is cheap insurance
+
+The fundamental problem is: **SFA just makes z_dyn uniformly slow, it doesn't create category structure.** A contrastive objective using temporal natural augmentations (same object across time = positive pair, different objects in same frame = negative pair) directly creates the category structure that SFA cannot.
+
+Here's my plan design:
+
+**Primary Arm (A): Multi-step SFA** — The last slowness shot. SFA computed over k={20,50,100} timesteps instead of k=1. Multi-step SFA accumulates gradient over longer horizons, potentially extracting slower features that survive longer temporal windows. Uses d_max=8, CGIR, CCR, d_t=3.
+
+**Contingency Arm (B): Temporal Contrastive (TC)** — The non-slowness probe. NT-Xent loss on z_dyn where positives are the same object's z_dyn at different timesteps, and negatives are different objects' z_dyn at the same timestep. This uses the physics engine's object IDs (available from `info["colors"]`) as weak supervision for object matching across time. No color labels needed — just temporal coherence of the same physical object. Replaces SFA as primary objective; retains VICReg.
+
+**Arm (C): d_max=16 with multi-step SFA** — Carries forward the best d_max from iter_023.
+
+**Arm (D): JEPA-readout stop-gradient diagnostic** — Single seed, sim_weight=0 on the SFA arm. Tests whether removing the JEPA readout entirely changes the picture.
+
+Let me think about the contrastive implementation more carefully. The NT-Xent approach:
+
+For each frame, we have 3 objects. We can track objects across timesteps because the physics engine maintains consistent object indices (obj 0 at time t is the same physical object as obj 0 at time t+1). So:
+
+- Positive pair: z_dyn for the same object (same channel) at two different timesteps
+- Negative pair: z_dyn for different objects at the same timestep, OR same channel at different timesteps when the dim-to-obj mapping has changed
+
+But wait — the current architecture doesn't have per-object z_dyn channels. The z_dyn is a d_max-dimensional vector where channels don't have a fixed object assignment. The dim_to_obj mapping is discovered post-hoc. So we can't directly apply per-object contrastive loss without either:
+
+1. Using the dim_to_obj mapping at training time (circular — we'd need to discover it online)
+2. Using a different formulation
+
+The temporal augmentation contrastive approach is actually simpler and doesn't need object IDs:
+
+**Temporal Contrastive (TC) formulation:**
+- For each sample in the batch, we have z_dyn(t) from the current frame and z_dyn(t-k) from a previous frame
+- **Positive pair:** z_dyn(t) and z_dyn(t-k) for the same sample (same physical scene across time)
+- **Negative pair:** z_dyn(t) from sample i and z_dyn(t-k) from sample j (different scenes)
+
+This is essentially a VICReg invariance term but across time rather than across augmentations. Wait — this is basically what SFA does! SFA minimizes ||z_dyn(t) - z_dyn(t-1)||², which IS pulling same-scene representations together across time.
+
+The key difference between SFA and a contrastive approach: SFA only has positive pairs (minimize distance), while contrastive learning has both positive AND negative pairs (pull positives together, push negatives apart). VICReg's covariance term provides some pushing, but it decorrelates dimensions within a single sample, not across samples.
+
+Actually, let me reconsider. The real issue is:
+
+- SFA makes ALL of z_dyn slow — it doesn't distinguish which features should be slow (identity) from which could be fast (dynamics)
+- A contrastive approach that uses temporal pairs as positives and cross-scene pairs as negatives would learn to make z_dyn invariant to things that change across time (position, velocity) while maintaining discriminability across scenes (identity)
+
+Wait, that's the OPPOSITE. If we use same-scene-across-time as positives, we're encouraging z_dyn to be time-invariant (slow), which is exactly what SFA does. The issue is that VICReg already ensures z_dyn varies across the batch dimension, so adding temporal invariance (SFA) just makes it slow without adding category structure.
+
+The REAL contrastive approach should be:
+- **Positive:** Same object identity across different scenes/times
+- **Negative:** Different objects
+
+But this requires object-level supervision (which colors provide as a proxy).
+
+Actually, let me think about this differently. The goal is to make z_dyn encode object identity (color, size). The current problem is that z_dyn doesn't preferentially encode identity over position. 
+
+A **color-contrastive** approach:
+- For each latent channel c, we have z_dyn_c(t) — a scalar
+- Using the dim_to_obj mapping (discovered via centroid proximity), we know which latent channel tracks which object
+- For the same object (same color/size), z_dyn should be similar across time and across different scenes
+- For different objects (different colors/sizes), z_dyn should be different
+
+But this requires the dim_to_obj mapping at training time, which is circular.
+
+A simpler approach: **Augmentation-based contrastive (SimCLR-style):**
+
+The "augmentation" here is temporal — we take two frames from the same trajectory (same objects, different positions) and require z_dyn to be similar. But the "negative" is frames from DIFFERENT trajectories (different objects). This is exactly what a temporal contrastive loss would do:
+
+L_NT-Xent = -log(exp(sim(z_dyn_t, z_dyn_t-k) / τ) / Σ_j exp(sim(z_dyn_t, z_dyn_j) / τ))
+
+where the sum is over all other samples in the batch. This combines:
+- Temporal invariance (like SFA — pull same-scene together across time)
+- Cross-scene discrimination (unlike SFA — push different scenes apart)
+
+The crucial difference from SFA: SFA only has the numerator (pull together), while contrastive has both numerator and denominator. The denominator forces z_dyn to be DISCRIMINATIVE across scenes, which means it must encode scene-specific information. Since position is already handled by z_coord, the scene-specific information that z_dyn must encode is... object identity (colors, sizes).
+
+This is the key insight: **Temporal contrastive loss naturally routes identity information to z_dyn because:**
+1. Same scene at different times → z_dyn should be similar (temporal invariance, like SFA)
+2. Different scenes at the same time → z_dyn should be different (cross-scene discrimination)
+3. Position varies within-scene but is handled by z_coord → z_dyn's discriminative signal must be identity
+
+This is fundamentally different from SFA because the NEGATIVE pairs provide the "push" that creates category structure. SFA only "pulls" everything to be slow.
+
+Now, the practical implementation:
+
+For the NT-Xent loss, we need:
+- Batch of (z_dyn_t, z_dyn_{t-k}) pairs
+- Temperature parameter τ
+- Positive: same sample across time
+- Negative: different samples in the batch
+
+The training loop currently samples from a replay buffer. We need to also store z_dyn at a previous timestep and pair it with z_dyn at the current timestep. Actually, we already have x_hist and x_target — we can encode both and get z_dyn pairs.
+
+Let me think about the implementation details:
+
+1. In the forward pass, we already encode x_target → z_target_dyn, and x_hist[:, -1] → z_prev_dyn
+2. For temporal contrastive: positive pair = (z_target_dyn, z_prev_dyn) for same sample
+3. Negative pairs = z_target_dyn[i] vs z_prev_dyn[j] for i ≠ j
+4. NT-Xent loss applied to z_dyn (active dimensions only)
+
+This is clean and requires minimal code changes. The existing SFA code already computes z_prev_dyn = z_hist_dyn[:, -1].
+
+Let me now formalize the full plan.
+
+Actually wait — I need to be more careful. The training loop samples from a replay buffer. The x_hist contains frames t-2, t-1, t, and x_target is frame t+1. So z_dyn for x_hist's last frame is z_dyn(t) and z_dyn for x_target is z_dyn(t+1). These are consecutive frames from the same trajectory.
+
+For NT-Xent:
+- For sample i: anchor = z_target_dyn[i], positive = z_prev_dyn[i] (same trajectory, one step apart)
+- Negatives: all z_prev_dyn[j] for j ≠ i in the batch
+
+This is straightforward. The temperature τ is a hyperparameter; typical values are 0.07-0.5. We'll start with 0.1.
+
+One concern: with batch_size=32 and d_t=3, z_dyn is (32, 3). The NT-Xent loss operates per-dimension or on the concatenated vector. Per-dimension would give 3 independent contrastive losses; concatenated would give one 3D contrastive loss. Per-dimension is more natural since each dimension should track a different object.
+
+Actually, let me think about what "positive" and "negative" mean here more carefully:
+
+Per-dimension NT-Xent for dimension c:
+- anchor: z_dyn[t+1, c] for all samples in batch → (B,)
+- positive: z_dyn[t, c] for same sample → (B,)
+- negatives: z_dyn[t, c] for all other samples → (B-1,) per anchor
+
+Loss = -log(exp(sim(anchor[i], positive[i])/τ) / Σ_j exp(sim(anchor[i], all_z_prev[j])/τ))
+
+This would force each dimension to:
+- Be temporally stable (positive pairs from same trajectory)
+- Be discriminative across scenes (negative pairs from different trajectories)
+
+For a dimension tracking object 0's identity: across scenes, object 0 has different colors, so z_dyn_0 would need to encode color to be discriminative. This is exactly what we want!
+
+But there's a subtlety: in the current setup, z_dyn dimensions don't have fixed object assignments. The dim_to_obj mapping is discovered post-hoc. However, even without fixed assignments, the contrastive loss would still encourage each dimension to encode some discriminative scene property that is temporally stable — which is exactly identity.
+
+OK, I'm convinced this is the right approach. Let me now design the complete experiment.
+
+**Experiment Design:**
+
+**Arm A1 (Multi-step SFA, k=20):** d_max=8, CGIR, CCR, d_t=3, sfa_weight=10.0 (ramp), multi-step SFA with k=20 (compute slowness over 20-step windows)
+
+**Arm A2 (Multi-step SFA, k=50):** Same as A1 but k=50
+
+**Arm A3 (Multi-step SFA, k=100):** Same as A1 but k=100
+
+**Arm B (Temporal Contrastive):** d_max=8, CGIR, CCR, d_t=3. Replace SFA with NT-Xent temporal contrastive loss. Temperature τ=0.1.
+
+**Arm C (d_max=16 + Multi-step SFA k=50):** d_max=16, CGIR, CCR, d_t=3. Carries forward best d_max from iter_023.
+
+**Arm D (JEPA stop-gradient diagnostic):** Single seed, d_max=8, sim_weight=0 on Arm A2 config. Tests whether removing the JEPA readout changes the picture.
+
+**Falsification criteria (pre-declared):**
+- M2 is refuted as a representation-shaping mechanism iff delta_R2_color < 0.10 across all k ∈ {20, 50, 100} for d_max=8 and ≤ 0.137 (iter_023 d_max=16 baseline) for d_max=16.
+- The temporal contrastive arm (B) is deemed promising iff delta_R2_color ≥ 0.15 (exceeding iter_023 best of 0.137).
+- C5 is dropped entirely from the plan.
+
+**Early checkpoint:** At step 2000, evaluate multi-step SFA arms. If delta_R2_color < 0.08 across all k values, trigger the contingency (run Arm B with full 5 seeds instead of just 1 seed).
+
+Wait, let me reconsider the manager's hint more carefully:
+
+> the plan should include a contingency arm — at least one non-slowness probe (preferably the temporal-augmentation contrastive variant from the journal, since object-tracking IDs need infrastructure work) staged for the same iteration if multi-step SFA underperforms by an early checkpoint (e.g. step 2000). This avoids burning a full iteration on a third consecutive null result and gives the iteration two independent chances at clearing the identity-encoding bottleneck.
+
+So the manager wants me to stage the contrastive arm from the beginning, not just as a fallback. Let me adjust: run all arms simultaneously, but with the contrastive arm running fewer seeds initially, expanding if multi-step SFA fails at the 2000-step checkpoint.
+
+Actually, given the computational budget, let me think about what's feasible. The iter_023 sweep ran 7 arms × 5 seeds × 5000 steps = 35 runs. I should stay within that budget or less.
+
+Let me restructure:
+
+**All arms run simultaneously from the start:**
+
+- Arm A (Multi-step SFA k=20): 5 seeds
+- Arm B (Multi-step SFA k=50): 5 seeds  
+- Arm C (Multi-step SFA k=100): 5 seeds
+- Arm D (Temporal Contrastive, τ=0.1): 5 seeds
+- Arm E (d_max=16 + best SFA k from {20,50,100}... but we don't know the best k in advance. Use k=50 as most likely): 5 seeds
+- Arm F (JEPA stop-gradient diagnostic): 1 seed
+
+Total: 26 runs. Within budget.
+
+Actually, for Arm E (d_max=16), I should use the multi-step SFA at the k that the SFA literature suggests is most promising. k=50 is a reasonable middle ground. But if we don't know which k is best, maybe I should just pick k=50 as the canonical multi-step value.
+
+Wait, the manager said: "the d_max=16 ramp configuration carried forward as a second arm." Looking at iter_023, Arm B was d_max=16, sfa=10.0, and it was the best performer (delta_R2_color = 0.137). So the carry-forward should be d_max=16 with the ramp configuration.
+
+Let me revise:
+
+- Arm A (Multi-step SFA k=20, d_max=8): 5 seeds
+- Arm B (Multi-step SFA k=50, d_max=8): 5 seeds
+- Arm C (Multi-step SFA k=100, d_max=8): 5 seeds
+- Arm D (Temporal Contrastive, d_max=8): 5 seeds
+- Arm E (d_max=16, Multi-step SFA k=50): 5 seeds
+- Arm F (JEPA sim_weight=0 diagnostic): 1 seed
+
+Total: 26 runs × 5000 steps. Within the ~35 run budget.
+
+Now let me think about the multi-step SFA implementation. Standard SFA uses ||z_dyn(t+1) - z_dyn(t)||². Multi-step SFA would use:
+
+L_SFA_k = (1/k) Σ_{i=0}^{k-1} ||z_dyn(t+1) - z_dyn(t-i)||²
+
+Wait, that's not right. Multi-step SFA should compute slowness over longer temporal windows. The standard formulation is:
+
+L_SFA_k = ||z_dyn(t+1) - z_dyn(t+1-k)||²
+
+Or more generally, the SFA objective over a window of size k:
+
+L_SFA_k = (1/k) Σ_{Δ=1}^{k} ||z_dyn(t+Δ) - z_dyn(t+Δ-1)||²
+
+Actually, in the current code, we only have access to consecutive pairs (z_target, z_prev) per training step. To compute multi-step SFA, we'd need to store a longer history of z_dyn values and compute the slowness over a k-step window.
+
+But the current training setup samples from a replay buffer, so we have random (x_hist, x_target) pairs, not sequential ones. We'd need to modify the replay buffer to store longer trajectories or store z_dyn histories.
+
+Alternative: Modify the replay buffer to store k+1 consecutive frames instead of just (x_hist[3], x_target[1]). Then for each sample, we can compute z_dyn at multiple timesteps and compute the multi-step SFA loss.
+
+But this is a significant infrastructure change. Let me think of a simpler approach.
+
+Actually, the simplest multi-step SFA implementation: modify the replay buffer to also store the z_dyn values from the past k steps. During training, for each batch:
+1. Encode x_target → z_dyn_target
+2. For multi-step SFA: encode x_hist[:, -1], x_hist[:, -2], ..., x_hist[:, 0] → z_dyn at t, t-1, t-2
+3. Compute SFA loss over the full 4-frame window: Σ ||z_dyn[t+1] - z_dyn[t]||² for consecutive pairs
+
+Wait, we already have 4 frames (3 history + 1 target). So we can compute SFA over 3 consecutive pairs instead of 1. That's k=3 multi-step SFA, which is not very large.
+
+For k=20 or k=50, we'd need much longer histories. This requires either:
+1. Storing longer histories in the replay buffer (expensive memory)
+2. Running a separate inference pass to compute z_dyn at past timesteps (expensive compute)
+3. Maintaining an EMA/z_dyn buffer alongside the replay buffer
+
+Option 3 seems most practical: maintain a separate buffer of z_dyn values from the last k timesteps. During training, compute SFA against the stored z_dyn history.
+
+Actually, let me reconsider the manager's hint again: "multi-step SFA test (k>>1, e.g. k∈{20, 50, 100})". The k here refers to the number of timesteps over which slowness is computed. But in the standard SFA formulation, slowness is always computed as the temporal derivative — it's just that the derivative is estimated over a longer window.
+
+In the Wiskott SFA paper, the slowness objective is:
+L = ⟨(ẏ)²⟩_t
+
+where ẏ is the temporal derivative. With discrete time:
+L ≈ (1/T) Σ_t (y[t] - y[t-1])²
+
+Multi-step SFA could mean:
+1. Computing the derivative over larger gaps: (y[t] - y[t-k])² / k
+2. Averaging the derivative over multiple scales
+
+Both approaches would benefit from storing z_dyn values at multiple past timesteps.
+
+For practical implementation, I think the simplest approach is:
+
+**Maintain a z_dyn trajectory buffer** per training run. At each step, store z_dyn(t) along with its trajectory ID. When computing the SFA loss, sample pairs (z_dyn(t), z_dyn(t-k)) from the same trajectory and compute ||z_dyn(t) - z_dyn(t-k)||².
+
+This requires:
+1. A trajectory buffer that stores (z_dyn, trajectory_id, timestep) tuples
+2. At training time, for each batch sample, look up z_dyn from k steps ago in the same trajectory
+3. Compute the multi-step SFA loss
+
+But this is complex. Let me think of an even simpler approach.
+
+**Simplest multi-step SFA:** Since the current code stores x_hist as 3 consecutive frames and x_target as the next frame, we already have 4 frames. For k=3 SFA, we compute:
+
+L_SFA_k3 = (1/3) * (||z_dyn(t) - z_dyn(t-1)||² + ||z_dyn(t-1) - z_dyn(t-2)||² + ||z_dyn(t-2) - z_dyn(t-3)||²)
+
+This is already 3x the gradient signal compared to single-step SFA. But k=3 is much smaller than k=20,50,100.
+
+For larger k, I propose a **running z_dyn buffer** approach:
+- Maintain a circular buffer of the last K z_dyn values for the current trajectory
+- At each training step, before the optimizer step, compute z_dyn for x_target and append to buffer
+- For the SFA loss, sample random pairs from this buffer and compute the slowness
+
+Actually, here's the cleanest approach that works with the existing replay buffer:
+
+**Augment the replay buffer to store k consecutive z_dyn values.**
+
+During data collection (before training), at each step:
+1. Encode the current frame → z_dyn
+2. Append to a per-trajectory buffer
+3. When pushing to the replay buffer, push (x_hist, x_target, z_dyn_history) where z_dyn_history contains the last k z_dyn values
+
+But this requires pre-computing z_dyn during data collection, which means running the encoder on every frame before training. This is feasible but adds complexity.
+
+Actually, the simplest approach that doesn't require changing the replay buffer:
+
+**Use the existing x_hist frames.** x_hist has 3 frames, x_target has 1 frame. We can encode all 4 frames independently to get z_dyn at 4 timesteps. Then compute multi-step SFA over the 3-step window.
+
+But this only gives k=3, not k=20 or k=50.
+
+Let me reconsider. The key insight about multi-step SFA from the literature is that it extracts features that are slow over LONGER timescales. With k=1 (consecutive frames), SFA might extract features that are slow on a 1-step timescale but not on longer timescales. With k=50, SFA would extract features that are slow on a 50-step timescale.
+
+For our problem, object identity is slow on ANY timescale (it doesn't change at all within an episode). So theoretically, k=1 SFA should work just as well as k=50 SFA. The reason k=1 SFA failed in iter_023 is NOT because identity features are too fast for k=1 — it's because SFA doesn't create category structure.
+
+However, there's a more nuanced argument: with k=1 SFA, the gradient signal is dominated by frame-to-frame changes. Even though identity doesn't change, other features (position-related leakage into z_dyn) DO change frame-to-frame. SFA pushes ALL of z_dyn to be slow, but the gradient from fast features might overwhelm the gradient from slow features. With multi-step SFA (k>>1), the gradient is averaged over longer windows, potentially giving more weight to the slow features.
+
+But iter_023 already showed that making SFA stronger (higher weight) doesn't help. The issue isn't gradient magnitude — it's that SFA doesn't have a mechanism to CREATE category structure. It only removes temporal variation.
+
+OK, I think multi-step SFA is worth testing as a "last slowness shot" per the manager's directive, but I should be realistic that it's unlikely to succeed. The temporal contrastive arm is the real innovation.
+
+Let me design the multi-step SFA implementation pragmatically:
+
+**Implementation approach for multi-step SFA:**
+
+Option A: Extend the replay buffer to store longer histories (e.g., 50 frames). This is memory-intensive.
+
+Option B: Extend x_hist from H=3 to H=k and compute SFA over the full window. This requires changing the encoder's history handling.
+
+Option C: Maintain a separate z_dyn trajectory buffer alongside the replay buffer. During training, look up past z_dyn values from this buffer.
+
+Option D: Use a simple exponential moving average (EMA) of z_dyn as the "slow target" and compute SFA as ||z_dyn - EMA(z_dyn)||². This approximates multi-step SFA without storing long histories.
+
+Option D is elegant and simple! The EMA of z_dyn captures the slow component of z_dyn. If identity is the slowest feature, the EMA will converge to the identity component. The SFA loss then becomes: push z_dyn toward its EMA, which naturally extracts the slow (identity) features.
+
+L_SFA_ema = ||z_dyn(t) - EMA(z_dyn)||²
+
+where EMA(z_dyn) = α * z_dyn(t) + (1-α) * EMA(z_dyn(t-1))
+
+This is similar to BYOL/EMA-style approaches! The EMA serves as a "slow target" that only tracks the slowly-varying components.
+
+Wait, but this requires maintaining per-channel EMAs during training. And the EMA would be computed online, so it depends on the order of training samples. Let me think about whether this is sound.
+
+Actually, for the SFA perspective, the EMA approach is equivalent to computing a weighted average of past z_dyn values, where more recent values have higher weight. The slowness loss ||z_dyn - EMA(z_dyn)||² would push z_dyn to match its running average, which is inherently slow. This should extract slow features more effectively than single-step SFA because:
+1. The EMA integrates information over many steps (effective k ≈ 1/α)
+2. The gradient signal is stronger because the EMA target is more stable
+
+For α=0.05 (same as the existing ema_alpha in the model), the effective window is ~20 steps. For α=0.02, ~50 steps. For α=0.01, ~100 steps.
+
+This is a clean, simple implementation. Let me use this as the multi-step SFA approach.
+
+Actually, wait. Let me reconsider. The EMA approach has a subtle issue: during early training, the EMA is poorly estimated (starts from initialization). The EMA target would be noisy for the first ~1/α steps, which could destabilize training.
+
+For robustness, I could:
+1. Start the EMA from the first z_dyn value and let it warm up
+2. Only apply the EMA-SFA loss after a warmup period
+3. Use a larger initial α that decays to the target α
+
+Or I could just use the straightforward approach: store z_dyn values in a buffer and compute multi-step SFA directly. Let me think about what's simplest to implement.
+
+**Simplest practical approach:** Extend x_hist to store more frames and compute z_dyn for each frame.
+
+Currently x_hist is (B, 3, 3, 128) — 3 frames of (3, 128). If I extend to (B, k, 3, 128), I can encode all k frames and compute multi-step SFA.
+
+But this requires significant changes to the data collection and model forward pass. And for k=100, the memory cost is 100× current.
+
+**Alternative simplest approach:** During training, maintain a deque of the last k z_dyn values from the current trajectory. At each training step:
+1. Compute z_dyn for x_target → z_dyn_new
+2. Append z_dyn_new to the trajectory buffer
+3. For multi-step SFA, compute ||z_dyn_new - z_dyn_buffer[t-k]||² for random k in {1, 20, 50, 100}
+
+This requires:
+- A trajectory buffer (deque of z_dyn tensors) maintained during training
+- The buffer should be reset when the environment is reset
+
+The issue: the current training loop samples from a replay buffer, so consecutive samples come from random points in the trajectory. The z_dyn buffer would need to be associated with specific trajectory positions.
+
+This is getting complicated. Let me step back and think about what's the MINIMUM change needed.
+
+**Pragmatic approach:** For the multi-step SFA arms, I'll modify the training loop to:
+1. Not use a replay buffer (use online sampling instead)
+2. Maintain a z_dyn history deque
+3. At each step, compute z_dyn for the current frame and append to the deque
+4. For SFA loss, randomly sample a pair (z_dyn_now, z_dyn_past) from the deque where the time gap is in {1, 20, 50, 100}
+
+This means no replay buffer for the multi-step SFA arms. The batch would be constructed from the current frame plus a random past frame from the same trajectory.
+
+Actually, this is still complex. Let me think about what the manager really wants. The hint says: "multi-step SFA test (k>>1, e.g. k∈{20, 50, 100})". The standard SFA literature computes slowness as the squared temporal derivative averaged over time. Multi-step SFA simply uses a longer temporal derivative:
+
+L_SFA_k = ||z_dyn(t) - z_dyn(t-k)||² / k
+
+The /k normalization ensures the gradient scale is comparable across different k values.
+
+To implement this, we need z_dyn values from k steps ago. The simplest way in the current framework:
+
+**Use the environment's trajectory directly.** Instead of sampling from a replay buffer, run the environment continuously and store z_dyn values in a rolling buffer. At each training step:
+1. Step the environment → get x_t
+2. Encode x_t → z_dyn_t
+3. Store z_dyn_t in a rolling buffer of size K_max (100)
+4. For each k ∈ {1, 20, 50, 100}, if the buffer has ≥ k+1 entries, compute ||z_dyn_t - z_dyn_{t-k}||² / k
+5. Average the SFA losses across all available k values
+
+This is clean and doesn't require changing the model architecture. The batch dimension comes from... wait, we only have one sample per step (the current frame). We need a batch for VICReg.
+
+OK, let me combine approaches: use the replay buffer for the JEPA/VICReg part, but maintain a separate z_dyn trajectory for the multi-step SFA part.
+
+Here's the revised training loop for multi-step SFA arms:
+
+```python
+# Standard replay buffer for JEPA+VICReg
+replay_buffer = ReplayBuffer(capacity=2000)
+
+# z_dyn trajectory buffer for multi-step SFA
+z_dyn_trajectory = collections.deque(maxlen=K_max+1)
+
+for step in range(1, total_steps+1):
+    # Step environment
+    obs, info = env.step({"acc": 0.0, "push": False})
+    history.append(obs)
+    
+    # Encode current frame for trajectory tracking
+    x_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+    with torch.no_grad():
+        z_coord_t, z_dyn_t = model.encoder(x_t)
+    z_dyn_trajectory.append(z_dyn_t[0, :d_t].cpu())
+    
+    # Standard replay buffer push
+    if len(history) == 4:
+        replay_buffer.push(np.stack(list(history)[:3], axis=0), history[3])
+    
+    # Sample batch from replay buffer for JEPA+VICReg
+    if len(replay_buffer) >= 32:
+        x_hist_b, x_target_b = replay_buffer.sample(32)
+        x_hist_t = torch.from_numpy(x_hist_b).float().to(device)
+        x_target_t = torch.from_numpy(x_target_b).float().to(device)
+        
+        # Forward pass (JEPA+VICReg)
+        loss_dict, ... = model(x_hist_t, x_target_t, ...)
+        
+        # Multi-step SFA loss
+        sfa_loss_k = 0.0
+        n_sfa_terms = 0
+        for k in [1, 20, 50, 100]:
+            if len(z_dyn_trajectory) > k:
+                z_now = z_dyn_trajectory[-1].to(device)  # (d_t,)
+                z_past = z_dyn_trajectory[-k-1].to(device)  # (d_t,)
+                sfa_loss_k += F.mse_loss(z_now, z_past.detach()) / k
+                n_sfa_terms += 1
+        
+        if n_sfa_terms > 0:
+            sfa_loss_k = sfa_loss_k / n_sfa_terms
+            loss = loss_dict["loss"] + sfa_weight * sfa_loss_k
+        
+        loss.backward()
+        optimizer.step()
+```
+
+Wait, there's a problem: the multi-step SFA loss uses z_dyn from the trajectory buffer, which were computed with `no_grad`. The gradient from the SFA loss wouldn't flow back to the encoder! The z_now and z_past are detached.
+
+To fix this, I need to compute z_dyn for the current frame WITH gradients:
+
+```python
+# Encode current frame WITH gradients for SFA
+x_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+z_coord_t, z_dyn_t = model.encoder(x_t)  # Don't use no_grad!
+
+# Store the z_dyn value for future SFA computation
+# But we need to detach for storage since we can't keep computation graphs for 100 steps
+z_dyn_trajectory.append(z_dyn_t[0, :d_t].detach().cpu())
+
+# Compute multi-step SFA loss
+sfa_loss = 0.0
+for k in sfa_k_values:
+    if len(z_dyn_trajectory) > k:
+        z_past = z_dyn_trajectory[-k-1].to(device)  # detached, no gradient
+        sfa_loss += F.mse_loss(z_dyn_t[0, :d_t], z_past.detach()) / k
+```
+
+This way, z_dyn_t has gradients (it was computed without no_grad), and z_past is detached. The gradient flows through z_dyn_t back to the encoder, pushing z_dyn toward past values (making it slow).
+
+The issue is that computing z_dyn_t WITH gradients for every training step means we're doing an extra forward pass through the encoder for every step. This doubles the compute cost. But it's necessary for gradient flow.
+
+Actually wait — we're already computing z_dyn for x_target in the main forward pass. Can we reuse that? Let me look at the current code flow:
+
+In `run_single`, the main forward pass is:
+```python
+loss_dict, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn) = model(
+    x_hist_t, x_target_t, ...)
+```
+
+The z_target_dyn here is computed with gradients (it's part of the model's forward pass). So we can use z_target_dyn for the SFA trajectory!
+
+But z_target_dyn is from the batch (32 samples), not from the current environment frame. And different samples in the batch come from different trajectory points.
+
+Hmm, this is getting complicated. Let me simplify by doing the extra forward pass:
+
+```python
+# After the main training step, also compute z_dyn for the current env frame
+model.eval()
+with torch.no_grad():
+    x_t_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+    z_coord_t, z_dyn_t = model.encoder(x_t_tensor)
+    z_dyn_trajectory.append(z_dyn_t[0, :d_t].cpu())
+model.train()
+```
+
+And for the SFA loss, compute it separately:
+
+```python
+# Compute z_dyn for current frame WITH gradients (for SFA gradient flow)
+x_t_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+z_coord_t_sfa, z_dyn_t_sfa = model.encoder(x_t_tensor)
+
+# Multi-step SFA
+sfa_loss = 0.0
+for k in sfa_k_values:
+    if len(z_dyn_trajectory) > k:
+        z_past = z_dyn_trajectory[-k-1].to(device)
+        sfa_loss += F.mse_loss(z_dyn_t_sfa[0, :d_t], z_past) / k
+```
+
+This adds one extra forward pass per step. For batch_size=1 (single frame), this is cheap.
+
+Actually, I realize there's an even simpler approach. We don't need to store a separate trajectory. We can modify the replay buffer to also store the z_dyn values from the encoding step, and then look up past z_dyn values during training.
+
+But this requires pre-computing z_dyn for all stored frames, which means running the encoder on every frame before training. And the encoder changes during training, so the stored z_dyn values would be stale.
+
+The trajectory buffer approach is better because:
+1. We compute z_dyn with the CURRENT encoder (no staleness)
+2. We only need to store the last K_max values
+3. The SFA loss uses the current z_dyn (with gradients) vs past z_dyn (detached)
+
+OK, let me finalize the design. I think the trajectory buffer approach is workable. Let me also address the contrastive arm design.
+
+**Temporal Contrastive (Arm D) implementation:**
+
+For the NT-Xent loss on z_dyn, I need:
+- A batch of z_dyn values at two different timesteps (from the same trajectories)
+- Positive pairs: same trajectory, different times
+- Negative pairs: different trajectories
+
+The simplest implementation: use the existing x_hist and x_target encoding.
+
+In the current forward pass:
+- z_hist_dyn has shape (B, H, d_dyn) — z_dyn at t-2, t-1, t
+- z_target_dyn has shape (B, d_dyn) — z_dyn at t+1
+
+For temporal contrastive:
+- anchor: z_target_dyn (B, d_dyn) — z_dyn at t+1
+- positive: z_hist_dyn[:, -1] (B, d_dyn) — z_dyn at t (same sample, 1 step earlier)
+- negatives: z_hist_dyn[:, -1] for all other samples in the batch
+
+NT-Xent loss per dimension c:
+L_c = -log(exp(sim(z_target_dyn[i,c], z_hist_dyn[i,-1,c]) / τ) / Σ_j exp(sim(z_target_dyn[i,c], z_hist_dyn[j,-1,c]) / τ))
+
+where sim(a, b) = a·b / (||a|| · ||b||) for vectors, or just a·b for scalars.
+
+Since z_dyn_c is a scalar per sample (one value per dimension), the "similarity" is just the product, and the NT-Xent becomes:
+
+L_c = -log(exp(z_target_dyn[i,c] * z_hist_dyn[i,-1,c] / τ) / Σ_j exp(z_target_dyn[i,c] * z_hist_dyn[j,-1,c] / τ))
+
+This is a standard softmax cross-entropy where the "logits" are z_target_dyn[i,c] * z_hist_dyn[j,-1,c] / τ, the "target" is j=i, and the loss is the negative log-likelihood.
+
+For d_t=3, we compute this for each active dimension and average.
+
+This is very clean and requires minimal code changes. The z_hist_dyn is already computed in the forward pass.
+
+But wait — in the SFA mode of NonParametricJEPASpatial, z_hist_dyn is detached before being passed to the predictor (for the JEPA readout). Let me check:
+
+In the SFA branch:
+```python
+z_target_sfa_dyn = z_target_dyn_active.detach()
+z_hist_sfa_dyn = z_hist_dyn.detach()
+```
+
+Yes, both are detached for the JEPA readout. But for the contrastive loss, we need z_target_dyn with gradients and z_hist_dyn[:, -1] detached (as the "target" in the contrastive sense).
+
+So the contrastive loss would be computed BEFORE the detach, using the original z_target_dyn and z_hist_dyn tensors.
+
+Let me design the code changes needed:
+
+1. **models_dual_stream.py**: Add a `contrastive_weight` parameter to NonParametricJEPASpatial. In the SFA forward branch, compute the NT-Xent loss before the detach operations.
+
+2. **run_phase0_sfa_multistep.py**: New runner script with:
+   - Multi-step SFA via z_dyn trajectory buffer
+   - Temporal contrastive arm
+   - JEPA stop-gradient diagnostic arm
+
+Let me now write out the complete plan.
+
+Actually, I realize I should also think about the training duration. The manager's hint says 5000 steps. Previous iterations used 5000 steps. Let me keep that.
+
+Also, I need to think about whether the contrastive loss should be per-dimension or joint across dimensions. Per-dimension is simpler and more aligned with the dual-stream design (each z_dyn dimension tracks one object). Joint would allow cross-dimension interactions. Let me start with per-dimension.
+
+One more consideration: the temperature τ for NT-Xent. With scalar features (z_dyn_c is a scalar), the logits are just z_target * z_prev / τ. If z_dyn values are O(1) (VICReg enforces std ≈ 1), then logits are O(1/τ). With τ=0.1, logits are O(10), which gives sharp distributions. With τ=0.5, logits are O(2), which is softer. I'll start with τ=0.1 and consider τ=0.5 as a variant.
+
+Actually, for scalar features, the NT-Xent might not work well because the similarity is just a product, which doesn't capture the directional alignment that cosine similarity provides for vectors. For better contrastive learning, I should use the full d_t-dimensional z_dyn vector:
+
+L_NT-Xent = -log(exp(sim(z_target_dyn[i], z_hist_dyn[i,-1]) / τ) / Σ_j exp(sim(z_target_dyn[i], z_hist_dyn[j,-1]) / τ))
+
+where sim is cosine similarity over the d_t-dimensional vector.
+
+This encourages the ENTIRE z_dyn vector to be discriminative across scenes while being temporally stable. This is better than per-dimension because:
+1. It allows the model to allocate different dimensions to different aspects of identity
+2. It uses the full representational capacity of z_dyn
+
+However, there's a risk: the model could use position-related information in z_dyn for discrimination (since different scenes have different object positions). This would NOT help with identity encoding.
+
+To mitigate this, I should combine NT-Xent with the existing z_coord stream (which handles position). The contrastive loss should be on z_dyn ONLY, and the position information should be routed to z_coord.
+
+Actually, VICReg's decorrelation (covariance) term already helps here: it decorrelates the dimensions of z_dyn, which should prevent position information from leaking into z_dyn if z_coord already captures it. But this is not guaranteed.
+
+A stronger approach: add an explicit adversarial or orthogonalization term that minimizes the mutual information between z_dyn and position. But this is complex and probably not needed for a first experiment.
+
+Let me just use the full-vector NT-Xent and see what happens.
+
+OK, I think I have a complete design. Let me formalize the plan.
+
+Actually, one more thing. I want to double-check: in the SFA mode of the forward pass, does the SFA loss gradient flow to z_dyn properly?
+
+Looking at the SFA branch in NonParametricJEPASpatial.forward():
+```python
+z_prev_dyn = z_hist_dyn[:, -1]  # (B, d_dyn)
+z_target_dyn_active = z_target_dyn[:, :d_t_dyn]
+z_prev_dyn_active = z_prev_dyn[:, :d_t_dyn]
+sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active.detach())
+```
+
+Yes, z_target_dyn_active has gradients, and z_prev_dyn_active is detached. So the SFA gradient flows from z_target_dyn_active through the encoder. Good.
+
+For the NT-Xent contrastive loss, I'll add it in the same location:
+```python
+# Temporal contrastive loss on z_dyn
+z_anchor = z_target_dyn[:, :d_t_dyn]  # (B, d_t_dyn), WITH gradients
+z_positive = z_hist_dyn[:, -1, :d_t_dyn]  # (B, d_t_dyn), detach for stop-gradient
+z_positive = z_positive.detach()
+
+# Normalize
+z_anchor_norm = F.normalize(z_anchor, dim=-1)
+z_positive_norm = F.normalize(z_positive, dim=-1)
+
+# Cosine similarity matrix: (B, B)
+sim_matrix = torch.mm(z_anchor_norm, z_positive_norm.t()) / temperature
+
+# Labels: diagonal (positive pairs)
+labels = torch.arange(B, device=z_anchor.device)
+
+# Cross-entropy loss
+contrastive_loss = F.cross_entropy(sim_matrix, labels)
+```
+
+This is clean and standard. The gradient flows through z_anchor (z_target_dyn) back to the encoder, while z_positive is treated as a fixed target (stop-gradient).
+
+Now, for the multi-step SFA implementation, I'll need to modify the training loop (not the model) to maintain a z_dyn trajectory buffer and compute the multi-step SFA loss.
+
+Let me now write out the full plan.
+
+Wait, I should also think about whether to combine multi-step SFA with the NT-Xent contrastive loss, or test them separately. The manager wants:
+1. Multi-step SFA as the primary arm
+2. Temporal contrastive as the contingency arm
+
+I'll test them separately to isolate the effect of each.
+
+Here's my final experiment design:
+
+**Arm A (Multi-step SFA k=20):** d_max=8, CGIR, CCR, d_t=3, sfa_weight=10.0 (ramp 0.1→10.0 over 500 steps). Multi-step SFA with k=20 using z_dyn trajectory buffer. 5 seeds.
+
+**Arm B (Multi-step SFA k=50):** Same as A but k=50. 5 seeds.
+
+**Arm C (Multi-step SFA k=100):** Same as A but k=100. 5 seeds.
+
+**Arm D (Temporal Contrastive):** d_max=8, CGIR, CCR, d_t=3, contrastive_weight=25.0, temperature=0.1, NO SFA loss (sfa_weight=0). 5 seeds.
+
+**Arm E (d_max=16 + Multi-step SFA k=50):** d_max=16, CGIR, CCR, d_t=3, sfa_weight=10.0 (ramp), multi-step k=50. 5 seeds.
+
+**Arm F (JEPA stop-gradient diagnostic):** Same as Arm B but sim_weight=0. 1 seed.
+
+Total: 26 runs.
+
+**Falsification criteria:**
+- M2 (slowness as representation shaper) is REFUTED iff delta_R2_color < 0.10 across all k ∈ {20, 50, 100} for d_max=8 (Arms A-C) and delta_R2_color ≤ 0.137 for d_max=16 (Arm E)
+- Temporal contrastive is PROMISING iff delta_R2_color ≥ 0.15 for Arm D
+- C5 is dropped entirely
+
+**Early checkpoint:** At step 2000, evaluate Arms A-C. If all multi-step SFA arms have delta_R2_color < 0.08, the slowness hypothesis is effectively dead and the contrastive result (Arm D) becomes the primary finding regardless of the final step result.
+
+Let me refine this. The manager said: "M2 is refuted as a representation-shaping mechanism iff delta_R2_color < 0.10 across all k ∈ {20, 50, 100} for d_max=8 and ≤ 0.137 (iter_023 d_max=16 baseline) for d_max=16."
+
+So the d_max=16 comparison is against the iter_023 baseline of 0.137, not requiring improvement over it. This means if Arm E gets delta_R2_color ≤ 0.137, it confirms that multi-step SFA doesn't help even with more capacity.
+
+OK, I think I have a solid plan. Let me write it up.
+
+One more consideration about the multi-step SFA: should I average over multiple k values in a single arm, or test each k separately? The manager says k∈{20, 50, 100}, implying separate arms for each k. I'll test each k separately.
+
+But for the multi-step SFA, I need to think about what exactly changes. The current SFA loss is:
+
+L_SFA = ||z_dyn(t+1) - z_dyn(t)||²
+
+Multi-step SFA with horizon k:
+
+L_SFA_k = ||z_dyn(t+1) - z_dyn(t+1-k)||² / k
+
+The /k normalization is important to keep the gradient scale comparable.
+
+But with the trajectory buffer approach, we compute:
+- z_dyn at time t+1 (from x_target encoding, WITH gradients)
+- z_dyn at time t+1-k (from trajectory buffer, detached)
+
+So the loss is:
+L_SFA_k = F.mse_loss(z_dyn_current[:, :d_t], z_dyn_trajectory[-k-1].detach().to(device)) / k
+
+Wait, but this is a single-sample loss (not batched). The batch dimension comes from the main training loop. The multi-step SFA loss should be added to the batch loss.
+
+Actually, I need to be more careful. The main training loop samples a batch from the replay buffer. For the multi-step SFA, I need to know the z_dyn values from k steps ago in the same trajectory. But the replay buffer samples random (x_hist, x_target) pairs, which may come from different trajectory positions.
+
+This is the fundamental challenge: the replay buffer breaks temporal continuity, making multi-step SFA difficult to implement.
+
+Let me reconsider. Two options:
+
+**Option 1: No replay buffer for multi-step SFA.** Run the environment continuously and use consecutive frames. The batch is formed by collecting B consecutive frames (or frames from B parallel environments). This gives natural temporal continuity but reduces sample efficiency (no replay buffer).
+
+**Option 2: Augment replay buffer entries with z_dyn history.** When pushing to the replay buffer, also push the z_dyn values from the last k steps. During training, use these stored z_dyn values for the multi-step SFA loss.
+
+Option 2 is problematic because the stored z_dyn values become stale as the encoder updates during training.
+
+Option 1 is cleaner. Let me design it:
+
+**Training loop for multi-step SFA arms:**
+```python
+# No replay buffer; use online trajectory
+z_dyn_trajectory = collections.deque(maxlen=K_max+1)
+env = PhysicsSandbox(N=3, seed=seed)
+obs = env.reset()
+history = collections.deque(maxlen=4)
+history.append(obs)
+
+for step in range(1, total_steps+1):
+    obs, info = env.step({"acc": 0.0, "push": False})
+    history.append(obs)
+    
+    if len(history) < 4:
+        continue
+    
+    # Form the input
+    x_hist = np.stack(list(history)[:3], axis=0)  # (3, 3, 128)
+    x_target = history[3]  # (3, 128)
+    
+    # Encode x_target WITH gradients (for multi-step SFA)
+    x_target_t = torch.from_numpy(x_target).float().unsqueeze(0).to(device)
+    z_coord_t, z_dyn_t = model.encoder(x_target_t)  # (1, d_max)
+    
+    # Store z_dyn in trajectory buffer (detached)
+    z_dyn_trajectory.append(z_dyn_t[0, :d_t].detach().cpu())
+    
+    # Compute multi-step SFA loss
+    sfa_loss_k = torch.tensor(0.0, device=device)
+    n_sfa_terms = 0
+    for k in [sfa_k]:  # single k per arm
+        if len(z_dyn_trajectory) > k:
+            z_past = z_dyn_trajectory[-k-1].to(device)  # (d_t,)
+            sfa_loss_k += F.mse_loss(z_dyn_t[0, :d_t], z_past) / k
+            n_sfa_terms += 1
+    
+    if n_sfa_terms == 0:
+        sfa_loss_k = torch.tensor(0.0, device=device)
+    
+    # Form batch for VICReg (need batch dimension)
+    # Use the current frame repeated B times? No, that's wrong for VICReg.
+    # Need a proper batch of different frames.
+```
+
+Ah, there's the problem: VICReg needs a BATCH of z_dyn values to compute variance and covariance. With online trajectory (batch_size=1), we can't compute VICReg.
+
+We need a hybrid approach:
+1. Use the replay buffer for the VICReg computation (needs batch)
+2. Use the trajectory buffer for the multi-step SFA computation (needs temporal continuity)
+
+So the training loop would be:
+
+```python
+for step in range(1, total_steps+1):
+    # Step environment
+    obs, info = env.step({"acc": 0.0, "push": False})
+    history.append(obs)
+    
+    # Also encode current frame for trajectory tracking
+    if len(history) >= 4:
+        x_target_single = torch.from_numpy(history[-1]).float().unsqueeze(0).to(device)
+        z_coord_t, z_dyn_t = model.encoder(x_target_single)
+        z_dyn_trajectory.append(z_dyn_t[0, :d_t].detach().cpu())
+        
+        # Push to replay buffer
+        replay_buffer.push(np.stack(list(history)[:3], axis=0), history[3])
+    
+    # Sample batch from replay buffer for main loss (VICReg, JEPA, etc.)
+    if len(replay_buffer) >= 32:
+        x_hist_b, x_target_b = replay_buffer.sample(32)
+        x_hist_t = torch.from_numpy(x_hist_b).float().to(device)
+        x_target_t = torch.from_numpy(x_target_b).float().to(device)
+        
+        model.train()
+        optimizer.zero_grad()
+        
+        # Main forward pass (JEPA + VICReg)
+        loss_dict, ... = model(x_hist_t, x_target_t, sfa_weight=0, ...)
+        # Note: sfa_weight=0 in the model because we compute SFA separately
+        
+        # Multi-step SFA loss (using trajectory buffer)
+        sfa_loss_k = torch.tensor(0.0, device=device)
+        for k in [sfa_k]:
+            if len(z_dyn_trajectory) > k:
+                # Re-encode current frame with gradients
+                x_current = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+                z_coord_cur, z_dyn_cur = model.encoder(x_current)
+                z_past = z_dyn_trajectory[-k-1].to(device)
+                sfa_loss_k = F.mse_loss(z_dyn_cur[0, :d_t], z_past) / k
+        
+        total_loss = loss_dict["loss"] + sfa_weight * sfa_loss_k
+        total_loss.backward()
+        optimizer.step()
+```
+
+This is workable but has a problem: the `model.encoder(x_current)` call adds an extra forward pass through the encoder. And the gradient from this forward pass is only for the SFA loss, not the main loss.
+
+Actually, this is fine. The extra forward pass is just one frame (batch_size=1), which is cheap compared to the main batch forward pass. And the gradient flows properly.
+
+But there's another issue: the `obs` variable might not be the same as the last frame in `history`. Let me be more careful:
+
+```python
+# Current observation (just stepped)
+x_current = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+z_coord_cur, z_dyn_cur = model.encoder(x_current)  # WITH gradients
+
+# Store detached version in trajectory buffer
+z_dyn_trajectory.append(z_dyn_cur[0, :d_t].detach().cpu())
+```
+
+And the SFA loss:
+```python
+# Compute multi-step SFA using z_dyn_cur (with gradients) vs z_past (detached)
+if len(z_dyn_trajectory) > sfa_k:
+    z_past = z_dyn_trajectory[-sfa_k-1].to(device)
+    sfa_loss_k = F.mse_loss(z_dyn_cur[0, :d_t], z_past) / sfa_k
+```
+
+This is clean. The gradient from the SFA loss flows through z_dyn_cur back to the encoder. The z_past is a fixed target from the trajectory buffer.
+
+One concern: we're doing TWO forward passes through the encoder per step (one for the main batch, one for the SFA trajectory). This doubles the compute cost. But since the SFA forward pass is batch_size=1, it's only ~3% of the main batch cost (1/32). So it's acceptable.
+
+OK, I'm now confident in the design. Let me write the plan.
+
+Let me also think about the contrastive arm more carefully. In the current SFA forward pass, we already have:
+- z_hist_dyn: (B, H, d_dyn) — z_dyn at t-2, t-1, t
+- z_target_dyn: (B, d_dyn) — z_dyn at t+1
+
+For the NT-Xent loss:
+- anchor: z_target_dyn[:, :d_t_dyn]  — (B, d_t_dyn), WITH gradients
+- positive: z_hist_dyn[:, -1, :d_t_dyn]  — (B, d_t_dyn), should be detached
+- negatives: z_hist_dyn[:, -1, :d_t_dyn] for all other samples — (B, d_t_dyn)
+
+Wait, but in the SFA branch, z_hist_dyn is NOT detached before the SFA computation. It's only detached for the JEPA readout:
+```python
+z_target_sfa_dyn = z_target_dyn_active.detach()
+z_hist_sfa_dyn = z_hist_dyn.detach()
+```
+
+These are created AFTER the SFA loss computation. So I can compute the contrastive loss BEFORE these detach operations.
+
+But there's a subtlety: z_hist_dyn comes from encoding x_hist_flat, which is a different input than x_target. So both z_hist_dyn and z_target_dyn have gradients flowing to the encoder. For the contrastive loss, I should use stop-gradient on the positive (z_hist_dyn[:, -1]) to prevent the loss from trivially making both representations zero.
+
+Actually, in SimCLR and other contrastive methods, both the anchor and positive have gradients. The stop-gradient is typically applied to one branch (the "target" branch in BYOL, or the "key" in MoCo). For NT-Xent (SimCLR), both branches have gradients. Let me use the standard SimCLR formulation:
+
+```python
+# Both anchor and positive have gradients
+z_anchor = F.normalize(z_target_dyn[:, :d_t_dyn], dim=-1)  # (B, d_t_dyn)
+z_positive = F.normalize(z_hist_dyn[:, -1, :d_t_dyn], dim=-1)  # (B, d_t_dyn)
+
+# Similarity matrix
+sim_matrix = torch.mm(z_anchor, z_positive.t()) / temperature  # (B, B)
+
+# Labels: diagonal (positive pairs)
+labels = torch.arange(B, device=z_anchor.device)
+
+# Cross-entropy loss
+contrastive_loss = F.cross_entropy(sim_matrix, labels)
+```
+
+This is clean and standard SimCLR. Both branches have gradients, which is fine.
+
+Actually, I should think about whether to apply stop-gradient to one branch. In practice, stop-gradient on the "key" branch (positive) helps prevent collapse in some architectures. But with VICReg already preventing collapse, it might not be necessary. Let me use stop-gradient on the positive branch for safety:
+
+```python
+z_positive = F.normalize(z_hist_dyn[:, -1, :d_t_dyn].detach(), dim=-1)
+```
+
+This way, the contrastive loss only updates the encoder through the anchor (current frame) branch. The positive (previous frame) is treated as a fixed target.
+
+Hmm, but this might reduce the effectiveness of the contrastive loss. Let me use the standard SimCLR approach (no stop-gradient) since VICReg prevents collapse.
+
+OK, I think I've thought about this enough. Let me write the plan now.
+
+One last thing: the manager mentioned "the JEPA-readout stop-gradient diagnostic (Open Question 7) as a low-cost ablation arm — a single seed checking whether sim_weight=0 changes the picture is cheap insurance."
+
+Open Question 7: "Does the sml validation (SFA+VICReg at 82%) transfer to RGB inputs, or is the sml binary-task advantage specific to low-DOF inputs?"
+
+Actually, sim_weight=0 tests whether the JEPA readout is helping or hurting. If sim_weight=0 improves delta_R2_color, it means the JEPA readout is actually conflicting with SFA/contrastive objectives. If sim_weight=0 makes no difference, the JEPA readout is inert. This is cheap to test (1 seed) and provides useful diagnostic information.
+
+Let me finalize the plan now.Now I have a thorough understanding of the full codebase, the historical trajectory, and the exact state of the project. Let me synthesize my analysis and formulate the plan.
+
+**Key findings from my analysis:**
+
+1. **SFA (k=1) is dead** — iter_023 conclusively showed that slowness on z_dyn does NOT produce identity encoding, even at gradient parity (sfa_weight=25.0). delta_R2_color was flat at 0.040–0.064 across the entire sweep.
+
+2. **Multi-step SFA is the last slowness shot** — Standard SFA literature uses multi-timescale slowness. With k>>1, the gradient integrates over longer horizons and may extract slower features. But the fundamental concern remains: SFA only has "pull" (make things slow), not "push" (create category structure).
+
+3. **Temporal contrastive (NT-Xent) is the principled non-slowness alternative** — Using same-trajectory frames as positives and cross-trajectory frames as negatives, NT-Xent combines temporal invariance (like SFA) WITH cross-scene discrimination (unlike SFA). The negative pairs force z_dyn to be discriminative across scenes, which — given that z_coord handles position — should route identity information to z_dyn.
+
+4. **Implementation is feasible** — The contrastive loss uses z_target_dyn (anchor) and z_hist_dyn[:,-1] (positive), both already computed in the forward pass. Multi-step SFA requires a z_dyn trajectory buffer (deque) maintained alongside the replay buffer.
+
+5. **C5 is structurally impossible and must be dropped** — Per iter_023, normalized_coord_var (~1e-5) is 2-3 orders below any achievable normalized_dyn_var.
+
+6. **d_max=16 was best** (delta_R2_color=0.137 in iter_023) but this was NOT an SFA effect — it was a capacity effect. It should be carried forward.
+
+```yaml
+hypothesis: |
+  Two-part hypothesis tested simultaneously:
+
+  PART A (last slowness shot): Multi-step SFA with temporal horizon k∈{20,50,100}
+  accumulates gradient over longer windows than single-step SFA (k=1), enabling
+  extraction of features that are slow at longer timescales. Specifically, multi-step
+  SFA computes L_SFA_k = ||z_dyn(t) - z_dyn(t-k)||² / k using a z_dyn trajectory
+  buffer maintained during training. If identity features require longer temporal
+  integration to separate from position-related z_dyn variation, then k>>1 should
+  produce delta_R2_color improvement where k=1 failed.
+
+  PART B (non-slowness probe): Temporal contrastive learning (NT-Xent) on z_dyn,
+  where positive pairs are same-trajectory z_dyn at different timesteps and negative
+  pairs are z_dyn from different trajectories in the same batch, will produce
+  identity encoding because: (1) temporal invariance (positives) makes z_dyn stable
+  like SFA, and (2) cross-scene discrimination (negatives) forces z_dyn to encode
+  scene-specific information that is NOT position (handled by z_coord), leaving
+  identity as the primary discriminable attribute. The NT-Xent loss is:
+  L_contra = -log(exp(sim(z_target_dyn[i], z_hist_dyn[i,-1])/τ) / Σ_j exp(sim(z_target_dyn[i], z_hist_dyn[j,-1])/τ))
+  with cosine similarity and temperature τ=0.1.
+
+falsification_criterion: |
+  PRE-DECLARED FALSIFICATION CRITERIA:
+
+  1. M2 (slowness as representation-shaping mechanism) is REFUTED iff
+     delta_R2_color < 0.10 across ALL k ∈ {20, 50, 100} for d_max=8 (Arms A-C)
+     AND delta_R2_color ≤ 0.137 (iter_023 d_max=16 baseline) for d_max=16 (Arm E).
+     No post-hoc reframing of "SFA works" if only z_dyn temporal variance moves —
+     variance reduction is mechanical, not the claim.
+
+  2. Temporal contrastive (Arm D) is deemed PROMISING iff delta_R2_color ≥ 0.15,
+     exceeding the iter_023 best of 0.137 (which was a capacity effect, not an
+     objective effect). If delta_R2_color < 0.10 for Arm D, the temporal
+     contrastive approach does not meaningfully improve identity encoding.
+
+  3. C5 is DROPPED ENTIRELY from this iteration. It is a structurally impossible
+     metric artifact (iter_023: 0/35 seeds). Re-running it would be construction,
+     not evidence.
+
+  4. Early checkpoint at step 2000: if ALL multi-step SFA arms (A-C) show
+     delta_R2_color < 0.08 at the checkpoint, the slowness hypothesis is
+     effectively dead regardless of final-step results, and the contrastive
+     finding becomes the primary outcome.
+
+proposed_method: |
+  EXPERIMENT DESIGN: 6 arms × variable seeds × 5000 steps.
+  Seeds: [42, 123, 456, 789, 999] for main arms; [42] for diagnostic arm.
+  Total runs: 26 (within the ~35-run budget of iter_023).
+
+  ARM CONFIGURATIONS:
+
+  Arm A (Multi-step SFA k=20, d_max=8): 5 seeds
+    - primary_objective="sfa", sfa_weight=10.0 (ramp 0.1→10.0 over 500 steps)
+    - Multi-step SFA with k=20 using z_dyn trajectory buffer
+    - CGIR, CCR covariance, d_t=3, sim_weight=25.0, var_weight=25.0, cov_weight=25.0
+
+  Arm B (Multi-step SFA k=50, d_max=8): 5 seeds
+    - Same as Arm A but sfa_k=50
+
+  Arm C (Multi-step SFA k=100, d_max=8): 5 seeds
+    - Same as Arm A but sfa_k=100
+
+  Arm D (Temporal Contrastive, d_max=8): 5 seeds
+    - primary_objective="contrastive", contrastive_weight=25.0, temperature=0.1
+    - NO SFA loss (sfa_weight=0). NT-Xent replaces SFA as the temporal objective.
+    - CGIR, CCR covariance, d_t=3, sim_weight=25.0, var_weight=25.0, cov_weight=25.0
+
+  Arm E (d_max=16 + Multi-step SFA k=50): 5 seeds
+    - Same as Arm B but d_max=16 (carrying forward the best capacity from iter_023)
+
+  Arm F (JEPA stop-gradient diagnostic): 1 seed
+    - Same as Arm B (k=50, d_max=8) but sim_weight=0
+    - Tests whether removing the JEPA readout entirely changes the picture
+
+  MULTI-STEP SFA IMPLEMENTATION:
+  - Maintain a z_dyn trajectory buffer (collections.deque, maxlen=110) alongside
+    the replay buffer during training
+  - At each step, encode the current environment frame (x_current) through the
+    encoder WITH gradients and store z_dyn.detach() in the trajectory buffer
+  - For the multi-step SFA loss: sfa_loss_k = MSE(z_dyn_current, z_dyn_trajectory[-k-1]) / k
+  - The gradient flows through z_dyn_current back to the encoder; z_past is a
+    fixed (detached) target from the buffer
+  - This requires one additional encoder forward pass per step (batch_size=1),
+    which is ~3% overhead over the main batch forward pass
+  - The SFA loss is ADDED to the main loss (VICReg + JEPA readout), replacing
+    the single-step SFA in the model's forward pass (set sfa_weight=0 in model,
+    compute multi-step SFA externally)
+
+  TEMPORAL CONTRASTIVE (NT-Xent) IMPLEMENTATION:
+  - Computed inside NonParametricJEPASpatial.forward() in the SFA branch
+  - Uses z_target_dyn (anchor, WITH gradients) and z_hist_dyn[:,-1] (positive,
+    WITH gradients — standard SimCLR, no stop-gradient needed since VICReg
+    prevents collapse)
+  - NT-Xent loss:
+    z_anchor = F.normalize(z_target_dyn[:, :d_t_dyn], dim=-1)  # (B, d_t_dyn)
+    z_positive = F.normalize(z_hist_dyn[:, -1, :d_t_dyn], dim=-1)  # (B, d_t_dyn)
+    sim_matrix = mm(z_anchor, z_positive.T) / τ  # (B, B)
+    labels = arange(B)  # diagonal = positive pairs
+    contrastive_loss = cross_entropy(sim_matrix, labels)
+  - Uses full d_t-dimensional z_dyn vector (not per-dimension) to allow the
+    model to allocate different dimensions to different identity aspects
+
+  CODE CHANGES:
+  1. src/models_dual_stream.py: Add contrastive_weight and temperature parameters
+     to NonParametricJEPASpatial.__init__(). In the SFA forward branch, add
+     NT-Xent contrastive loss computation before the detach operations. Add
+     "contrastive" as a new primary_objective option that uses NT-Xent instead
+     of SFA. Add contrastive_loss to the returned loss dict.
+
+  2. src/run_phase0_sfa_multistep.py (NEW): Main experiment runner.
+     - Based on run_phase0_sfa_sweep.py structure
+     - 6 arms × variable seeds × 5000 steps
+     - For Arms A-C, E: multi-step SFA via z_dyn trajectory buffer
+     - For Arm D: temporal contrastive (model-level)
+     - For Arm F: sim_weight=0 diagnostic
+     - Same evaluation suite: semantic probes, collapse checks, centroid MSE,
+       tracking quality, normalized temporal variance
+     - Results saved to archive/iter_024/results/
+
+  3. src/pre_registration.md: Updated with this plan.
+
+  METRICS (same as iter_023, directly comparable):
+  1. delta_R2_color (PRIMARY criterion — improvement over iter_023 baseline of 0.05)
+  2. delta_R2_identity
+  3. C1 (Collapse): per_dim_std < 0.5 in < 2/5 seeds per arm
+  4. Centroid MSE
+  5. Normalized temporal variance (dyn and coord)
+  6. Slowness ratio
+  7. Per-dim std, collapse counts
+  8. Tracking quality
+  9. GDASR growth-point logs (log-only mode)
+  10. Step-2000 checkpoint evaluation for early falsification
+
+  TRAINING PROTOCOL:
+  - 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000
+  - d_t=3 frozen, gdasr_log_only=True
+  - All arms: CGIR dyn_readout, CCR covariance mode
+  - SFA ramp: 0.1 → target_weight over 500 steps (stability from iter_023 A6)
+  - For multi-step SFA arms: trajectory buffer pre-filled during the first 110
+    steps of environment interaction before SFA loss computation begins
+
+pre_registration_file: "src/pre_registration.md"
+```
