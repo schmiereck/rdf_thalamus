@@ -1,9 +1,20 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 027
 
-*   **Iteration:** 027
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 027 -> Planner [Pre-Planning Hints]
 
-## 1. Hypothesis
+Manager's Pre-Planning Hints (for Iteration 027)
+
+1. Directional: The next iteration must be the **architectural probe** flagged in the journal — a separate `z_dyn` encoder branch — not another regime sweep. Single-knob regime tuning is now a closed intervention class (iter_026 null); any plan that returns to LR/var_weight/batch_size sweeps without bundling a structural change should be rejected at draft review. Keep the objective stack (SFA+VICReg on `z_dyn`, JEPA on `z_coord`) and the M1/M3 mandates frozen so the architectural variable is the only thing moving.
+
+2. Scientific discipline: The plan must **pre-register before execution**: (a) the dual collapse gate (train std AND eval std) with the ≤10% target stated against an explicit seed count (≥10); (b) a *separate-encoder control with no identity objective* whose collapse rate constitutes the falsification arm — if even this control collapses ≥20%, the architectural hypothesis is refuted and the project pivots, not iterates; (c) buffer held at 4000 to neutralize the iter_025→026 confound; (d) Hungarian-primary matching unchanged. No early termination, no post-hoc gate adjustment. The plan should explicitly state which observed outcome would constitute a positive constructive result vs. a second null vs. an ambiguous middle, *before* any seed is run.
+
+3. Discipline guard against false comfort: Even if separate-encoder lowers headline collapse, do **not** allow language like "stabilized" or "resolved" — require the train-vs-eval std gap (the narrow-subspace diagnostic from iter_026) to be reported on every arm. A configuration that passes train-std but still fails eval-std is not a success; it is the same generalization-failure mode under a new architecture. The plan should treat the train/eval std gap as a co-equal reporting requirement, not a footnote.
+
+---
+
+## Iteration 027 -> Manager [Proposed Research Plan]
+
+**Proposed Hypothesis:**
 The shared CNN backbone (conv1–conv4) is the primary structural cause of z_dyn
 collapse in the NonParametricJEPASpatial encoder. When z_dyn and z_coord share
 backbone parameters, the JEPA similarity loss gradient (which predominantly shapes
@@ -20,7 +31,7 @@ Formally: let C_shared be the z_dyn collapse rate under the shared backbone
 (known ≈0.30 from iter_026 A1) and C_sep be the collapse rate under the
 separate backbone. The hypothesis is C_sep ≤ 0.10 over 10 seeds.
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 Three pre-registered outcome classes:
 
 1. POSITIVE CONSTRUCTIVE: Arm B (separate backbone + JEPA+VICReg) collapse
@@ -48,7 +59,7 @@ on 200 eval samples, and collapsed_train = any d_t z_dyn dim has mean
 training-logged std < 0.5 at step 8000. The train-vs-eval std gap must be
 reported co-equally for every arm and every seed (not as a footnote).
 
-## 3. Proposed Method
+**Proposed Method:**
 Step-by-step experimental protocol:
 
 1. CREATE src/models_separate_dyn.py with:
@@ -164,4 +175,38 @@ Total runs: 3 arms × 10 seeds = 30 runs × 8000 steps each.
 Expected wall time: ~30 minutes with parallel workers (CPU).
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 027 -> Planner [Strategic Guidance]
+
+Manager's Note — Iteration 027 Plan Review (Strategic Guidance)
+
+**Verdict: Approve with three mandatory amendments.** The plan correctly executes the architectural pivot, pre-registers cleanly, and respects the iter_026 confound controls. The amendments below close gaps that would otherwise leave the result unfalsifiable or misattributable.
+
+---
+
+**1. The readout swap silently breaks the cross-iteration anchor — fix the reference.** The plan shifts `dyn_readout` from `centroid_gated` (iter_026 A1, the ~30% anchor used in the hypothesis) to `mean` (Arm A here). That is a defensible simplification, but it means Arm A is **not** the same condition as iter_026 A1, so the headline claim "C_shared ≈ 0.30 → C_sep ≤ 0.10" no longer rests on a within-experiment comparison. Two acceptable fixes — pick one and pre-register it:
+
+   (a) Add a fourth arm A′ (shared backbone, `dyn_readout=centroid_gated`, otherwise identical) as the true iter_026 anchor, so the chain A′ → A → B is internally controlled; or
+   (b) State explicitly in the pre-registration that the hypothesis is now C_sep ≤ 0.10 measured **against Arm A in this iteration**, not against the iter_026 anchor, and that the iter_026 number is informal context only.
+
+   Without one of these, a "positive" Arm B result is ambiguous between "separate backbone fixed it" and "mean readout fixed it."
+
+**2. Pre-register parameter-count and capacity as an alternative explanation, not just a footnote.** Arm B roughly doubles encoder parameters versus Arm A. The iter_025 v2 record already shows that `d_max=16` capacity alone changes behaviour. If Arm B passes, you must distinguish "decoupled gradients" (the stated mechanism) from "more capacity" (an unstated confound that would also predict success). Add to the pre-registration:
+
+   - The exact parameter count per arm, computed and logged **before** runs start.
+   - A pre-declared **interpretive rule**: if Arm B ≤10% AND Arm C ≤10%, the mechanism is *consistent with* gradient decoupling but *also consistent with* added capacity, and a capacity-matched shared-backbone control (e.g. widened conv channels) is the mandatory iter_028 follow-up. Do not allow the report to claim "the shared-backbone hypothesis is confirmed" in that case — only "is not refuted, pending capacity control."
+
+**3. Language and falsification discipline — tighten three items:**
+
+   - The hypothesis paragraph asserts the mechanism ("JEPA gradient dominates, leaving z_dyn under-supported") as if established. It is a *conjecture*. Reword to: "We conjecture that shared-parameter gradient competition contributes to collapse; the experiment tests the observable consequence C_sep ≤ 0.10, not the mechanism directly." A successful collapse-rate change is **consistent with** the mechanism, not a demonstration of it.
+   - The "AMBIGUOUS MIDDLE: (10%, 20%)" band must have a pre-committed default action stated *now*. Right now it says "warrants a follow-up" — that is the loophole that becomes "let's iterate just a bit more." Either pre-commit to a specific follow-up arm set, or pre-commit to treating the middle band as a **soft null** that triggers the same pivot as ≥20%. Pick one before runs start.
+   - The Orchestrator will write `src/pre_registration.md` from this plan and commit it before execution; the executor sub-agents must be instructed to read it and refuse to retune the gate, the seed list, the buffer size, or the dual-collapse threshold mid-run. State this constraint explicitly in `proposed_method` step 1.
+
+   Throughout the eventual report, use "is consistent with / does not refute / provides evidence for"; do not allow "proves," "demonstrates," "stabilizes," or "resolves" without the capacity control in point 2.
+
+---
+
+Proceed once amendments 1–3 are reflected in `src/pre_registration.md`. The dual collapse criterion, ≥10 seeds, fixed buffer=4000, Hungarian-primary matching, full-run completion (no early stop), and the co-equal train/eval std reporting from the previous Manager's Hints are correctly carried over — keep all of those.
+
+---
+

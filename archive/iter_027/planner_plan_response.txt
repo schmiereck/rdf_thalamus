@@ -1,0 +1,546 @@
+
+[Tool Call: read_file({'path': 'current_state.md'})]
+
+[Tool Result: # Current Research State
+Phase: Collapse-Elimination Sweep — Measured Null
+
+## Goal
+Achieve a training regime where the NonParametricJEPASpatial encoder (JEPA+VICReg, d_max=8, d_t=3, centroid_gated readout) collapses on ≤10% of seeds over ≥10 seeds. This is a prerequisite for any further architectural or objective experiments.
+
+## Confirmed (iter_026, agent 26.1)
+- MEASURED NULL: No single-knob regime variation in {batch_size ∈ {32,64}, var_weight ∈ {25,50}, sim_weight ∈ {25, 0→25 ramp}, lr ∈ {3e-4, 1e-4}} achieves ≤10% collapse rate over 10 seeds under the dual criterion (eval-std < 0.5 OR train-std < 0.5).
+- A0 (canonical repeat, lr=3e-4, B=32, buffer=4000): 40% collapse rate (dual). Regressed from iter_025's 30%, possibly due to buffer-size change.
+- A1 (batch_size=64): 30% collapse rate (dual). Best arm, matches iter_025 v2. Insufficient for the gate.
+- A2 (var_weight=50): 60% collapse rate (dual). Doubling VICReg variance weight WORSENED collapse — JEPA-vs-VICReg objective tension...]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_multistep.py
+      run_phase0_sfa_recovery.py
+      run_phase0_sfa_sweep.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_...]
+
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: iter | status          | hypothesis
+-----|-----------------|----------
+002  | ok              | phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
+003  | ok              | phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
+004  | ok              | phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
+005  | ok              | phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
+006  | ok              | phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
+007  | ok              | phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
+008  | ok              | phase-8: evaluate unsupervised spatial bottlenecks and close...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_...]
+
+
+[Tool Call: read_file({'path': 'src/train.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import time
+import random
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Ensure src directory is in the path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import FixedJEPA, DynamicJEPA
+
+# Replay Buffer storing (x_hist, x_target)
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        x_hist_batch, x_target_bat...]
+
+
+[Tool Call: read_iteration({'iter_num': 26})]
+
+[Tool Result: ```yaml
+cached_tokens: 1206742
+cost_usd: 4.76235
+hypothesis: 'phase-26: collapse-rate sweep produces measured null — no single-knob
+  regime variation reduces z_dyn collapse below 10%'
+input_tokens: 3926134
+iter: 26
+metrics:
+  a0_collapse_rate_dual: 0.4
+  a0_collapse_rate_eval_only: 0.4
+  a0_collapse_rate_train_only: 0.2
+  a0_mean_final_loss: 7.51
+  a1_collapse_rate_dual: 0.3
+  a1_collapse_rate_eval_only: 0.3
+  a1_collapse_rate_train_only: 0.2
+  a1_mean_final_loss: 4.75
+  a2_collapse_rate_dual: 0.6
+  a2_collapse_rate_eval_only: 0.6
+  a2_collapse_rate_train_only: 0.1
+  a2_mean_final_loss: 6.5
+  a3_collapse_rate_dual: 0.5
+  a3_collapse_rate_eval_only: 0.5
+  a3_collapse_rate_train_only: 0.3
+  a3_mean_final_loss: 5.07
+  a4_collapse_rate_dual: 1.0
+  a4_collapse_rate_eval_only: 0.9
+  a4_collapse_rate_train_only: 1.0
+  a4_mean_final_loss: 19.25
+  best_arm: A1 (batch_size=64)
+  best_collapse_rate: 0.3
+  disqualified_seeds: 0
+  gate_passed: false
+  gate_threshold: 0.1
+  seeds_per_arm: 10
+  tota...]
+
+
+[Tool Call: read_iteration({'iter_num': 25})]
+
+[Tool Result: ```yaml
+cached_tokens: 4996355
+cost_usd: 6.92076
+hypothesis: 'phase-25: corrected v2 ceiling probe is underpowered (30% control collapse);
+  supervised probe worse than control; d_max=16 capacity effect confirmed as measured'
+input_tokens: 8603094
+iter: 25
+metrics:
+  arm_a_collapse_rate: 0.3
+  arm_a_delta_r2_hu_noncollapsed: 0.027
+  arm_b_collapse_rate: 0.3
+  arm_b_delta_r2_hu_noncollapsed: -0.024
+  arm_b_matching_disagreement_rate: 0.43
+  arm_c_collapse_rate: 0.5
+  arm_c_delta_r2_hu_noncollapsed: -0.028
+  arm_c_matching_disagreement_rate: 0.0
+  arm_d_collapse_rate: 0.4
+  arm_d_delta_r2_hu_noncollapsed: -0.099
+  arm_e_collapse_rate: 0.3
+  arm_e_delta_r2_hu_noncollapsed: 0.14
+  lr: 3e-4
+  seeds: 10
+  threshold: 0.1
+  training_steps: 8000
+output_tokens: 182988
+status: experiment_failed
+```
+
+## iter_025: phase-25: corrected v2 ceiling probe is underpowered (30% control collapse); supervised probe worse than control; d_max=16 capacity effect confirmed as measured
+
+**Analysis:** This phase ...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase0_collapse_sweep.py'})]
+
+[Tool Result: #!/usr/bin/env python3
+"""
+Iter_026 Collapse-Rate Sweep Runner.
+
+Based on run_phase0_id_probe_v2.py, stripped to JEPA+VICReg only.
+Sweeps 5 arms (A0-A4) x 10 seeds to find a configuration that reduces
+collapse rate to <=10%.
+
+Dual collapse criterion:
+  - collapsed_eval: any d_t z_dyn dim has batch-std < 0.5 on 200 eval samples
+  - collapsed_train: any d_t z_dyn dim has mean training-logged std < 0.5 at step 8000
+  - collapsed: collapsed_eval OR collapsed_train
+
+Sanity disqualification:
+  - mean total loss at final step > 50 -> disqualified (counted as collapsed)
+  - mean per-dim z_dyn std at final training log < 0.5 -> captured by collapsed_train
+
+All arms complete their full 10-seed runs (no early termination).
+Results saved to archive/iter_026/results/
+"""
+
+import os
+import sys
+import json
+import random
+import argparse
+import collections
+import warnings
+import concurrent.futures
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F...]
+
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_b...]
+
+Let me examine the most recent experiment's analysis and the current `NonParametricEncoder` architecture more closely to understand the exact z_dyn readout mechanism and gradient flow.
+
+[Tool Call: read_result_file({'filename': 'results/final_analysis.md', 'iter_num': 26})]
+
+[Tool Result: # Iter_026 Collapse-Rate Sweep Analysis
+**Date:** Auto-generated
+**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train
+**Sanity disqualification:** final_train_loss > 50 OR per_dim_std_train < 0.5
+**Arms:** A0 (canonical), A1 (batch=64), A2 (var=50), A3 (sim warm-up), A4 (lr=1e-4)
+---
+## Per-Arm Summary (Step = 8000)
+### A0 (canonical repeat)
+- N seeds: 10
+- Collapse rate (dual criterion): 0.40 (4/10)
+- Collapse rate (eval-only): 0.40 (4/10)
+- Collapse rate (train-only): 0.20 (2/10)
+- Mean final train loss: 7.5071 +/- 9.1683
+- Mean final sim loss: 0.0354
+- Mean final var loss: 0.1718
+- Mean final cov loss: 0.0924
+- Centroid MSE (REF ONLY): 168.19
+- delta_R2_color (REF ONLY): 0.0244
+- Mean abs corr: 0.436
+
+**Per-seed details:**
+| seed | collapsed_eval | collapsed_train | collapsed | disqualified | final_loss | per_dim_std_eval | per_dim_std_train | centroid_mse | delta_r2_color |
+|------|----------------|-----------------|-----------|----------...]
+
+
+[Tool Call: read_file({'end_line': 100, 'path': 'src/models_dual_stream.py', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 100 of 1298 ---
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_enc...]
+
+Now let me check a specific data point from iter 026 — the train-vs-eval collapse discrepancy, which is central to the hypothesis:
+
+[Tool Call: read_result_file({'filename': 'results/runs/a1_batch_size_64_seed149.csv', 'iter_num': 26})]
+
+[Tool Result: arm,seed,collapsed_eval,per_dim_std,vicreg_per_dim_std,vicreg_mean_abs_corr,centroid_mse_mean,centroid_r_mean,delta_r2_color,r2_dyn_color,r2_coord_color,r2_dyn_pos,r2_coord_pos,r2_dyn_identity,r2_coord_identity,delta_r2_identity,final_train_loss,final_sim_loss,final_var_loss,final_cov_loss,collapsed_train,per_dim_std_train,collapsed,disqualified
+A1 (batch_size=64),149,True,"[0.4813540279865265, 0.3430708050727844, 0.5109449028968811]","[0.4813540279865265, 0.3430708050727844, 0.5109449028968811]",0.1430813746366352,276.5216684725713,0.3126864433813286,0.03210896952095443,0.017157215433497762,-0.014951754087456673,0.11871067259694379,-0.10409181886038106,0.04041204259255101,0.08323577870980507,-0.04282373611725406,1.4249145984649658,0.02315153367817402,0.0,0.03314545750617981,False,"[1.1962615251541138, 1.1690011024475098, 1.1069741249084473]",True,False
+]
+
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 026
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+There exists a training-regime configuration within the swept parameter space
+{batch_size ∈ {32, 64}, var_weight ∈ {25, 50}, sim_weight ∈ {25 constant, 0→25 ramp},
+learning_rate ∈ {3e-4, 1e-4}} that reduces the z_dyn collapse rate of the
+NonParametricJEPASpatial encoder (JEPA+VICReg, d_max=8, d_t=3, centroid_gated
+readout) from the current 30% (iter_025 v2) to ≤10% over 10 seeds with 8000
+training steps. The most likely candidate is batch_size=64, because VICReg's
+variance and covariance estimation reliability scales inversely with
+1/sqrt(B), and B=32 provides marginal statistical power for per-dimension
+std estimation across d_t=3 dimensions.
+
+## 2. Falsification Criterion
+No single-knob variation in the sweep achieves ≤10% collapse rate (i.e., ≤1
+collapsed seed out of 10) over the seed set [7, 17, 31, 53, 71, 83, 97, 113,
+127, 149], where collapse is defi...]
+
+Now I have a comprehensive understanding of the codebase, the current collapse problem, and the Manager's requirements. Let me synthesize this into a rigorous plan.
+
+**Key observations from the analysis:**
+
+1. **Root cause hypothesis:** In the current `NonParametricEncoder`, both `z_coord` (soft-argmax centroid) and `z_dyn` (mean/centroid-gated readout) are derived from the SAME shared CNN backbone (conv1→conv2→conv3→conv4). The JEPA similarity loss gradient, which primarily shapes z_coord's spatial selectivity, dominates the shared backbone updates, leaving z_dyn's VICReg gradient overwhelmed. This explains both the collapse (VICReg can't maintain variance when competing with the much larger sim_loss gradient) and the train-vs-eval discrepancy (training maintains variance on the training distribution through VICReg, but the narrow representation doesn't generalize to eval data).
+
+2. **Evidence supporting this:** iter_026 A2 showed that DOUBLING var_weight (50 vs 25) WORSENED collapse from 40% to 60% — stronger VICReg on z_dyn paradoxically hurts because it increases the gradient conflict with the sim_loss flowing through the shared backbone.
+
+3. **The architectural probe:** Give z_dyn its own independent CNN backbone. This decouples the gradient paths: z_coord's JEPA gradient flows through backbone A, z_dyn's VICReg gradient flows through backbone B. No competition.
+
+4. **The control (Arm C):** Same separate backbone architecture, but z_dyn gets VICReg only (no JEPA prediction loss). This tests whether the separate backbone alone suffices (VICReg can maintain variance without competing gradients), or whether z_dyn also needs a task objective.
+
+```yaml
+hypothesis: |
+  The shared CNN backbone (conv1–conv4) is the primary structural cause of z_dyn
+  collapse in the NonParametricJEPASpatial encoder. When z_dyn and z_coord share
+  backbone parameters, the JEPA similarity loss gradient (which predominantly shapes
+  z_coord's spatial selectivity) dominates the shared parameter updates, leaving
+  z_dyn's VICReg variance/covariance gradient under-supported. Giving z_dyn an
+  independent CNN backbone (same architecture: 4-layer Conv1d with kernel-5 stride-2,
+  1x1 projection head, mean-spatial readout; separate parameters) will reduce the
+  z_dyn collapse rate from ~30% (iter_026 A1, best shared-backbone regime) to ≤10%
+  under the dual criterion (eval OR train per-dim std < 0.5), because z_dyn's
+  VICReg gradients will flow through an independent parameter set without competing
+  with z_coord's JEPA gradients.
+
+  Formally: let C_shared be the z_dyn collapse rate under the shared backbone
+  (known ≈0.30 from iter_026 A1) and C_sep be the collapse rate under the
+  separate backbone. The hypothesis is C_sep ≤ 0.10 over 10 seeds.
+
+falsification_criterion: |
+  Three pre-registered outcome classes:
+
+  1. POSITIVE CONSTRUCTIVE: Arm B (separate backbone + JEPA+VICReg) collapse
+     rate ≤10%. The architectural change resolves collapse.
+
+  2. SECOND NULL (project pivots): Arm B collapse rate ≥20%. The shared backbone
+     is NOT the primary structural cause of collapse. Per the Manager's
+     instruction, the project pivots away from the shared-backbone hypothesis
+     and does not iterate on this variable.
+
+  3. AMBIGUOUS MIDDLE: Arm B collapse rate in (10%, 20%). The separate backbone
+     partially helps but does not fully resolve collapse. This warrants a
+     follow-up combining the separate backbone with additional interventions
+     (e.g., stronger z_dyn objective, longer training).
+
+  Additionally, the ARM C FALSIFICATION: If Arm C (separate backbone + VICReg-only
+  on z_dyn, no JEPA prediction loss on z_dyn) collapses ≥20%, then even the
+  architectural change combined with VICReg is insufficient without a task
+  objective for z_dyn. Per the Manager: "if even this control collapses ≥20%,
+  the architectural hypothesis is refuted and the project pivots, not iterates."
+
+  All collapse rates use the DUAL criterion: collapsed = collapsed_eval OR
+  collapsed_train, where collapsed_eval = any d_t z_dyn dim has batch-std < 0.5
+  on 200 eval samples, and collapsed_train = any d_t z_dyn dim has mean
+  training-logged std < 0.5 at step 8000. The train-vs-eval std gap must be
+  reported co-equally for every arm and every seed (not as a footnote).
+
+proposed_method: |
+  Step-by-step experimental protocol:
+
+  1. CREATE src/models_separate_dyn.py with:
+     - SeparateDynEncoder(nn.Module): An encoder with TWO independent CNN
+       backbones:
+       (a) coord_backbone: conv1→conv2→conv3→conv4→conv_spatial (identical to
+           NonParametricEncoder), producing z_coord via soft-argmax centroid.
+       (b) dyn_backbone: conv1_dyn→conv2_dyn→conv3_dyn→conv4_dyn→conv_identity
+           (same architecture, SEPARATE parameters), producing z_dyn via mean
+           pooling over the spatial dimension.
+       Both backbones process the same RGB input independently.
+       The class exposes forward(), forward_spatial(), d_dyn property matching
+       the NonParametricEncoder interface.
+
+     - NonParametricJEPASpatialSeparateDyn(NonParametricJEPASpatial): Uses
+       SeparateDynEncoder instead of NonParametricEncoder. Adds a constructor
+       argument `mask_dyn_sim=False` that, when True, zeros out the JEPA
+       sim_loss_dyn term in the forward() method (Arm C control). All other
+       loss terms (VICReg variance/covariance on z_dyn, JEPA sim_loss_coord,
+       VICReg on z_coord) remain active. The predictor still receives z_dyn
+       history but the sim_loss_dyn gradient does not shape the representation.
+
+  2. CREATE src/run_phase0_separate_dyn.py based on run_phase0_collapse_sweep.py,
+     modified to use the new model class and three arms:
+
+     COMMON TO ALL ARMS:
+     - d_max=8, d_t=3, N=3
+     - pos_encoding="none", dyn_readout="mean" (simplest readout; centroid_gated
+       introduces an extra variable)
+     - primary_objective="jepa", ccr_mode="covariance"
+     - ccr_smooth_weight=10, ccr_spatial_weight=10
+     - gdasr_log_only=True
+     - lr=3e-4, gradient clipping max_norm=1.0
+     - batch_size=64 (best from iter_026)
+     - replay_buffer_capacity=4000 (neutralizes iter_025→026 confound)
+     - 8000 training steps, Adam optimizer
+     - 10 seeds: [7, 17, 31, 53, 71, 83, 97, 113, 127, 149]
+     - var_weight=25, cov_weight=25, sim_weight=25
+
+     ARM A (reference, shared backbone):
+       Uses existing NonParametricJEPASpatial with dyn_readout="mean".
+       This re-anchors the shared-backbone collapse rate under mean readout
+       (iter_026 used centroid_gated; this eliminates the readout confound).
+       mask_dyn_sim=False (full JEPA+VICReg on both streams).
+
+     ARM B (experimental, separate backbone):
+       Uses NonParametricJEPASpatialSeparateDyn.
+       mask_dyn_sim=False (full JEPA+VICReg on both streams).
+       The independent dyn_backbone receives z_dyn's VICReg gradient without
+       competition from z_coord's JEPA gradient.
+
+     ARM C (separate-encoder control, no z_dyn identity objective):
+       Uses NonParametricJEPASpatialSeparateDyn.
+       mask_dyn_sim=True (JEPA prediction loss on z_coord only; VICReg
+       variance/covariance on both z_coord and z_dyn; NO JEPA sim_loss_dyn).
+       This tests whether the separate backbone alone suffices, or whether
+       z_dyn also needs a task objective (JEPA prediction) to avoid collapse.
+
+  3. EVALUATION at step 8000 (same protocol as iter_026):
+     - Collapse check (eval): per_dim_std < 0.5 on 200 eval samples from fresh env
+     - Collapse check (train): per_dim_std at step 8000 from training log
+     - Dual criterion: collapsed = collapsed_eval OR collapsed_train
+     - Train-vs-eval std gap: report per_seed_train_std and per_seed_eval_std
+       side-by-side for every seed in every arm (co-equal reporting, not footnote)
+     - VICReg health: per_dim_std, mean_abs_corr on eval samples
+     - Training loss sanity: mean total loss, var_loss, sim_loss at final step
+     - Centroid MSE (reference only, NOT used for arm selection)
+     - Semantic probes: delta_R2_color, delta_R2_identity (reference only)
+     - Parameter count per arm (to document the capacity increase)
+     - Hungarian-primary matching for semantic probes
+
+  4. STOP RULE: ALL arms complete their full 10-seed runs. No early
+     termination even if one arm passes the ≤10% gate.
+
+  5. The ONLY dependent variable for the pre-registered gate is collapse rate
+     (dual criterion). Centroid MSE, delta_R2_color, and other downstream
+     metrics are recorded for diagnostic reference but MUST NOT be used to
+     select a winning arm.
+
+  6. PRE-REGISTERED OUTCOME CLASSIFICATION (stated before any seed runs):
+     - If Arm B ≤10%: POSITIVE CONSTRUCTIVE — separate backbone resolves
+       collapse. Report whether Arm C <20% (backbone alone suffices) or
+       Arm C ≥20% (backbone + task objective both needed).
+     - If Arm B ≥20%: SECOND NULL — shared backbone is not the primary cause.
+       Project pivots per Manager instruction.
+     - If Arm B in (10%, 20%): AMBIGUOUS MIDDLE — partial improvement.
+       Follow-up combining separate backbone with other interventions.
+     - If Arm C ≥20%: ARM C FALSIFICATION — architectural change alone is
+       insufficient even with VICReg; project pivots.
+
+  7. SANITY DISQUALIFICATION: A seed is disqualified (counted as collapsed)
+     if mean total loss at step 8000 > 50 (same threshold as iter_026).
+
+  8. OUTPUT:
+     - Per-seed CSV with all metrics including train and eval per_dim_std
+     - Final analysis markdown with:
+       (a) Per-arm collapse rates under dual, eval-only, train-only criteria
+       (b) Per-seed train-vs-eval std gap table (co-equal with collapse rates)
+       (c) Gate status per arm
+       (d) Parameter count comparison
+       (e) Pre-registered outcome classification
+
+  FILES TO CREATE:
+  - src/models_separate_dyn.py (NEW): SeparateDynEncoder,
+    NonParametricJEPASpatialSeparateDyn
+  - src/run_phase0_separate_dyn.py (NEW): experiment runner
+
+  FILES TO MODIFY:
+  - None (existing code left untouched for backward compatibility;
+    the new model class is standalone)
+
+  Total runs: 3 arms × 10 seeds = 30 runs × 8000 steps each.
+  Expected wall time: ~30 minutes with parallel workers (CPU).
+
+pre_registration_file: "src/pre_registration.md"
+```

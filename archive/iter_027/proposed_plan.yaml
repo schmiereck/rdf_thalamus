@@ -1,0 +1,121 @@
+falsification_criterion: "Three pre-registered outcome classes:\n\n1. POSITIVE CONSTRUCTIVE:\
+  \ Arm B (separate backbone + JEPA+VICReg) collapse\n   rate ≤10%. The architectural\
+  \ change resolves collapse.\n\n2. SECOND NULL (project pivots): Arm B collapse rate\
+  \ ≥20%. The shared backbone\n   is NOT the primary structural cause of collapse.\
+  \ Per the Manager's\n   instruction, the project pivots away from the shared-backbone\
+  \ hypothesis\n   and does not iterate on this variable.\n\n3. AMBIGUOUS MIDDLE:\
+  \ Arm B collapse rate in (10%, 20%). The separate backbone\n   partially helps but\
+  \ does not fully resolve collapse. This warrants a\n   follow-up combining the separate\
+  \ backbone with additional interventions\n   (e.g., stronger z_dyn objective, longer\
+  \ training).\n\nAdditionally, the ARM C FALSIFICATION: If Arm C (separate backbone\
+  \ + VICReg-only\non z_dyn, no JEPA prediction loss on z_dyn) collapses ≥20%, then\
+  \ even the\narchitectural change combined with VICReg is insufficient without a\
+  \ task\nobjective for z_dyn. Per the Manager: \"if even this control collapses ≥20%,\n\
+  the architectural hypothesis is refuted and the project pivots, not iterates.\"\n\
+  \nAll collapse rates use the DUAL criterion: collapsed = collapsed_eval OR\ncollapsed_train,\
+  \ where collapsed_eval = any d_t z_dyn dim has batch-std < 0.5\non 200 eval samples,\
+  \ and collapsed_train = any d_t z_dyn dim has mean\ntraining-logged std < 0.5 at\
+  \ step 8000. The train-vs-eval std gap must be\nreported co-equally for every arm\
+  \ and every seed (not as a footnote).\n"
+hypothesis: 'The shared CNN backbone (conv1–conv4) is the primary structural cause
+  of z_dyn
+
+  collapse in the NonParametricJEPASpatial encoder. When z_dyn and z_coord share
+
+  backbone parameters, the JEPA similarity loss gradient (which predominantly shapes
+
+  z_coord''s spatial selectivity) dominates the shared parameter updates, leaving
+
+  z_dyn''s VICReg variance/covariance gradient under-supported. Giving z_dyn an
+
+  independent CNN backbone (same architecture: 4-layer Conv1d with kernel-5 stride-2,
+
+  1x1 projection head, mean-spatial readout; separate parameters) will reduce the
+
+  z_dyn collapse rate from ~30% (iter_026 A1, best shared-backbone regime) to ≤10%
+
+  under the dual criterion (eval OR train per-dim std < 0.5), because z_dyn''s
+
+  VICReg gradients will flow through an independent parameter set without competing
+
+  with z_coord''s JEPA gradients.
+
+
+  Formally: let C_shared be the z_dyn collapse rate under the shared backbone
+
+  (known ≈0.30 from iter_026 A1) and C_sep be the collapse rate under the
+
+  separate backbone. The hypothesis is C_sep ≤ 0.10 over 10 seeds.
+
+  '
+pre_registration_file: src/pre_registration.md
+proposed_method: "Step-by-step experimental protocol:\n\n1. CREATE src/models_separate_dyn.py\
+  \ with:\n   - SeparateDynEncoder(nn.Module): An encoder with TWO independent CNN\n\
+  \     backbones:\n     (a) coord_backbone: conv1→conv2→conv3→conv4→conv_spatial\
+  \ (identical to\n         NonParametricEncoder), producing z_coord via soft-argmax\
+  \ centroid.\n     (b) dyn_backbone: conv1_dyn→conv2_dyn→conv3_dyn→conv4_dyn→conv_identity\n\
+  \         (same architecture, SEPARATE parameters), producing z_dyn via mean\n \
+  \        pooling over the spatial dimension.\n     Both backbones process the same\
+  \ RGB input independently.\n     The class exposes forward(), forward_spatial(),\
+  \ d_dyn property matching\n     the NonParametricEncoder interface.\n\n   - NonParametricJEPASpatialSeparateDyn(NonParametricJEPASpatial):\
+  \ Uses\n     SeparateDynEncoder instead of NonParametricEncoder. Adds a constructor\n\
+  \     argument `mask_dyn_sim=False` that, when True, zeros out the JEPA\n     sim_loss_dyn\
+  \ term in the forward() method (Arm C control). All other\n     loss terms (VICReg\
+  \ variance/covariance on z_dyn, JEPA sim_loss_coord,\n     VICReg on z_coord) remain\
+  \ active. The predictor still receives z_dyn\n     history but the sim_loss_dyn\
+  \ gradient does not shape the representation.\n\n2. CREATE src/run_phase0_separate_dyn.py\
+  \ based on run_phase0_collapse_sweep.py,\n   modified to use the new model class\
+  \ and three arms:\n\n   COMMON TO ALL ARMS:\n   - d_max=8, d_t=3, N=3\n   - pos_encoding=\"\
+  none\", dyn_readout=\"mean\" (simplest readout; centroid_gated\n     introduces\
+  \ an extra variable)\n   - primary_objective=\"jepa\", ccr_mode=\"covariance\"\n\
+  \   - ccr_smooth_weight=10, ccr_spatial_weight=10\n   - gdasr_log_only=True\n  \
+  \ - lr=3e-4, gradient clipping max_norm=1.0\n   - batch_size=64 (best from iter_026)\n\
+  \   - replay_buffer_capacity=4000 (neutralizes iter_025→026 confound)\n   - 8000\
+  \ training steps, Adam optimizer\n   - 10 seeds: [7, 17, 31, 53, 71, 83, 97, 113,\
+  \ 127, 149]\n   - var_weight=25, cov_weight=25, sim_weight=25\n\n   ARM A (reference,\
+  \ shared backbone):\n     Uses existing NonParametricJEPASpatial with dyn_readout=\"\
+  mean\".\n     This re-anchors the shared-backbone collapse rate under mean readout\n\
+  \     (iter_026 used centroid_gated; this eliminates the readout confound).\n  \
+  \   mask_dyn_sim=False (full JEPA+VICReg on both streams).\n\n   ARM B (experimental,\
+  \ separate backbone):\n     Uses NonParametricJEPASpatialSeparateDyn.\n     mask_dyn_sim=False\
+  \ (full JEPA+VICReg on both streams).\n     The independent dyn_backbone receives\
+  \ z_dyn's VICReg gradient without\n     competition from z_coord's JEPA gradient.\n\
+  \n   ARM C (separate-encoder control, no z_dyn identity objective):\n     Uses NonParametricJEPASpatialSeparateDyn.\n\
+  \     mask_dyn_sim=True (JEPA prediction loss on z_coord only; VICReg\n     variance/covariance\
+  \ on both z_coord and z_dyn; NO JEPA sim_loss_dyn).\n     This tests whether the\
+  \ separate backbone alone suffices, or whether\n     z_dyn also needs a task objective\
+  \ (JEPA prediction) to avoid collapse.\n\n3. EVALUATION at step 8000 (same protocol\
+  \ as iter_026):\n   - Collapse check (eval): per_dim_std < 0.5 on 200 eval samples\
+  \ from fresh env\n   - Collapse check (train): per_dim_std at step 8000 from training\
+  \ log\n   - Dual criterion: collapsed = collapsed_eval OR collapsed_train\n   -\
+  \ Train-vs-eval std gap: report per_seed_train_std and per_seed_eval_std\n     side-by-side\
+  \ for every seed in every arm (co-equal reporting, not footnote)\n   - VICReg health:\
+  \ per_dim_std, mean_abs_corr on eval samples\n   - Training loss sanity: mean total\
+  \ loss, var_loss, sim_loss at final step\n   - Centroid MSE (reference only, NOT\
+  \ used for arm selection)\n   - Semantic probes: delta_R2_color, delta_R2_identity\
+  \ (reference only)\n   - Parameter count per arm (to document the capacity increase)\n\
+  \   - Hungarian-primary matching for semantic probes\n\n4. STOP RULE: ALL arms complete\
+  \ their full 10-seed runs. No early\n   termination even if one arm passes the ≤10%\
+  \ gate.\n\n5. The ONLY dependent variable for the pre-registered gate is collapse\
+  \ rate\n   (dual criterion). Centroid MSE, delta_R2_color, and other downstream\n\
+  \   metrics are recorded for diagnostic reference but MUST NOT be used to\n   select\
+  \ a winning arm.\n\n6. PRE-REGISTERED OUTCOME CLASSIFICATION (stated before any\
+  \ seed runs):\n   - If Arm B ≤10%: POSITIVE CONSTRUCTIVE — separate backbone resolves\n\
+  \     collapse. Report whether Arm C <20% (backbone alone suffices) or\n     Arm\
+  \ C ≥20% (backbone + task objective both needed).\n   - If Arm B ≥20%: SECOND NULL\
+  \ — shared backbone is not the primary cause.\n     Project pivots per Manager instruction.\n\
+  \   - If Arm B in (10%, 20%): AMBIGUOUS MIDDLE — partial improvement.\n     Follow-up\
+  \ combining separate backbone with other interventions.\n   - If Arm C ≥20%: ARM\
+  \ C FALSIFICATION — architectural change alone is\n     insufficient even with VICReg;\
+  \ project pivots.\n\n7. SANITY DISQUALIFICATION: A seed is disqualified (counted\
+  \ as collapsed)\n   if mean total loss at step 8000 > 50 (same threshold as iter_026).\n\
+  \n8. OUTPUT:\n   - Per-seed CSV with all metrics including train and eval per_dim_std\n\
+  \   - Final analysis markdown with:\n     (a) Per-arm collapse rates under dual,\
+  \ eval-only, train-only criteria\n     (b) Per-seed train-vs-eval std gap table\
+  \ (co-equal with collapse rates)\n     (c) Gate status per arm\n     (d) Parameter\
+  \ count comparison\n     (e) Pre-registered outcome classification\n\nFILES TO CREATE:\n\
+  - src/models_separate_dyn.py (NEW): SeparateDynEncoder,\n  NonParametricJEPASpatialSeparateDyn\n\
+  - src/run_phase0_separate_dyn.py (NEW): experiment runner\n\nFILES TO MODIFY:\n\
+  - None (existing code left untouched for backward compatibility;\n  the new model\
+  \ class is standalone)\n\nTotal runs: 3 arms × 10 seeds = 30 runs × 8000 steps each.\n\
+  Expected wall time: ~30 minutes with parallel workers (CPU).\n"
