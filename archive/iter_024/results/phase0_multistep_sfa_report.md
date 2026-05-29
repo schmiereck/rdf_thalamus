@@ -26,7 +26,7 @@ using a z_dyn trajectory buffer. We predicted that if identity features require 
 
 **Falsification Criterion (C1):** M2 (slowness as representation-shaping mechanism) is REFUTED iff:
 
-- delta_R2_color < 0.10 across **ALL** k ∈ {20, 50, 100} for d_max=8 (Arms A-C)
+- delta_R2_color < 0.10 across **ALL** k ∈ {20, 50, 100} for d_max=8 (Arms A–C)
 - AND delta_R2_color ≤ 0.137 (iter_023 d_max=16 baseline) for d_max=16 (Arm E)
 - *C5 is dropped* — it is structurally impossible (iter_023: 0/35 seeds).
 - All 5000 steps must complete before falsification judgment.
@@ -56,12 +56,12 @@ The following table presents the aggregated results (mean ± std over seeds, exc
 
 | Arm | Seeds | Collapse | ΔR²(color) | Within-traj Var | Between-traj Var | Shuffled ΔR²(color) | Centroid MSE |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| A (k=20, d=8) | 5 | 0.0 | N/A | N/A | N/A | N/A | N/A |
-| B (k=50, d=8) | 5 | 0.0 | N/A | N/A | N/A | N/A | N/A |
-| C (k=100, d=8) | 5 | 0.0 | N/A | N/A | N/A | N/A | N/A |
-| D (Contrastive, d=8) | 5 | 0.4 | N/A | N/A | N/A | N/A | N/A |
-| E (k=50, d=16) | 5 | 0.0 | N/A | N/A | N/A | N/A | N/A |
-| F (JEPA-off, k=50, d=8) | 1 | N/A | N/A | N/A | N/A | N/A | N/A |
+| A (k=20, d=8) | 5 | 1.0 | -0.011 ± 0.204 | 0.056 ± 0.017 | 0.029 ± 0.017 | -0.058 ± 0.037 | 118.1 ± 49.5 |
+| B (k=50, d=8) | 5 | 1.0 | 0.034 ± 0.071 | 0.035 ± 0.015 | 0.021 ± 0.015 | -0.052 ± 0.040 | 115.3 ± 62.8 |
+| C (k=100, d=8) | 5 | 1.0 | -0.074 ± 0.060 | 0.016 ± 0.003 | 0.013 ± 0.007 | -0.054 ± 0.056 | 105.6 ± 33.1 |
+| D (Contrastive, d=8) | 5 | 0.2 | -0.013 ± 0.178 | 0.630 ± 0.355 | 0.450 ± 0.212 | -0.015 ± 0.075 | 126.3 ± 58.2 |
+| E (k=50, d=16) | 5 | 1.0 | 0.030 ± 0.060 | 0.038 ± 0.014 | 0.028 ± 0.026 | -0.037 ± 0.040 | 114.5 ± 54.8 |
+| F (JEPA-off, k=50, d=8) | 1 | 1.0 | -0.077 ± N/A | 0.106 ± N/A | 0.042 ± N/A | 0.017 ± N/A | 206.3 ± N/A |
 
 *Note: Collapse = proportion of collapsed seeds (has_collapsed). ΔR²(color) = R²(z_dyn→color) - R²(z_coord→color). A negative value means z_coord predicts color better than z_dyn.*
 
@@ -69,12 +69,12 @@ The following table presents the aggregated results (mean ± std over seeds, exc
 
 | Arm | Slowness Ratio | ΔR²(identity) | Norm Dyn Var | Norm Coord Var | Tracking Corr |
 | --- | --- | --- | --- | --- | --- |
-| A (k=20, d=8) | N/A | N/A | N/A | 0.000018 | N/A |
-| B (k=50, d=8) | N/A | N/A | N/A | 0.000012 | N/A |
-| C (k=100, d=8) | N/A | N/A | N/A | 0.000027 | N/A |
-| D (Contrastive, d=8) | N/A | N/A | N/A | 0.000033 | N/A |
-| E (k=50, d=16) | N/A | N/A | N/A | 0.000014 | N/A |
-| F (JEPA-off, k=50, d=8) | N/A | N/A | N/A | N/A | N/A |
+| A (k=20, d=8) | 1232.9 ± 1263.1 | -0.055 ± 0.055 | 0.008575 | 0.000020 | 0.263 |
+| B (k=50, d=8) | 2589.9 ± 3325.9 | -0.046 ± 0.046 | 0.003645 | 0.000015 | 0.281 |
+| C (k=100, d=8) | 7876.5 ± 15704.9 | -0.061 ± 0.069 | 0.002232 | 0.000020 | 0.002 |
+| D (Contrastive, d=8) | 94.3 ± 106.8 | -0.006 ± 0.070 | 0.046967 | 0.000033 | 0.132 |
+| E (k=50, d=16) | 10032.5 ± 17440.1 | -0.035 ± 0.040 | 0.011597 | 0.000014 | 0.236 |
+| F (JEPA-off, k=50, d=8) | 1474.5 ± N/A | 0.065 ± N/A | 0.062878 | 0.000000 | 0.060 |
 
 ---
 ## 4. Falsification Evaluation
@@ -83,18 +83,18 @@ The following table presents the aggregated results (mean ± std over seeds, exc
 
 **Data Check — delta_R2_color values:**
 
-- A (k=20, d=8): delta_R2_color = **0.204** — criterion: ≥ 0.10 → ✅
-- B (k=50, d=8): delta_R2_color = **0.071** — criterion: ≥ 0.10 → ❌ Fails
-- C (k=100, d=8): delta_R2_color = **0.060** — criterion: ≥ 0.10 → ❌ Fails
-- E (k=50, d=16): delta_R2_color = **0.060** — criterion: ≤ 0.137 (iter_023 baseline) → ❌
+- A (k=20, d=8): delta_R2_color = **-0.011** — criterion: ≥ 0.10 → ❌ Fails
+- B (k=50, d=8): delta_R2_color = **0.034** — criterion: ≥ 0.10 → ❌ Fails
+- C (k=100, d=8): delta_R2_color = **-0.074** — criterion: ≥ 0.10 → ❌ Fails
+- E (k=50, d=16): delta_R2_color = **0.030** — criterion: ≤ 0.137 (iter_023 baseline) → ❌ Fails
 
 **Verdict — M2 is REFUTED.**
 
-- delta_R2_color < 0.10 for ALL k ∈ {20, 50, 100} at d_max=8 (Arms A-C).
-- Arm A (k=20): 0.204 — far below 0.10 threshold.
-- Arm B (k=50): 0.071 — the best of the SFA arms, but still < 0.10.
-- Arm C (k=100): 0.060 — negative, meaning z_coord outperforms z_dyn on color decoding.
-- Arm E (k=50, d=16): 0.060 ≤ 0.137 — also refuted.
+- delta_R2_color < 0.10 for ALL k ∈ {20, 50, 100} at d_max=8 (Arms A–C).
+- Arm A (k=20): -0.011 — far below 0.10 threshold.
+- Arm B (k=50): 0.034 — the best of the SFA arms, but still < 0.10.
+- Arm C (k=100): -0.074 — negative, meaning z_coord outperforms z_dyn on color decoding.
+- Arm E (k=50, d=16): 0.030 ≤ 0.137 — also refuted.
 
 The slowness ratio (||Δz_coord||² / ||Δz_dyn||²) shows that multi-step SFA successfully slows z_dyn (ratios >> 1 for all arms), confirming the gradient propagates. However, this mechanical slowing does **not** translate into identity encoding. The delta_R2_color values are essentially zero or negative, replicating the iter_023 finding that slowness does not produce semantic disentanglement.
 
@@ -102,25 +102,25 @@ The slowness ratio (||Δz_coord||² / ||Δz_dyn||²) shows that multi-step SFA s
 
 ### 4.2 Part B — Temporal Contrastive NT-Xent (Arm D)
 
-- delta_R2_color = **0.178** — criterion: ≥ 0.10 → ❌ Fails
-- Collapsed seeds: **2/5** — criterion: ≤ 2/5 → ✅ Passes (if 2 ≤ 2)
-- Exceed best SFA d_max=8 arm (0.204) by ≥ 0.05: delta_R2_color difference = -0.026 — ❌ Fails
+- delta_R2_color = **-0.013** — criterion: ≥ 0.10 → ❌ Fails
+- Collapsed seeds: **1/5** (prop. 0.20) — criterion: ≤ 2/5 → ✅
+- Exceed best SFA d_max=8 arm (0.034) by ≥ 0.05: delta_R2_color difference = -0.047 — ❌ Fails
 
 **Verdict — Arm D is REFUTED.**
 
-The temporal contrastive arm fails on all performance criteria. The delta_R2_color is negative (-0.013), indicating that even the contrastive objective does not route color information preferentially into z_dyn. The within-trajectory variance (0.630) is an order of magnitude higher than any SFA arm, and the between-trajectory variance (0.450) is similarly elevated — indicating the NT-Xent loss, when fighting against VICReg, produces noisy, high-variance representations with no semantic structure. The pre-registration correctly anticipated this fight ("NT-Xent at τ=0.1 with VICReg simultaneously is a known fight, and a silently-collapsed Arm D would be misread as a null"). Only 1/5 seeds collapsed, but the surviving seeds show no evidence of identity encoding.
+The temporal contrastive arm fails on all performance criteria. The delta_R2_color is -0.013, indicating that even the contrastive objective does not route color information preferentially into z_dyn. The within-trajectory variance (0.630) is an order of magnitude higher than any SFA arm, and the between-trajectory variance (0.450) is similarly elevated — indicating the NT-Xent loss, when fighting against VICReg, produces noisy, high-variance representations with no semantic structure. The pre-registration correctly anticipated this fight ("NT-Xent at τ=0.1 with VICReg simultaneously is a known fight, and a silently-collapsed Arm D would be misread as a null"). Only 1/5 seeds collapsed, but the surviving seeds show no evidence of identity encoding.
 
 ### 4.3 Variance Analysis: Multi-Step Horizon Effects
 
 The within/between trajectory variance diagnostic (pre-registered as Metric 1b) reveals how multi-step horizon affects representation structure:
 
 | Horizon | Arm | Within-Traj Var | Between-Traj Var | Ratio (W/B) |
-|---|---|---|---|---|
-| k=20 | A | 0.0166 | 0.0170 | 0.9776662765032211:.2f |
-| k=50 | B | 0.0146 | 0.0148 | 0.9904819639971204:.2f |
-| k=100 | C | 0.0032 | 0.0071 | 0.4482133599119457:.2f |
+| --- | --- | --- | --- | --- |
+| k=20 | 20 | 0.056 | 0.029 | 1.96 |
+| k=50 | 50 | 0.035 | 0.021 | 1.67 |
+| k=100 | 100 | 0.016 | 0.013 | 1.25 |
 
-**Key finding:** As k increases from 20 to 50 to 100, both within- and between-trajectory variance **decrease monotonically**. This is consistent with a purely **mechanical** effect of longer temporal smoothing: the network learns to make z_dyn vary less over k-step windows. The within/between ratio changes from 1.0 (k=20) to 1.0 (k=50) to 0.4 (k=100) — all remain in a narrow range (1.2-2.0), indicating that the **relative** structure of the representation is not changing qualitatively. The network is not learning to discriminate identity from non-identity features; it is simply suppressing all temporal variation more aggressively at longer horizons.
+**Key finding:** As k increases from 20 to 50 to 100, both within- and between-trajectory variance **decrease**. This is consistent with a purely **mechanical** effect of longer temporal smoothing: the network learns to make z_dyn vary less over k-step windows. The within/between ratio evolves, but the **relative** structure of the representation is not changing qualitatively. The network is not learning to discriminate identity from non-identity features; it is simply suppressing all temporal variation more aggressively at longer horizons.
 
 **Conclusion:** The multi-step horizon effect is **purely mechanical**, not semantic. The SFA gradient at any horizon penalizes temporal change; longer horizons impose stronger smoothing. There is no evidence that k-step SFA selectively preserves identity-relevant variation while suppressing position-relevant variation — it suppresses everything equally.
 
@@ -129,12 +129,12 @@ The within/between trajectory variance diagnostic (pre-registered as Metric 1b) 
 The shuffled-frame control (pre-registered Metric 1b) tests whether the delta_R2_color signal is genuinely in z_dyn-via-SFA, or is an artifact of the encoder geometry. If shuffling does not collapse the probe, the signal was constructional.
 
 | Arm | delta_R2_color (normal) | delta_R2_color (shuffled) | Delta | Signal Integrity |
-|---|---|---|---|---|
-| A (k=20) | 0.204 | 0.037 | 0.167 | ✅ |
-| B (k=50) | 0.071 | 0.040 | 0.032 | ✅ |
-| C (k=100) | 0.060 | 0.056 | 0.004 | ❌ |
-| D (Contrastive) | 0.178 | 0.075 | 0.103 | ✅ |
-| E (k=50, d=16) | 0.060 | 0.040 | 0.021 | ✅ |
+| --- | --- | --- | --- | --- |
+| A (k=20) | -0.011 | -0.058 | 0.047 | ✅ |
+| B (k=50) | 0.034 | -0.052 | 0.085 | ✅ |
+| C (k=100) | -0.074 | -0.054 | -0.020 | ✅ |
+| D (Contrastive) | -0.013 | -0.015 | 0.002 | ❌ |
+| E (k=50, d=16) | 0.030 | -0.037 | 0.067 | ✅ |
 
 **Finding:** Across all arms, the shuffled-frame delta_R2_color is negative and not substantially different from the normal delta_R2_color. The signal (normal vs. shuffled difference) is minimal, confirming that the probe is detecting a constructional artifact of the encoder geometry, not a genuine SFA-driven identity representation in z_dyn. This is consistent with the iter_023 finding that SFA gradient propagates but does not shape semantics.
 
@@ -171,7 +171,7 @@ The core idea is to replace the **temporal** contrastive (NT-Xent on same-trajec
 ## 6. Summary and Scientific Conclusion
 
 | Component | Status | Evidence |
-|---|---|---|
+| --- | --- | --- |
 | Part A: Multi-step SFA (Arms A-C, E) | **REFUTED** | All delta_R2_color < 0.10 threshold; best arm (B, k=50) achieved only 0.034 |
 | Part B: Temporal Contrastive (Arm D) | **REFUTED** | delta_R2_color = -0.013; no identity encoding detected |
 | SFA gradient propagation | **Confirmed** (mechanical only) | Slowness ratio >> 1 for all SFA arms; normalized_dyn_var decreases with horizon |
