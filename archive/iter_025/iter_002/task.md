@@ -1,188 +1,136 @@
-You are implementing and running the iter_025 Architecture Ceiling Probe experiment. Read src/pre_registration.md FIRST for the full specification, then implement and run the experiment.
+CORRECTED ARCHITECTURE CEILING PROBE — iter_025 re-run addressing Research Manager criticisms.
 
-## CONTEXT
-This is a localization probe to determine whether the failure of identity encoding in z_dyn (delta_R2_color < 0.10 across iter_021-024) is due to insufficient objective or architecture ceiling.
+You MUST first read src/pre_registration.md to understand the pre-registered hypotheses and criteria.
 
-Previous iterations (021-024) tested SFA and temporal contrastive on z_dyn. ALL FAILED. This iteration adds supervised color probe (Arm B) and ID-contrastive (Arm C) as stronger objectives, with careful matching protocol.
+## Context
 
-## KEY FILES TO READ FIRST
-1. src/pre_registration.md — Full specification with matching confound protocol, noise floor, language hygiene
-2. src/models_dual_stream.py — Current model code (NonParametricJEPASpatial class)
-3. src/run_phase0_sfa_multistep.py — Previous experiment runner (basis for new runner)
-4. src/environment.py — PhysicsSandbox (provides positions, colors, radii in info dict)
+The original iter_025 experiment had five critical methodological flaws identified by the Research Manager:
+1. 60% collapse rate across ALL arms including control (setup failure, not finding)
+2. Invalid noise floor leading to unsupported threshold
+3. 47-67% matching mismatch rate (pass/fail depends on matching choice)
+4. Only 2 non-collapsed seeds per arm (below Section 9's ≥5 requirement)
+5. iter_023's d_max=16 / 0.137 result never tested against SFA-off control
 
-## IMPLEMENTATION PLAN
+## YOUR TASK
 
-### Step 1: Add methods to src/models_dual_stream.py
+Create src/run_phase0_id_probe_v2.py — a corrected experiment runner that addresses ALL five criticisms. The existing code is in src/run_phase0_id_probe.py and src/models_dual_stream.py.
 
-Add to NonParametricJEPASpatial class:
+### CRITICAL CHANGES FROM iter_025:
 
-a) Color probe head parameters in __init__:
-```python
-self.color_probe_weight = nn.Parameter(torch.randn(d_max, 3) * 0.01)
-self.color_probe_bias = nn.Parameter(torch.zeros(d_max, 3))
-```
+**1. Fix collapse (Criticism 2):**
+- Change learning rate from 1e-3 to 3e-4 (more conservative, standard for VICReg)
+- Add gradient clipping: `torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)` before `optimizer.step()`
+- Increase training steps from 5000 to 8000 (more time for convergence at lower LR)
+- Keep all other hyperparameters the same (var_weight=25, cov_weight=25, sim_weight=25, batch_size=32, replay_buffer=2000)
 
-b) Static method for channel-to-object matching (sorted position):
-```python
-@staticmethod
-def match_channels_sorted(z_coord, positions, d_t, N):
-    """Match z_coord channels to objects by sorting both by position.
-    Returns: assignment dict {dim_idx: obj_idx}
-    """
-    z_sorted_idx = torch.argsort(z_coord[:, :d_t], dim=1)  # (B, d_t)
-    pos_sorted_idx = torch.argsort(positions[:, :N], dim=1)  # (B, N)
-    # For each batch sample, channel d_t_sorted[d] corresponds to obj N_sorted[d]
-    return z_sorted_idx, pos_sorted_idx
-```
+**2. Defensible threshold (Criticism 1):**
+- Pre-declare threshold = 0.10 as an EFFECT SIZE threshold (z_dyn explains ≥10% more color variance than z_coord)
+- DO NOT use noise floor runs (they were invalid in iter_025 because R² on random encoders can exceed 1)
+- The 0.10 threshold means: "the improvement in color predictability from z_dyn over z_coord is at least 10% of variance" — a meaningful effect size, not derived from a flawed noise floor
 
-c) Static method for Hungarian matching:
-```python
-@staticmethod
-def match_channels_hungarian(z_coord, positions, d_t, N):
-    """Match z_coord channels to objects using optimal assignment (Hungarian).
-    Returns assignment dict per sample.
-    """
-    from scipy.optimize import linear_sum_assignment
-    B = z_coord.shape[0]
-    assignments = []
-    for b in range(B):
-        cost = torch.cdist(z_coord[b, :d_t].unsqueeze(0), positions[b, :N].unsqueeze(0)).squeeze(0)  # (d_t, N)
-        row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())
-        assignments.append(list(zip(row_ind, col_ind)))
-    return assignments
-```
+**3. Resolve matching ambiguity (Criticism 3):**
+- Pre-declare Hungarian matching as the SOLE matching scheme for evaluation
+- During TRAINING, also use Hungarian matching (not sorted) for the supervised/contrastive loss
+- Report the sorted-matching result as a secondary check, but the PRIMARY verdict uses Hungarian only
+- If sorted and Hungarian disagree on pass/fail for >25% of seeds, REFUSE to claim falsification and report "matching-dependent outcome"
 
-d) Method compute_supervised_color_loss(z_coord, z_dyn, positions, colors, d_t, N, matching_mode="sorted"):
-- Uses the matching to assign each z_dyn channel to an object
-- Computes color_pred = z_dyn_matched * color_probe_weight + color_probe_bias  
-- Returns MSE(color_pred, colors_matched) and the assignment info
+**4. More seeds (Criticism 4):**
+- Use 10 seeds: [7, 17, 31, 53, 71, 83, 97, 113, 127, 149]
+- Goal: ≥5 non-collapsed seeds per arm (if collapse rate drops to ~20% with lower LR, 10 seeds gives ~8 non-collapsed)
+- All 10 seeds must complete the full 8000 training steps
 
-e) Method compute_id_contrastive_loss(z_coord, z_dyn, positions, colors, d_t, N, matching_mode="sorted"):
-- Match channels to objects
-- Discretize colors into 8 bins (RGB ordering: which channel is dominant)
-- Compute SupCon-style contrastive loss with these labels
-- Returns the contrastive loss
+**5. Audit iter_023 d_max=16 claim (Criticism 5):**
+- Add Arm E: JEPA+VICReg control with d_max=16, NO supervised/contrastive objective
+- If Arm E achieves delta_R2_color ≥ 0.10, the d_max=16 improvement is confirmed as a capacity effect (since it occurs without identity objective)
+- If Arm E does NOT achieve delta_R2_color ≥ 0.10, the iter_023 claim needs revision
 
-f) Method compute_mismatch_rate(z_coord, positions, d_t, N):
-- Run both sorted and Hungarian matching
-- Return fraction of (batch, channel) pairs where assignments disagree
+### ARM CONFIGURATIONS (5 arms × 10 seeds × 8000 steps = 50 runs):
 
-### Step 2: Create src/run_phase0_id_probe.py
+Arm A: JEPA+VICReg Control (d_max=8)
+  - primary_objective="jepa", var_weight=25, cov_weight=25, sim_weight=25
+  - d_max=8, d_t=3, dyn_readout="centroid_gated", pos_encoding="none"
+  - CCR covariance mode (ccr_smooth_weight=10, ccr_spatial_weight=10)
+  - gdasr_log_only=True
+  - NO supervised/contrastive loss
+  - Learning rate: 3e-4, gradient clipping: max_norm=1.0
 
-Based on run_phase0_sfa_multistep.py with these key modifications:
-
-1. **Extended ReplayBuffer** that stores positions and colors alongside observations:
-```python
-class ExtendedReplayBuffer:
-    def __init__(self, capacity=2000):
-        self.capacity = capacity
-        self.buffer = []
-        self.position = 0
-    
-    def push(self, x_hist, x_target, positions, colors, radii):
-        if len(self.buffer) < self.capacity:
-            self.buffer.append(None)
-        self.buffer[self.position] = (x_hist, x_target, positions, colors, radii)
-        self.position = (self.position + 1) % self.capacity
-    
-    def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
-        x_hist_b, x_target_b, pos_b, colors_b, radii_b = zip(*batch)
-        return (np.stack(x_hist_b), np.stack(x_target_b), 
-                np.stack(pos_b), np.stack(colors_b), np.stack(radii_b))
-```
-
-2. **Noise floor runs** (3 runs, frozen encoder, 1000 steps):
-   - Create model with random init
-   - Freeze all encoder parameters
-   - Only train the linear probe head
-   - Measure delta_R2_color → compute floor_mean
-
-3. **Main experiment arms** (use same training loop structure as iter_024):
-
-Arm A: JEPA+VICReg Control
-```python
-{"name": "A (JEPA+VICReg Control)", "primary_objective": "jepa", 
- "sim_weight": 25.0, "var_weight": 25.0, "cov_weight": 25.0,
- "d_max": 8, "d_t": 3, "dyn_readout": "centroid_gated", "pos_encoding": "none",
- "ccr_mode": "covariance", "ccr_smooth_weight": 10.0, "ccr_spatial_weight": 10.0,
- "supervised_weight": 0.0, "contrastive_weight": 0.0}
-```
-
-Arm B: Supervised Color Probe + VICReg (d_max=8)
-```python
-{"name": "B (Supervised Color Probe d_max=8)", "primary_objective": "jepa",
- "sim_weight": 25.0, "var_weight": 25.0, "cov_weight": 25.0,
- "d_max": 8, "d_t": 3, "dyn_readout": "centroid_gated", "pos_encoding": "none",
- "ccr_mode": "covariance", "ccr_smooth_weight": 10.0, "ccr_spatial_weight": 10.0,
- "supervised_weight": 25.0, "contrastive_weight": 0.0}
-```
+Arm B: Supervised Color Probe + VICReg (d_max=8) [CRITICAL DIAGNOSTIC]
+  - Same as Arm A PLUS supervised_color_loss with supervised_weight=25.0
+  - Training matching: Hungarian
+  - Ramp supervised weight 0.1 → 25.0 over first 500 steps
+  - Learning rate: 3e-4, gradient clipping: max_norm=1.0
 
 Arm C: ID-Contrastive + VICReg (d_max=8)
-```python
-{"name": "C (ID-Contrastive d_max=8)", "primary_objective": "jepa",
- "sim_weight": 25.0, "var_weight": 25.0, "cov_weight": 25.0,
- "d_max": 8, "d_t": 3, "dyn_readout": "centroid_gated", "pos_encoding": "none",
- "ccr_mode": "covariance", "ccr_smooth_weight": 10.0, "ccr_spatial_weight": 10.0,
- "supervised_weight": 0.0, "contrastive_weight": 25.0}
-```
+  - Same as Arm A PLUS id_contrastive_loss with contrastive_weight=25.0
+  - Training matching: Hungarian
+  - Learning rate: 3e-4, gradient clipping: max_norm=1.0
 
 Arm D: Supervised Color Probe + VICReg (d_max=16)
-```python
-{"name": "D (Supervised Color Probe d_max=16)", "primary_objective": "jepa",
- "sim_weight": 25.0, "var_weight": 25.0, "cov_weight": 25.0,
- "d_max": 16, "d_t": 3, "dyn_readout": "centroid_gated", "pos_encoding": "none",
- "ccr_mode": "covariance", "ccr_smooth_weight": 10.0, "ccr_spatial_weight": 10.0,
- "supervised_weight": 25.0, "contrastive_weight": 0.0}
-```
+  - Same as Arm B but d_max=16
+  - Tests whether more channels help supervised encoding
 
-4. **Training loop modifications** for Arms B, C, D:
-After model forward pass, compute additional losses:
-- For Arm B/D: supervised_color_loss using sorted matching (primary) + also log Hungarian
-- For Arm C: id_contrastive_loss using sorted matching (primary) + also log Hungarian
-- Add these to total_loss before backward()
+Arm E: JEPA+VICReg Control (d_max=16) [NEW — capacity audit]
+  - Same as Arm A but d_max=16
+  - NO supervised/contrastive loss
+  - If this achieves delta_R2_color ≥ 0.10, the d_max=16 improvement is confirmed as a capacity effect
 
-5. **Evaluation with matching protocol:**
-- At each evaluation checkpoint, compute delta_R2_color under BOTH matching schemes
-- Compute mismatch rate
-- Report both sets of results
+### IMPLEMENTATION DETAILS:
 
-6. **Seeds:** [7, 17, 31, 53, 71] — FRESH, disjoint from iter_021-024
+1. Base the script on src/run_phase0_id_probe.py — copy it and modify
+2. Change the training loop:
+   - lr = 3e-4 instead of 1e-3
+   - Add `torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)` before optimizer.step()
+   - 8000 steps instead of 5000
+   - For Arms B, D: use matching_mode="hungarian" during training (not "sorted")
+   - For Arm C: use matching_mode="hungarian" during training
+3. Evaluation:
+   - Primary: Hungarian matching
+   - Secondary: also compute sorted matching (but verdict uses Hungarian only)
+   - Report mismatch rate between Hungarian and sorted
+4. Seeds: [7, 17, 31, 53, 71, 83, 97, 113, 127, 149]
+5. Checkpoint evaluations at steps 2000, 4000, 6000, 8000
+6. Same evaluation metrics as iter_025: semantic probes, collapse check, centroid MSE, tracking quality, temporal variance, within/between trajectory variance, shuffled-frame control
+7. Add per-dimension std logging during training (every 500 steps) to track when collapse happens
+8. Save results to archive/iter_025/results_v2/
 
-7. **Results directory:** archive/iter_025/results/
+### FALSIFICATION CRITERIA (pre-declared):
 
-### Step 3: Run the experiment
+H1 (Architecture Capacity): Arm B achieves delta_R2_color ≥ 0.10 (mean over non-collapsed seeds, Hungarian matching) with collapse rate ≤ 2/10.
 
-```bash
-cd /home/user && python src/run_phase0_id_probe.py --sequential
-```
+H2 (ID-Contrastive Viability): Arm C achieves delta_R2_color ≥ 0.10 (mean over non-collapsed seeds, Hungarian matching) with collapse rate ≤ 2/10.
 
-Use --sequential for reliability. If it's too slow, use --workers 4.
+Capacity Audit: If Arm E achieves delta_R2_color ≥ 0.10, the d_max=16 improvement is confirmed as capacity effect (not objective effect).
 
-### Step 4: Analyze results and compile report
+FOUR OUTCOME QUADRANTS (same as iter_025, but with Hungarian matching):
+B succeeds, C succeeds → Architecture CAN encode identity; ID-contrastive viable
+B succeeds, C fails → Architecture CAN encode; contrastive formulation insufficient
+B fails, C succeeds → Check implementation (supervised should ≥ contrastive)
+B fails, C fails → Result consistent with architecture-level bottleneck (CONDITIONAL: if collapse rate ≤ 2/10 in control Arm A. If Arm A also has >2/10 collapse, the experiment is still underpowered and no architecture claim is earned.)
 
-After all runs complete, read the results CSV and compute:
-- Per-arm mean delta_R2_color (sorted vs Hungarian matching)
-- Collapse rates
-- Mismatch rates
-- Noise floor value
-- Compare against thresholds: max(0.10, floor_mean + 0.08)
-- Arm A drift check vs iter_022-024 reference
-- Assign to the four outcome quadrants
-- Save a comprehensive analysis to archive/iter_025/results/analysis.md
+Language requirements:
+- Positive Arm B: "compatible with sufficient architectural capacity under direct supervision" — NOT "demonstrates architecture can encode identity"
+- Positive Arm C: "supervised (slot IDs are privileged)" — NOT "decoder-free self-supervision solved"
+- Negative result: "consistent with an architecture-level bottleneck on identity encoding, conditional on [mismatch rate]%" — NOT "architecture cannot encode identity"
 
-## CRITICAL REMINDERS
-- Read src/pre_registration.md FIRST
-- Fresh seeds [7, 17, 31, 53, 71] — NOT the old seeds
-- The JEPA loss remains as the base objective for ALL arms; supervised/contrastive are ADDITIONAL
-- supervised_weight ramp 0.1→25.0 over 500 steps if collapse occurs, otherwise 25.0 from start
-- d_t=3 frozen, gdasr_log_only=True (M3 preserved)
-- Report language: "compatible with sufficient architectural capacity under direct supervision" NOT "demonstrates the architecture can encode identity"
-- Any Arm D result alone does NOT confirm H1
-- If Arm A drifts > 0.03 from reference, flag it
+### ADDITIONAL REQUIREMENTS:
+- If Arm A collapse rate > 2/10, the experiment is UNDERPOWERED and NO architecture claim is valid — report this honestly
+- If sorted and Hungarian matching disagree on pass/fail for >25% of non-collapsed seeds in Arm B or C, report "matching-dependent outcome; falsification claim not earned"
+- Monitor per-dimension std during training to diagnose WHEN collapse happens
 
-## EXPECTED OUTPUTS
-1. Modified src/models_dual_stream.py with color_probe, contrastive, and matching methods
-2. New src/run_phase0_id_probe.py experiment runner
-3. archive/iter_025/results/ with all run data, summaries, and analysis
+### IMPORTANT:
+- Read src/models_dual_stream.py to understand the NonParametricJEPASpatial model
+- The model's compute_supervised_color_loss and compute_id_contrastive_loss already support matching_mode="hungarian"
+- The model's match_channels_hungarian method already exists
+- Do NOT modify src/models_dual_stream.py — only create the new runner script
+
+After creating the script, update src/pre_registration.md with the corrected plan (v2).
+
+Then RUN the experiment (all 50 training runs). Save all results to archive/iter_025/results_v2/.
+
+Finally, write a comprehensive analysis to archive/iter_025/results_v2/final_analysis.md including:
+- Per-arm results (collapse rate, mean delta_R2_color, per-seed details)
+- H1 and H2 falsification verdicts
+- Capacity audit (Arm E vs iter_023)
+- Matching dependency report (sorted vs Hungarian disagreement rate)
+- Whether the experiment is adequately powered (Arm A collapse rate ≤ 2/10)
+- Quadrant assignment and next-step recommendation
