@@ -1,66 +1,70 @@
-You are executing Phase 28 Sub-task 1 of the Thalamus collapse-elimination campaign.
+You are modifying files for the iter_028 Thalamus collapse-elimination experiment. TWO files need modification. Do NOT run any experiments — only modify the files.
 
-## Context
-Iter_027 found that Arm C (separate backbone, mask_dyn_sim=True, VICReg-only on z_dyn) achieved 0% collapse, but this confounded separate-backbone with mask_dyn_sim. The critical next isolate is: does mask_dyn_sim alone (on the shared backbone) prevent collapse? The Research Manager has given 3 required corrections to the proposed plan.
+## Task 1: Update src/pre_registration.md
 
-## Your Tasks
+Add two sections to the existing pre-registration file. Keep ALL existing content intact and append these additions at the end, before the "Created automatically" line:
 
-### Task 1: Update src/pre_registration.md with the following Manager-mandated corrections:
+### Addition A: Resumed Runs Code-Equivalence Declaration
 
-**Correction 1 — D0 re-label:** D0 is NOT a "weight-change anchor" because cov_weight=1 is already the canonical setting in iter_026/027 baselines. There is no weight delta to confound. Re-label D0 as "shared-backbone JEPA+VICReg baseline replication" and drop the cov_weight-confound rationale. State its purpose as: "in-iteration null reference for the independent readout comparison."
+Add a section declaring that the 13/40 already-completed runs (D0: 10 seeds, C1: 3 seeds) were produced with IDENTICAL code to the remaining 27 runs. Specifically state:
+- The model class (NonParametricJEPASpatial), loss computation, evaluation, and matching logic are unchanged between the existing 13 runs and the 27 remaining runs.
+- The only code changes in this iteration are: (a) resume logic that skips existing JSON result files, (b) per-seed timeout wrapper, (c) updated analysis generation to handle timeout results separately.
+- If there is ANY doubt about code equivalence, the 13 runs must be re-run, not reused. The pre-registration declares there is no doubt based on the JSON result file audit (they contain the expected arm names, seed values, parameter counts, and metric structure).
 
-**Correction 2 — F4 relative threshold with mean_abs_corr:**
-- Update F4 to use a RELATIVE threshold: "C1 passes the std gate (C_C1 ≤ 0.10) BUT (ΔR²_C1 < D0_ΔR²_color + 0.05 OR mean_abs_corr_C1 > mean_abs_corr_D0 + 0.05) → VICReg-maintained variance is constructional; z_dyn has variance but no meaningful semantic content improvement over the collapsing baseline."
-- Update H2 similarly: "ΔR²_C1 ≥ D0_ΔR²_color + 0.05 AND mean_abs_corr_C1 ≤ mean_abs_corr_D0 + 0.05" (C1 outperforms D0 on independent readouts)
-- Make clear that D0's ΔR² and mean_abs_corr are the in-iteration null references
-- Note: lower mean_abs_corr = better decorrelation, so "C1 ≤ D0 + 0.05" means C1 is at least as well decorrelated (within 0.05 tolerance)
+### Addition B: Timeout Semantics Protocol
 
-**Correction 3 — n=10 power caveat:** Add a section stating: "Fisher's exact test for 0/10 vs 3/10 gives p ≈ 0.21; the design cannot formally distinguish 0% from 10–20% at this sample size. Results are reported as point estimates with this limit explicitly noted."
+Add a section specifying timeout handling per the Research Manager's requirement:
+- A per-seed timeout is an ENGINEERING failure, NOT a representation failure.
+- Timeout handling: If a seed exceeds the per-seed timeout (600 seconds), it is logged with a "timeout" flag but is NOT counted as collapsed for the primary collapse rate.
+- Three reporting tiers:
+  (a) PRIMARY: collapse rate excluding timeouts (only genuine std-based collapse counts)
+  (b) SENSITIVITY: collapse rate including timeouts as failures (upper bound)
+  (c) TIMEOUT COUNT: number of timed-out seeds per arm, reported separately
+- If timeouts exceed 1 per arm, the run is not interpretable and must be re-launched with a longer budget.
+- The pre-registered gates (F1-F4, H1-H2) are evaluated on the PRIMARY (excluding timeouts) collapse rate only.
 
-Keep ALL other content from the existing pre_registration.md (hypothesis, arms, language constraints, constructional acknowledgment, etc.) but update the specific sections above.
+## Task 2: Modify src/run_phase0_mask_dyn_sim_shared.py
 
-### Task 2: Create src/run_phase0_mask_dyn_sim_shared.py
+Make these specific modifications:
 
-This is the experiment runner. It is based heavily on src/run_phase0_separate_dyn.py but simplified:
-- Uses ONLY NonParametricJEPASpatial (shared backbone) — no separate-backbone model
-- Implements mask_dyn_sim via loss adjustment AFTER forward(), exactly like models_separate_dyn.py does:
-  ```
-  loss_dict, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn) = model(x_hist_t, x_target_t, ...)
-  if mask_dyn_sim:
-      loss_dict["loss"] = loss_dict["loss"] - sim_weight * loss_dict["sim_loss_dyn"]
-  ```
-  This is identical to what NonParametricJEPASpatialSeparateDyn does in its forward() override.
+### Modification A: Add resume logic to main()
 
-Four arms (10 seeds each, 40 total runs):
+Before building the task list, add code that scans archive/iter_028/results/runs/ for existing JSON result files. For each arm+seed combination, check if a JSON file exists with matching arm name and seed. If it exists and contains both "arm" and "seed" keys, skip that seed and load the result from the JSON.
 
-D0 — Baseline replication (shared backbone, mask_dyn_sim=False, weights 25/25/1):
-  NonParametricJEPASpatial, dyn_readout="mean", d_max=8, d_t=3,
-  pos_encoding="none", primary_objective="jepa", lr=3e-4, batch_size=64,
-  buffer=4000, 8000 steps, gradient clipping max_norm=1.0,
-  ccr_mode="covariance", ccr_smooth_weight=10, ccr_spatial_weight=10,
-  gdasr_log_only=True, sim_weight=25, var_weight=25, cov_weight=1,
-  seeds=[7, 17, 31, 53, 71, 83, 97, 113, 127, 149].
+Specifically:
+1. Add a function `load_existing_results(runs_dir)` that:
+   - Scans all .json files in runs_dir
+   - For each file, loads it and checks for "arm" and "seed" keys
+   - Returns a dict mapping (arm_name, seed) -> result_dict
+2. In main(), after creating the tasks list, filter out tasks whose (arm_name, seed) already exists in the loaded results
+3. After all new runs complete, merge the loaded existing results with the new results before creating the DataFrame
 
-C1 — Primary arm (shared backbone, mask_dyn_sim=True, weights 25/25/1):
-  Same as D0 but mask_dyn_sim=True in the runner. Same seeds.
+### Modification B: Add per-seed timeout with correct semantics
 
-C2 — Seed robustness (shared backbone, mask_dyn_sim=True, weights 25/25/1):
-  Same as C1 but fresh seed bank: [101, 103, 107, 109, 131, 137, 139, 151, 157, 163].
+1. Add a `run_single_with_timeout` function that wraps `run_single` with a per-seed timeout (600 seconds). Since `run_single` involves PyTorch training, use `concurrent.futures.ProcessPoolExecutor` with `future.result(timeout=600)` for each seed. If timeout occurs:
+   - Log a result dict with: arm, seed, collapsed=False (NOT collapsed — timeout is engineering failure), collapsed_eval=False, collapsed_train=False, timeout=True, disqualified=False
+   - The timeout flag distinguishes this from genuine collapse
+   - Add "timeout" column to the DataFrame
 
-C3 — Weight robustness (shared backbone, mask_dyn_sim=True, weights 27.5/27.5/1.1):
-  Same as C1 but var_weight=27.5, cov_weight=1.1 (+10% perturbation).
-  Original seeds. sim_weight stays at 25.
+2. In the sequential execution path, also use timeout handling per seed.
+3. In the parallel execution path (ProcessPoolExecutor), use `future.result(timeout=600)` for each future, but note that with parallel workers, individual futures already have their own processes. Add timeout handling there too.
 
-IMPORTANT implementation details:
-1. The mask_dyn_sim adjustment must happen BEFORE backward(): compute total_loss from the adjusted loss_dict["loss"], then backward on total_loss
-2. All evaluation functions (check_collapse, compute_vicreg_health, compute_semantic_probes, compute_centroid_mse, collect_multitraj_eval_data, evaluate_run, fit_linear_probe, etc.) should be copied from run_phase0_separate_dyn.py — they are identical since they only depend on the encoder output, not the model type
-3. Output goes to archive/iter_028/results/ (runs/, checkpoints/, summary_iter_028.csv, final_analysis.md)
-4. The analysis generation function must report per-arm collapse rates (dual, eval-only, train-only), per-seed train-vs-eval std gap table, gate checks for all arms, and the pre-registered outcome classification with language constraints
-5. Include the D0 vs C1 comparison on independent readouts (ΔR², mean_abs_corr) in the analysis — this is the relative-threshold gate
-6. Support --dry-run, --workers, --sequential flags as in the existing runner
-7. Parameter count logging before runs
+### Modification C: Update _generate_analysis() for timeout handling
 
-DO NOT modify src/models_dual_stream.py, src/models_separate_dyn.py, or src/environment.py.
+1. In the per-arm summary section, add:
+   - Timeout count per arm
+   - PRIMARY collapse rate (excluding timeouts)
+   - SENSITIVITY collapse rate (including timeouts as failures)
+2. The gate check should use the PRIMARY collapse rate (excluding timeouts)
+3. Add a "Timeout Audit" section showing timeout count per arm and whether the run is interpretable (≤1 timeout per arm)
 
-## Success Criterion
-Both files exist and are syntactically valid Python (for the .py file) and Markdown (for the .md file). The pre-registration incorporates all 3 Manager corrections.
+### Modification D: Add --resume flag (default True)
+
+Add a `--resume` flag (default True). When True, the script checks for and skips existing results. When False, it re-runs all seeds from scratch.
+
+## Important constraints:
+- Do NOT modify src/models_dual_stream.py, src/models_separate_dyn.py, or src/environment.py
+- Do NOT add new arms or change hyperparameters
+- Keep all existing functionality intact
+- Make the script runnable with `python src/run_phase0_mask_dyn_sim_shared.py` (defaults should work)
+- After making all modifications, verify the script can be imported without errors by running: `cd /project && python -c "import ast; ast.parse(open('src/run_phase0_mask_dyn_sim_shared.py').read()); print('Syntax OK')"`
