@@ -1,58 +1,41 @@
 # Current Research State
-Phase: Architecture Ceiling Probe — Underpowered, Key Negative Results
+Phase: Collapse-Elimination Sweep — Measured Null
 
 ## Goal
-Determine whether the shared-CNN dual-stream NonParametricJEPASpatial encoder
-can encode object identity in z_dyn under any objective, and whether ID-contrastive
-is viable as a self-supervised proxy.
+Achieve a training regime where the NonParametricJEPASpatial encoder (JEPA+VICReg, d_max=8, d_t=3, centroid_gated readout) collapses on ≤10% of seeds over ≥10 seeds. This is a prerequisite for any further architectural or objective experiments.
 
-## Confirmed (iter_025 v2)
-- d_max=16 CAPACITY EFFECT CONFIRMED (iter_025, Arm E): delta_R2_color = 0.14
-  achieved by JEPA+VICReg at d_max=16 WITHOUT any identity objective. This
-  confirms the iter_023 result (0.137) was a capacity effect, measured not
-  post-hoc. The journal's "definitive M2 refutation" must be softened: this
-  was always a capacity effect, now measured.
-- SUPERVISED COLOR LOSS DOES NOT IMPROVE z_dyn IDENTITY (iter_025, Arm B):
-  delta_R2_color = -0.024 under supervised probe, WORSE than control (+0.027).
-  The loss converges in training but does not transfer to identity encoding.
-- MATCHING DEPENDENCY IS REAL (iter_025, Arm B): 43% disagreement between
-  sorted and Hungarian matching on pass/fail. Outcome is matching-dependent;
-  falsification claim not earned for Arm B.
-- COLLAPSE NOT FIXED BY LOWER LR (iter_025, v2): 30% collapse in control Arm A
-  even at lr=3e-4 with gradient clipping (was 40-60% at lr=1e-3 in v1).
-- ARM C (CONTRASTIVE) STABLE UNDER BOTH MATCHING SCHEMES: 0% disagreement
-  between sorted and Hungarian; both agree on "fail" for all non-collapsed seeds.
-  delta_R2_color = -0.028 with 50% collapse.
-- EFFECT-SIZE THRESHOLD = 0.10 is defensible as "z_dyn explains ≥10% more
-  color variance than z_coord" — not derived from invalid noise floor.
+## Confirmed (iter_026, agent 26.1)
+- MEASURED NULL: No single-knob regime variation in {batch_size ∈ {32,64}, var_weight ∈ {25,50}, sim_weight ∈ {25, 0→25 ramp}, lr ∈ {3e-4, 1e-4}} achieves ≤10% collapse rate over 10 seeds under the dual criterion (eval-std < 0.5 OR train-std < 0.5).
+- A0 (canonical repeat, lr=3e-4, B=32, buffer=4000): 40% collapse rate (dual). Regressed from iter_025's 30%, possibly due to buffer-size change.
+- A1 (batch_size=64): 30% collapse rate (dual). Best arm, matches iter_025 v2. Insufficient for the gate.
+- A2 (var_weight=50): 60% collapse rate (dual). Doubling VICReg variance weight WORSENED collapse — JEPA-vs-VICReg objective tension.
+- A3 (sim_weight 0→25 ramp): 50% collapse rate (dual). JEPA warm-up worsened collapse.
+- A4 (lr=1e-4): 100% collapse rate. LR too low for 8000-step training budget.
+- TRAIN-VS-EVAL DISCREPANCY: Many runs maintain train-std > 0.5 but fail eval-std < 0.5 (e.g. A2: 10% train collapse vs 60% eval collapse). Representation is narrow, not fully collapsed.
+- BUFFER SENSITIVITY: A0 regression from 30%→40% with buffer change (2000→4000) suggests replay buffer composition affects collapse probability.
+- SANITY CHECK: No seeds disqualified (all losses ≤ 50, all met the VICReg floor at training time for non-collapsed seeds).
 
-## Refuted / Falsified
-- ID-CONTRASTIVE AS STANDALONE OBJECTIVE (Arm C): delta_R2_color = -0.028,
-  50% collapse. Both matching schemes agree on fail. H2 is falsified.
+## Refuted
+- HYPOTHESIS (iter_026 pre-registered): There exists a single-knob regime variation within the swept space that achieves ≤10% collapse. Falsified.
 
 ## Best Result
-- Arm E (d_max=16 JEPA+VICReg control): delta_R2_color = 0.14 (no identity
-  objective needed — pure capacity effect)
-- Arm A (d_max=8 JEPA+VICReg control): delta_R2_color = 0.027
+- A1 (batch_size=64): 30% collapse rate (dual). Same as iter_025 v2. No improvement found.
 
 ## In Progress
-- None. The architecture ceiling probe is blocked by collapse instability.
+- None. Collapse-elimination sweep complete.
 
-## NOT Established (honest assessment)
-- Whether the architecture is or is not a bottleneck on identity encoding —
-  the experiment is underpowered (30% control collapse). No architecture
-  claim is earned.
-- Whether fixing collapse would reveal latent identity capacity in z_dyn —
-  this requires a stable training regime first.
-- Whether a separate z_dyn encoder would solve the problem — this is the
-  natural next architectural move but has not been tested.
+## NOT Established
+- Whether multi-knob combinations (e.g. batch_size=64 + longer training) could reach ≤10%
+- Whether the centroid_gated readout is the collapse bottleneck
+- Whether a separate z_dyn encoder would solve collapse
+- Whether longer training would help or hurt collapse rates
+- Whether the buffer-size effect is a genuine confound or noise
 
 ## Open Questions (ordered by expected value)
-1. Why does z_dyn collapse at 30% even with lower LR + gradient clipping?
-2. Is the centroid_gated readout the bottleneck (attending at soft-argmax
-   positions may not capture identity)?
-3. Would a separate z_dyn encoder solve collapse + identity?
-4. Would larger batch size improve VICReg stability?
-5. Can the d_max=16 capacity effect be leveraged with identity objectives?
-6. Should the project pivot to a different encoder architecture?
-7. Is collapse a fundamental limitation of the dual-stream architecture?
+1. Is the centroid_gated z_dyn readout the collapse bottleneck? (Comparing with mean readout is a clean, single-knob test within collapse-elimination scope.)
+2. Would a combined regime (batch_size=64 + 16000 steps) overcome individual-arm weaknesses?
+3. Why does A0 regress from 30% to 40% with the buffer change? Is this a genuine confound?
+4. Is the train-vs-eval collapse discrepancy fixable by architectural changes, or is it fundamental?
+5. Should the project pivot to a separate z_dyn encoder?
+6. Is collapse a fundamental limitation of JEPA+VICReg on this architecture?
+7. Would longer training (20000+ steps) help or is the 8000-step budget too short?

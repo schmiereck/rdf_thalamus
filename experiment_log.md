@@ -1049,3 +1049,61 @@ effect-size criterion (z_dyn explains ≥10% more color variance than z
 
 **Notes:** Underpowered due to 30% control collapse; capacity audit confirms d_max=16 effect; supervised probe worse than control
 
+
+---
+```yaml
+cached_tokens: 1206742
+cost_usd: 4.76235
+hypothesis: 'phase-26: collapse-rate sweep produces measured null — no single-knob
+  regime variation reduces z_dyn collapse below 10%'
+input_tokens: 3926134
+iter: 26
+metrics:
+  a0_collapse_rate_dual: 0.4
+  a0_collapse_rate_eval_only: 0.4
+  a0_collapse_rate_train_only: 0.2
+  a0_mean_final_loss: 7.51
+  a1_collapse_rate_dual: 0.3
+  a1_collapse_rate_eval_only: 0.3
+  a1_collapse_rate_train_only: 0.2
+  a1_mean_final_loss: 4.75
+  a2_collapse_rate_dual: 0.6
+  a2_collapse_rate_eval_only: 0.6
+  a2_collapse_rate_train_only: 0.1
+  a2_mean_final_loss: 6.5
+  a3_collapse_rate_dual: 0.5
+  a3_collapse_rate_eval_only: 0.5
+  a3_collapse_rate_train_only: 0.3
+  a3_mean_final_loss: 5.07
+  a4_collapse_rate_dual: 1.0
+  a4_collapse_rate_eval_only: 0.9
+  a4_collapse_rate_train_only: 1.0
+  a4_mean_final_loss: 19.25
+  best_arm: A1 (batch_size=64)
+  best_collapse_rate: 0.3
+  disqualified_seeds: 0
+  gate_passed: false
+  gate_threshold: 0.1
+  seeds_per_arm: 10
+  total_runs: 50
+output_tokens: 49409
+status: experiment_failed
+```
+
+## iter_026: phase-26: collapse-rate sweep produces measured null — no single-knob regime variation reduces z_dyn collapse below 10%
+
+**Analysis:** This phase executed a pre-registered collapse-rate sweep with Manager-corrected protocol (dual collapse criterion, VICReg sanity floors anchored to iter_025 data, confound-free arm specifications with uniform buffer=4000, no early termination). The sweep tested 4 one-knob variations against the canonical JEPA+VICReg baseline (lr=3e-4, var_weight=25, batch_size=32). All 50 runs completed.
+
+The hypo
+
+**Status:** experiment_failed
+
+**Metrics:** `{'a0_collapse_rate_dual': 0.4, 'a1_collapse_rate_dual': 0.3, 'a2_collapse_rate_dual': 0.6, 'a3_collapse_rate_dual': 0.5, 'a4_collapse_rate_dual': 1.0, 'a0_collapse_rate_eval_only': 0.4, 'a1_collapse_rate_eval_only': 0.3, 'a2_collapse_rate_eval_only': 0.6, 'a3_collapse_rate_eval_only': 0.5, 'a4_collapse_rate_eval_only': 0.9, 'a0_collapse_rate_train_only': 0.2, 'a1_collapse_rate_train_only': 0.2, 'a2_collapse_rate_train_only': 0.1, 'a3_collapse_rate_train_only': 0.3, 'a4_collapse_rate_train_only': 1.0, 'total_runs': 50, 'seeds_per_arm': 10, 'disqualified_seeds': 0, 'best_arm': 'A1 (batch_size=64)', 'best_collapse_rate': 0.3, 'gate_threshold': 0.1, 'gate_passed': False, 'a0_mean_final_loss': 7.51, 'a1_mean_final_loss': 4.75, 'a2_mean_final_loss': 6.5, 'a3_mean_final_loss': 5.07, 'a4_mean_final_loss': 19.25}`
+
+**Experimenter view:** The iter_026 collapse-rate sweep completed all 50 runs (5 arms × 10 seeds) under the corrected dual-collapse protocol (eval OR train collapse, per-dim std < 0.5, loss sanity ≤ 50). No configuration achieved the pre-registered ≤10% collapse gate. The measured null is robust and honestly reported.
+
+Per-arm results (dual criterion):
+- A0 (canonical repeat, lr=3e-4, B=32): 40% collapse — higher than i
+
+**Notes:** Measured null: no swept configuration cleared the ≤10% gate under the pre-registered protocol.
+
