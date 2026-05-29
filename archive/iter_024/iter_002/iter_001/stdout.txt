@@ -1,0 +1,2278 @@
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_linear = coords / max(1.0, float(W - 1))
+        pos_linear = pos_linear.unsqueeze(0).unsqueeze(0).expand(B, 1, -1)
+        return torch.cat([x, pos_linear], dim=1)
+    elif pos_encoding == "sinusoidal":
+        pos_sin_10 = torch.sin(coords / 10.0)
+        pos_cos_10 = torch.cos(coords / 10.0)
+        pos_sin_100 = torch.sin(coords / 100.0)
+        pos_cos_100 = torch.cos(coords / 100.0)
+        pos_embeds = torch.stack([pos_sin_10, pos_cos_10, pos_sin_100, pos_cos_100], dim=0)
+        pos_embeds = pos_embeds.unsqueeze(0).expand(B, -1, -1)
+        return torch.cat([x, pos_embeds], dim=1)
+    return x
+
+class DualStreamEncoder(nn.Module):
+    def __init__(self, d_max=8):
+        """
+        1D CNN mapping input of shape (B, 3, 128) to decoupled coordinate and dynamics streams.
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.conv1 = nn.Conv1d(3, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+        
+        # Dual stream heads
+        self.conv_spatial_coord = nn.Conv1d(128, d_max, kernel_size=1)
+        self.conv_spatial_dyn = nn.Conv1d(128, d_max, kernel_size=1)
+        
+    def forward_spatial(self, x):
+        """
+        Returns spatial feature map of shape (B, d_max, 128) for the coordinate stream.
+        To ensure backprop through loss_spatial only flows to conv_spatial_coord,
+        we detach the output of conv4 before passing to conv_spatial_coord.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        # Detach before conv_spatial_coord to stop gradients flowing to conv1-4
+        x_coord = self.conv_spatial_coord(x.detach())  # (B, d_max, 8)
+        x_coord = F.interpolate(x_coord, size=128, mode='linear', align_corners=False) # (B, d_max, 128)
+        return x_coord
+
+    def forward_dynamics(self, x):
+        """
+        Returns the dynamics representation of shape (B, d_max).
+        Gradients on this stream flow back to conv_spatial_dyn and conv1-4.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        x_dyn = self.conv_spatial_dyn(x) # (B, d_max, 8)
+        return x_dyn.mean(dim=-1) # (B, d_max)
+
+    def forward(self, x):
+        """
+        Returns both streams:
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations, shape (B, d_max)
+        """
+        a_spatial = self.forward_spatial(x)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        z_dyn = self.forward_dynamics(x)
+        return z_coord, z_dyn
+
+
+class DualStreamPredictor(nn.Module):
+    def __init__(self, d_max=8, d_dyn=None, h=3):
+        """
+        MLP forecasting target z_{t+1} of size (B, d_max + d_dyn)
+        from history of active latent states (B, H * (d_max + d_dyn)).
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.d_dyn = d_dyn if d_dyn is not None else d_max
+        self.h = h
+        total_in = h * (d_max + self.d_dyn)
+        total_out = d_max + self.d_dyn
+        self.net = nn.Sequential(
+            nn.Linear(total_in, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, total_out)
+        )
+        
+    def forward(self, z_coord_history, z_dyn_history, d_t, mask_coord=False, d_t_dyn=None):
+        """
+        Args:
+            z_coord_history (Tensor): Shape (B, H, D_max)
+            z_dyn_history (Tensor): Shape (B, H, D_dyn)
+            d_t (int): Current active latent dimension for coord stream.
+            mask_coord (bool): If True, zero out the coordinate input.
+            d_t_dyn (int or None): Current active latent dimension for dyn stream.
+                                   Defaults to d_t if None.
+        """
+        if d_t_dyn is None:
+            d_t_dyn = d_t
+            
+        # Option to zero out coordinate input completely
+        if mask_coord:
+            z_coord_history = torch.zeros_like(z_coord_history)
+            
+        # Zero out inactive dimensions (index >= d_t for coord, >= d_t_dyn for dyn)
+        mask_c = torch.zeros_like(z_coord_history)
+        mask_c[:, :, :d_t] = 1.0
+        z_coord_active = z_coord_history * mask_c
+        
+        mask_d = torch.zeros_like(z_dyn_history)
+        mask_d[:, :, :d_t_dyn] = 1.0
+        z_dyn_active = z_dyn_history * mask_d
+        
+        # Concatenate coordinate and dynamics histories along feature dimension: (B, H, d_max + d_dyn)
+        z_history = torch.cat([z_coord_active, z_dyn_active], dim=-1)
+        
+        # Flatten history: (B, H * (d_max + d_dyn))
+        z_history_flat = z_history.reshape(-1, self.h * (self.d_max + self.d_dyn))
+        
+        # Predict both streams
+        pred = self.net(z_history_flat) # (B, d_max + d_dyn)
+        
+        # Split into coord and dyn predictions
+        pred_coord, pred_dyn = torch.split(pred, [self.d_max, self.d_dyn], dim=-1)
+        
+        # Zero out inactive dimensions in the outputs
+        out_mask_coord = torch.zeros_like(pred_coord)
+        out_mask_coord[:, :d_t] = 1.0
+        pred_coord_active = pred_coord * out_mask_coord
+        
+        out_mask_dyn = torch.zeros_like(pred_dyn)
+        out_mask_dyn[:, :d_t_dyn] = 1.0
+        pred_dyn_active = pred_dyn * out_mask_dyn
+        
+        return pred_coord_active, pred_dyn_active
+
+
+class DualStreamJEPASpatial(nn.Module):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100):
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        
+        self.encoder = DualStreamEncoder(d_max=d_max)
+        self.predictor = DualStreamPredictor(d_max=d_max, h=h)
+        
+        # Dynamic state tracking
+        self.d_t = 2
+        self.steps_since_recruitment = cooldown  # start outside of cooldown
+        self.error_buffer = collections.deque(maxlen=500)  # collects EMA of error during stable periods
+        self.ema_error = None
+        self.ema_alpha = 0.05
+        self.gdasr_log_only = False
+        self.gdasr_growth_points = []
+
+    def reset_error_buffer(self):
+        self.error_buffer.clear()
+        self.ema_error = None
+
+    def calculate_centroid_and_variance(self, a_spatial):
+        return calculate_centroid_and_variance(a_spatial)
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False):
+        """
+        Args:
+            x_hist (Tensor): shape (B, H, 3, 128)
+            x_target (Tensor): shape (B, 3, 128)
+            sim_weight (float): VICReg invariance loss weight
+            var_weight (float): VICReg variance loss weight
+            cov_weight (float): VICReg covariance loss weight
+            lambda_spatial (float): spatial bottleneck loss weight
+            k_chan (int, optional): channel index to minimize spatial variance on. Defaults to d_t - 1.
+            mask_coord (bool): whether to zero out coordinate history in predictor.
+        """
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+        
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
+        
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+        
+        # Apply stabilization stop-gradient logic to history and target representations
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_hist_coord_stable = torch.cat([
+                z_hist_coord[:, :, :self.d_t-1].detach(),
+                z_hist_coord[:, :, self.d_t-1:]
+            ], dim=-1)
+            z_hist_dyn_stable = torch.cat([
+                z_hist_dyn[:, :, :self.d_t-1].detach(),
+                z_hist_dyn[:, :, self.d_t-1:]
+            ], dim=-1)
+            
+            z_target_coord_stable = torch.cat([
+                z_target_coord[:, :self.d_t-1].detach(),
+                z_target_coord[:, self.d_t-1:]
+            ], dim=-1)
+            z_target_dyn_stable = torch.cat([
+                z_target_dyn[:, :self.d_t-1].detach(),
+                z_target_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_hist_coord_stable = z_hist_coord
+            z_hist_dyn_stable = z_hist_dyn
+            
+            z_target_coord_stable = z_target_coord
+            z_target_dyn_stable = z_target_dyn
+            
+        # Predictive Coupling & Stop-Gradients on coordinate stream
+        # This prevents prediction gradients from flowing to the coordinate stream representation
+        z_hist_coord_pred = z_hist_coord_stable.detach()
+        z_target_coord_pred = z_target_coord_stable.detach()
+        
+        # Predict target representations
+        z_pred_coord, z_pred_dyn = self.predictor(
+            z_hist_coord_pred, 
+            z_hist_dyn_stable, 
+            self.d_t, 
+            mask_coord=mask_coord
+        )
+        
+        # Apply stabilization stop-gradient to predictor outputs
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_pred_coord_stable = torch.cat([
+                z_pred_coord[:, :self.d_t-1].detach(),
+                z_pred_coord[:, self.d_t-1:]
+            ], dim=-1)
+            z_pred_dyn_stable = torch.cat([
+                z_pred_dyn[:, :self.d_t-1].detach(),
+                z_pred_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_pred_coord_stable = z_pred_coord
+            z_pred_dyn_stable = z_pred_dyn
+            
+        # Select active dimensions
+        z_pred_coord_active = z_pred_coord_stable[:, :self.d_t]
+        z_target_coord_active = z_target_coord_stable[:, :self.d_t]
+        
+        z_pred_dyn_active = z_pred_dyn_stable[:, :self.d_t]
+        z_target_dyn_active = z_target_dyn_stable[:, :self.d_t]
+        
+        # 1. Similarity (Invariance) Loss
+        sim_loss_coord = F.mse_loss(z_pred_coord_active, z_target_coord_pred[:, :self.d_t])
+        sim_loss_dyn = F.mse_loss(z_pred_dyn_active, z_target_dyn_active)
+        sim_loss = sim_loss_coord + sim_loss_dyn
+        
+        # 2. Variance Loss
+        def calc_var_loss(x, gamma=1.0, eps=1e-4):
+            mean = x.mean(dim=0)
+            var = torch.mean((x - mean)**2, dim=0)
+            std = torch.sqrt(var + eps)
+            return torch.mean(F.relu(gamma - std))
+            
+        var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+        var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+        var_loss = var_loss_coord + var_loss_dyn
+        
+        # 3. Covariance Loss
+        def calc_cov_loss(x):
+            B, d = x.shape
+            if B <= 1 or d <= 1:
+                return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            mean = x.mean(dim=0, keepdim=True)
+            x_centered = x - mean
+            cov = (x_centered.T @ x_centered) / (B - 1)
+            diag = torch.diagonal(cov)
+            off_diag = cov - torch.diag(diag)
+            return (off_diag ** 2).sum() / d
+            
+        cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
+        cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+        cov_loss = cov_loss_coord + cov_loss_dyn
+        
+        base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+        
+        # 4. Spatial Bottleneck Loss
+        if lambda_spatial > 0:
+            z_target_spatial = self.encoder.forward_spatial(x_target)
+            _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+            if k_chan is None:
+                k_chan = self.d_t - 1
+            var_k = var_all[:, k_chan]
+            loss_spatial = lambda_spatial * var_k.mean()
+            loss = base_loss + loss_spatial
+        else:
+            loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            loss = base_loss
+            
+        return {
+            "loss": loss,
+            "sim_loss": sim_loss,
+            "sim_loss_coord": sim_loss_coord,
+            "sim_loss_dyn": sim_loss_dyn,
+            "var_loss": var_loss,
+            "var_loss_coord": var_loss_coord,
+            "var_loss_dyn": var_loss_dyn,
+            "cov_loss": cov_loss,
+            "cov_loss_coord": cov_loss_coord,
+            "cov_loss_dyn": cov_loss_dyn,
+            "loss_spatial": loss_spatial
+        }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def update_recruitment_logic(self, error_val, target_dim=None, step=None):
+        if target_dim is None:
+            target_dim = self.d_t
+
+        if self.ema_error is None:
+            self.ema_error = error_val
+        else:
+            self.ema_error = self.ema_alpha * error_val + (1.0 - self.ema_alpha) * self.ema_error
+            
+        self.steps_since_recruitment += 1
+        
+        if self.d_t == target_dim:
+            self.error_buffer.append(self.ema_error)
+            
+        if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+            if len(self.error_buffer) >= 200:
+                mean = np.mean(self.error_buffer)
+                std = np.std(self.error_buffer)
+                if self.ema_error > mean + self.k * std:
+                    if self.gdasr_log_only:
+                        self.steps_since_recruitment = 0
+                        self.gdasr_growth_points.append({
+                            "step": step,
+                            "ema_error": self.ema_error,
+                            "mean": mean,
+                            "std": std
+                        })
+                        print(f"[GDASR LOG-ONLY] Growth point detected at d_t={self.d_t}, "
+                              f"error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+                    else:
+                        self.d_t = target_dim + 1
+                        self.steps_since_recruitment = 0
+                        print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+
+    def clone(self):
+        """
+        Self-cloning capability: Returns a copy of this model with identical parameters and dynamic state.
+        """
+        import copy
+        cloned = DualStreamJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        cloned.gdasr_log_only = self.gdasr_log_only
+        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
+        return cloned
+
+
+class PDRCEncoder(DualStreamEncoder):
+    def __init__(self, d_max=8):
+        super().__init__(d_max=d_max)
+        self.stage = 1
+
+    def forward_spatial(self, x):
+        """
+        Returns spatial feature map of shape (B, d_max, 128) for the coordinate stream.
+        To ensure backprop through loss_spatial only flows to conv_spatial_coord,
+        we detach the output of conv4 before passing to conv_spatial_coord in Stage 2.
+        In Stage 1, we allow gradients to flow back to conv1-4.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        if self.stage == 2:
+            x_coord = self.conv_spatial_coord(x.detach())
+        else:
+            x_coord = self.conv_spatial_coord(x)
+            
+        x_coord = F.interpolate(x_coord, size=128, mode='linear', align_corners=False) # (B, d_max, 128)
+        return x_coord
+
+
+class PDRCJEPASpatial(DualStreamJEPASpatial):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, stage=1):
+        super().__init__(d_max=d_max, h=h, k=k, cooldown=cooldown, stabilization_period=stabilization_period)
+        self.encoder = PDRCEncoder(d_max=d_max)
+        self._stage = stage
+        self.stage = stage # Trigger property setter to configure requires_grad
+
+    @property
+    def stage(self):
+        return self._stage
+
+    @stage.setter
+    def stage(self, value):
+        if value not in [1, 2]:
+            raise ValueError("Stage must be 1 or 2.")
+        self._stage = value
+        self.encoder.stage = value
+        
+        # Stage 1: All parameters should have requires_grad=True
+        # Stage 2: Set requires_grad=False on encoder.conv_spatial_coord parameters
+        #          The dynamics stream and predictor should remain fully trainable
+        if value == 1:
+            for p in self.parameters():
+                p.requires_grad = True
+        elif value == 2:
+            for name, p in self.named_parameters():
+                if "encoder.conv_spatial_coord" in name:
+                    p.requires_grad = False
+                else:
+                    p.requires_grad = True
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False):
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+        
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_max)
+        
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+        
+        # Stabilization stop-gradient logic depending on stage
+        if self.stage == 1:
+            # Stage 1: No detaching at all on coordinate representations
+            z_hist_coord_stable = z_hist_coord
+            z_target_coord_stable = z_target_coord
+        else:
+            # Stage 2: Apply standard stabilization stop-gradients to coordinate stream
+            if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+                z_hist_coord_stable = torch.cat([
+                    z_hist_coord[:, :, :self.d_t-1].detach(),
+                    z_hist_coord[:, :, self.d_t-1:]
+                ], dim=-1)
+                z_target_coord_stable = torch.cat([
+                    z_target_coord[:, :self.d_t-1].detach(),
+                    z_target_coord[:, self.d_t-1:]
+                ], dim=-1)
+            else:
+                z_hist_coord_stable = z_hist_coord
+                z_target_coord_stable = z_target_coord
+
+        # Dynamics stream always has stabilization stop-gradient logic
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_hist_dyn_stable = torch.cat([
+                z_hist_dyn[:, :, :self.d_t-1].detach(),
+                z_hist_dyn[:, :, self.d_t-1:]
+            ], dim=-1)
+            z_target_dyn_stable = torch.cat([
+                z_target_dyn[:, :self.d_t-1].detach(),
+                z_target_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_hist_dyn_stable = z_hist_dyn
+            z_target_dyn_stable = z_target_dyn
+
+        # Predictive Coupling & Stop-Gradients on coordinate stream
+        if self.stage == 1:
+            # Stage 1: Do NOT detach before passing to predictor or in similarity loss
+            z_hist_coord_pred = z_hist_coord_stable
+            z_target_coord_pred = z_target_coord_stable
+        else:
+            # Stage 2: Detach z_hist_coord and z_target_coord before predictor or similarity loss
+            z_hist_coord_pred = z_hist_coord_stable.detach()
+            z_target_coord_pred = z_target_coord_stable.detach()
+
+        # Predict target representations
+        z_pred_coord, z_pred_dyn = self.predictor(
+            z_hist_coord_pred, 
+            z_hist_dyn_stable, 
+            self.d_t, 
+            mask_coord=mask_coord
+        )
+
+        # Apply stabilization stop-gradient to predictor outputs
+        if self.stage == 1:
+            # Stage 1: Do NOT detach coordinate predictor output
+            z_pred_coord_stable = z_pred_coord
+        else:
+            if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+                z_pred_coord_stable = torch.cat([
+                    z_pred_coord[:, :self.d_t-1].detach(),
+                    z_pred_coord[:, self.d_t-1:]
+                ], dim=-1)
+            else:
+                z_pred_coord_stable = z_pred_coord
+
+        if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+            z_pred_dyn_stable = torch.cat([
+                z_pred_dyn[:, :self.d_t-1].detach(),
+                z_pred_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_pred_dyn_stable = z_pred_dyn
+
+        # Select active dimensions
+        z_pred_coord_active = z_pred_coord_stable[:, :self.d_t]
+        z_target_coord_active = z_target_coord_stable[:, :self.d_t]
+        
+        z_pred_dyn_active = z_pred_dyn_stable[:, :self.d_t]
+        z_target_dyn_active = z_target_dyn_stable[:, :self.d_t]
+        
+        # 1. Similarity (Invariance) Loss
+        sim_loss_coord = F.mse_loss(z_pred_coord_active, z_target_coord_pred[:, :self.d_t])
+        sim_loss_dyn = F.mse_loss(z_pred_dyn_active, z_target_dyn_active)
+        sim_loss = sim_loss_coord + sim_loss_dyn
+        
+        # 2. Variance Loss
+        def calc_var_loss(x, gamma=1.0, eps=1e-4):
+            mean = x.mean(dim=0)
+            var = torch.mean((x - mean)**2, dim=0)
+            std = torch.sqrt(var + eps)
+            return torch.mean(F.relu(gamma - std))
+            
+        var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+        var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+        var_loss = var_loss_coord + var_loss_dyn
+        
+        # 3. Covariance Loss
+        def calc_cov_loss(x):
+            B, d = x.shape
+            if B <= 1 or d <= 1:
+                return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+            mean = x.mean(dim=0, keepdim=True)
+            x_centered = x - mean
+            cov = (x_centered.T @ x_centered) / (B - 1)
+            diag = torch.diagonal(cov)
+            off_diag = cov - torch.diag(diag)
+            return (off_diag ** 2).sum() / d
+            
+        cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
+        cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+        cov_loss = cov_loss_coord + cov_loss_dyn
+        
+        base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+        
+        # 4. Spatial Bottleneck Loss
+        if lambda_spatial > 0:
+            z_target_spatial = self.encoder.forward_spatial(x_target)
+            _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+            if k_chan is None:
+                k_chan = self.d_t - 1
+            var_k = var_all[:, k_chan]
+            loss_spatial = lambda_spatial * var_k.mean()
+            loss = base_loss + loss_spatial
+        else:
+            loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            loss = base_loss
+            
+        return {
+            "loss": loss,
+            "sim_loss": sim_loss,
+            "sim_loss_coord": sim_loss_coord,
+            "sim_loss_dyn": sim_loss_dyn,
+            "var_loss": var_loss,
+            "var_loss_coord": var_loss_coord,
+            "var_loss_dyn": var_loss_dyn,
+            "cov_loss": cov_loss,
+            "cov_loss_coord": cov_loss_coord,
+            "cov_loss_dyn": cov_loss_dyn,
+            "loss_spatial": loss_spatial
+        }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def clone(self):
+        import copy
+        cloned = PDRCJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period,
+            stage=self.stage
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        return cloned
+
+
+class NonParametricEncoder(nn.Module):
+    def __init__(self, d_max=8, pos_encoding="none", dyn_readout="mean", sub_features=1, dyn_source="spatial"):
+        super().__init__()
+        self.d_max = d_max
+        self.pos_encoding = pos_encoding
+        self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
+        
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+        self.conv_spatial = nn.Conv1d(128, d_max, kernel_size=1)
+        
+        if dyn_readout == "centroid_gated":
+            if dyn_source == "conv4" and sub_features == 1:
+                self.dyn_proj = nn.Linear(128, 1)
+            else:
+                self.conv_identity = nn.Conv1d(128, d_max * sub_features, kernel_size=1)
+
+    @property
+    def d_dyn(self):
+        return self.d_max * self.sub_features
+
+    def _forward_backbone(self, x):
+        """Returns backbone features (B, 128, 8)"""
+        x = add_positional_encoding(x, self.pos_encoding)
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        return x
+
+    def forward_spatial(self, x):
+        """
+        Returns spatial feature map of shape (B, d_max, 128) for the encoder.
+        """
+        features = self._forward_backbone(x)
+        x = self.conv_spatial(features)
+        x = F.interpolate(x, size=128, mode='linear', align_corners=False)
+        return x
+
+    def forward(self, x):
+        """
+        Returns both streams:
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations, shape (B, d_dyn) where d_dyn = d_max * sub_features
+        """
+        features = self._forward_backbone(x)
+        a_spatial = self.conv_spatial(features)
+        a_spatial = F.interpolate(a_spatial, size=128, mode='linear', align_corners=False)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        B = x.shape[0]
+        
+        if self.dyn_readout == "mean":
+            z_dyn = a_spatial.mean(dim=-1)
+        elif self.dyn_readout == "centroid_gated":
+            p_c = F.softmax(a_spatial, dim=-1)  # spatial attention
+            
+            if self.dyn_source == "conv4" and self.sub_features == 1:
+                # Conv4-backed readout: attend conv4 features at centroid position
+                features_interp = F.interpolate(features, size=128, mode='linear', align_corners=False)  # (B, 128, 128)
+                attended = torch.bmm(p_c.detach(), features_interp.transpose(1, 2))  # (B, d_max, 128)
+                attended_flat = attended.reshape(B * self.d_max, 128)
+                z_dyn = self.dyn_proj(attended_flat).reshape(B, self.d_max)  # (B, d_max)
+            elif self.sub_features > 1:
+                # Multi-sub-feature readout
+                a_identity = self.conv_identity(features)  # (B, d_max*K, 8)
+                a_identity = F.interpolate(a_identity, size=128, mode='linear', align_corners=False)  # (B, d_max*K, 128)
+                a_identity = a_identity.reshape(B, self.d_max, self.sub_features, 128)  # (B, d_max, K, 128)
+                z_dyn = torch.einsum('bcs,bcks->bck', p_c.detach(), a_identity)  # (B, d_max, K)
+                z_dyn = z_dyn.reshape(B, self.d_max * self.sub_features)  # (B, d_max * K)
+            else:
+                # Standard K=1 centroid_gated
+                a_identity = self.conv_identity(features)
+                a_identity = F.interpolate(a_identity, size=128, mode='linear', align_corners=False)
+                z_dyn = torch.sum(a_identity * p_c.detach(), dim=-1)  # stop-gradient on attention
+        else:
+            raise ValueError(f"Unknown dyn_readout: {self.dyn_readout}")
+        
+        return z_coord, z_dyn
+
+
+
+
+class NonParametricJEPASpatial(nn.Module):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
+                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean",
+                 sub_features=1, dyn_source="spatial"):
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        self.pos_encoding = pos_encoding
+        self.primary_objective = primary_objective
+        self.sfa_weight = sfa_weight
+        self.gdasr_log_only = gdasr_log_only
+        self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
+        
+        self.encoder = NonParametricEncoder(
+            d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout,
+            sub_features=sub_features, dyn_source=dyn_source
+        )
+        self.predictor = DualStreamPredictor(d_max=d_max, d_dyn=self.encoder.d_dyn, h=h)
+        
+        # Dynamic state tracking
+        self.d_t = 2
+        self.steps_since_recruitment = cooldown  # start outside of cooldown
+        self.error_buffer = collections.deque(maxlen=500)
+        self.ema_error = None
+        self.ema_alpha = 0.05
+        self.gdasr_growth_points = []
+
+    def reset_error_buffer(self):
+        self.error_buffer.clear()
+        self.ema_error = None
+
+    def calculate_centroid_and_variance(self, a_spatial):
+        return calculate_centroid_and_variance(a_spatial)
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None):
+        dt_pred = d_t_predict if d_t_predict is not None else self.d_t
+        _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight
+        d_dyn = self.encoder.d_dyn
+        d_t_dyn = self.d_t * self.sub_features
+
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, d_dyn)
+
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+
+        if self.primary_objective == "sfa":
+            # SFA MODE
+            z_prev_dyn = z_hist_dyn[:, -1]  # (B, d_dyn)
+
+            z_target_dyn_active = z_target_dyn[:, :d_t_dyn]
+            z_prev_dyn_active = z_prev_dyn[:, :d_t_dyn]
+            sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active.detach())
+
+            def calc_var_loss(x, gamma=1.0, eps=1e-4):
+                mean = x.mean(dim=0)
+                var = torch.mean((x - mean) ** 2, dim=0)
+                std = torch.sqrt(var + eps)
+                return torch.mean(F.relu(gamma - std))
+
+            def calc_cov_loss(x):
+                Bc, d = x.shape
+                if Bc <= 1 or d <= 1:
+                    return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+                mean = x.mean(dim=0, keepdim=True)
+                x_centered = x - mean
+                cov = (x_centered.T @ x_centered) / (Bc - 1)
+                diag = torch.diagonal(cov)
+                off_diag = cov - torch.diag(diag)
+                return (off_diag ** 2).sum() / d
+
+            var_loss_dyn = calc_var_loss(z_target_dyn_active)
+            var_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            var_loss = var_loss_dyn
+
+            cov_loss_dyn = calc_cov_loss(z_target_dyn_active)
+            cov_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            cov_loss = cov_loss_dyn
+
+            # JEPA readout with stop-gradient
+            z_target_sfa_dyn = z_target_dyn_active.detach()
+            z_hist_sfa_dyn = z_hist_dyn.detach()
+            z_hist_sfa_coord = z_hist_coord.detach()
+
+            z_pred_coord, z_pred_dyn = self.predictor(
+                z_hist_sfa_coord,
+                z_hist_sfa_dyn,
+                dt_pred,
+                mask_coord=mask_coord,
+                d_t_dyn=dt_pred * self.sub_features
+            )
+
+            # Prediction losses on active dims
+            z_pred_coord_pred = z_pred_coord[:, :dt_pred]
+            z_target_coord_pred_dt = z_target_coord[:, :dt_pred]
+            z_pred_dyn_pred = z_pred_dyn[:, :d_t_dyn]
+            z_target_dyn_pred = z_target_dyn_active.detach()
+
+            sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
+            sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
+            sim_loss = sim_loss_coord + sim_loss_dyn
+
+            base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+
+            # Spatial bottleneck
+            if lambda_spatial > 0:
+                z_target_spatial = self.encoder.forward_spatial(x_target)
+                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+                if k_chan is None:
+                    k_chan = self.d_t - 1
+                var_k = var_all[:, k_chan]
+                loss_spatial = lambda_spatial * var_k.mean()
+                loss = base_loss + loss_spatial
+            else:
+                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+                loss = base_loss
+
+            # CCR
+            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            if ccr_mode != 'none':
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)
+                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0
+                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1]
+                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
+
+                if ccr_mode == 'hinge':
+                    hinge_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        if self.d_t > 1:
+                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
+                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
+                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
+                            hinge = F.relu(0.15 - diff_pairs)
+                            hinge_losses.append(hinge.mean())
+                        else:
+                            hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
+                    ccr_spatial_loss = torch.stack(hinge_losses).mean()
+                elif ccr_mode == 'covariance':
+                    cov_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        cov_losses.append(calc_cov_loss(z_f))
+                    ccr_spatial_loss = torch.stack(cov_losses).mean()
+
+                ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss
+                loss = loss + ccr_total
+
+            return {
+                "loss": loss,
+                "sim_loss": sim_loss,
+                "sim_loss_coord": sim_loss_coord,
+                "sim_loss_dyn": sim_loss_dyn,
+                "var_loss": var_loss,
+                "var_loss_coord": var_loss_coord,
+                "var_loss_dyn": var_loss_dyn,
+                "cov_loss": cov_loss,
+                "cov_loss_coord": cov_loss_coord,
+                "cov_loss_dyn": cov_loss_dyn,
+                "loss_spatial": loss_spatial,
+                "sfa_loss": sfa_loss,
+                "ccr_smooth_loss": ccr_smooth_loss,
+                "ccr_spatial_loss": ccr_spatial_loss
+            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+        else:
+            # JEPA MODE (default, backward compatible)
+            z_hist_coord_pred = z_hist_coord
+            z_target_coord_pred = z_target_coord
+
+            z_pred_coord, z_pred_dyn = self.predictor(
+                z_hist_coord_pred,
+                z_hist_dyn,
+                dt_pred,
+                mask_coord=mask_coord,
+                d_t_dyn=dt_pred * self.sub_features
+            )
+
+            # For JEPA mode with K>1, dt_pred dims for coord, dt_pred*K for dyn
+            d_t_pred_dyn = dt_pred * self.sub_features
+            z_pred_coord_pred = z_pred_coord[:, :dt_pred]
+            z_target_coord_pred_dt = z_target_coord_pred[:, :dt_pred]
+
+            z_pred_dyn_pred = z_pred_dyn[:, :d_t_pred_dyn]
+            z_target_dyn_pred = z_target_dyn[:, :d_t_pred_dyn]
+
+            z_pred_coord_active = z_pred_coord[:, :self.d_t]
+            z_target_coord_active = z_target_coord[:, :self.d_t]
+
+            z_pred_dyn_active = z_pred_dyn[:, :d_t_dyn]
+            z_target_dyn_active = z_target_dyn[:, :d_t_dyn]
+
+            sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
+            sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
+            sim_loss = sim_loss_coord + sim_loss_dyn
+
+            def calc_var_loss(x, gamma=1.0, eps=1e-4):
+                mean = x.mean(dim=0)
+                var = torch.mean((x - mean) ** 2, dim=0)
+                std = torch.sqrt(var + eps)
+                return torch.mean(F.relu(gamma - std))
+
+            def calc_cov_loss(x):
+                Bc, d = x.shape
+                if Bc <= 1 or d <= 1:
+                    return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+                mean = x.mean(dim=0, keepdim=True)
+                x_centered = x - mean
+                cov = (x_centered.T @ x_centered) / (Bc - 1)
+                diag = torch.diagonal(cov)
+                off_diag = cov - torch.diag(diag)
+                return (off_diag ** 2).sum() / d
+
+            var_loss_coord = 0.5 * (calc_var_loss(z_pred_coord_active) + calc_var_loss(z_target_coord_active))
+            var_loss_dyn = 0.5 * (calc_var_loss(z_pred_dyn_active) + calc_var_loss(z_target_dyn_active))
+            var_loss = var_loss_coord + var_loss_dyn
+
+            cov_loss_coord = 0.5 * (calc_cov_loss(z_pred_coord_active) + calc_cov_loss(z_target_coord_active))
+            cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+            cov_loss = cov_loss_coord + cov_loss_dyn
+
+            base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+
+            if lambda_spatial > 0:
+                z_target_spatial = self.encoder.forward_spatial(x_target)
+                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+                if k_chan is None:
+                    k_chan = self.d_t - 1
+                var_k = var_all[:, k_chan]
+                loss_spatial = lambda_spatial * var_k.mean()
+                loss = base_loss + loss_spatial
+            else:
+                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+                loss = base_loss
+
+            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            if ccr_mode != 'none':
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)
+                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0
+                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1]
+                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
+
+                if ccr_mode == 'hinge':
+                    hinge_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        if self.d_t > 1:
+                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
+                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
+                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
+                            hinge = F.relu(0.15 - diff_pairs)
+                            hinge_losses.append(hinge.mean())
+                        else:
+                            hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
+                    ccr_spatial_loss = torch.stack(hinge_losses).mean()
+                elif ccr_mode == 'covariance':
+                    cov_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        cov_losses.append(calc_cov_loss(z_f))
+                    ccr_spatial_loss = torch.stack(cov_losses).mean()
+
+                ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss
+                loss = loss + ccr_total
+
+            return {
+                "loss": loss,
+                "sim_loss": sim_loss,
+                "sim_loss_coord": sim_loss_coord,
+                "sim_loss_dyn": sim_loss_dyn,
+                "var_loss": var_loss,
+                "var_loss_coord": var_loss_coord,
+                "var_loss_dyn": var_loss_dyn,
+                "cov_loss": cov_loss,
+                "cov_loss_coord": cov_loss_coord,
+                "cov_loss_dyn": cov_loss_dyn,
+                "loss_spatial": loss_spatial,
+                "ccr_smooth_loss": ccr_smooth_loss,
+                "ccr_spatial_loss": ccr_spatial_loss
+            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def update_recruitment_logic(self, error_val, target_dim=None, step=None):
+        if target_dim is None:
+            target_dim = self.d_t
+
+        if self.ema_error is None:
+            self.ema_error = error_val
+        else:
+            self.ema_error = self.ema_alpha * error_val + (1.0 - self.ema_alpha) * self.ema_error
+            
+        self.steps_since_recruitment += 1
+        
+        if self.d_t == target_dim:
+            self.error_buffer.append(self.ema_error)
+
+        # Log-only mode (M3): detect growth points without changing d_t
+        if self.gdasr_log_only:
+            if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+                if len(self.error_buffer) >= 200:
+                    mean = np.mean(self.error_buffer)
+                    std = np.std(self.error_buffer)
+                    if self.ema_error > mean + self.k * std:
+                        self.steps_since_recruitment = 0
+                        self.gdasr_growth_points.append({
+                            "step": step,
+                            "ema_error": self.ema_error,
+                            "mean": mean,
+                            "std": std
+                        })
+                        print(f"[GDASR LOG-ONLY] Growth point detected at d_t={self.d_t}, "
+                              f"error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+        else:
+            # Active recruitment mode (backward compatible)
+            if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+                if len(self.error_buffer) >= 200:
+                    mean = np.mean(self.error_buffer)
+                    std = np.std(self.error_buffer)
+                    if self.ema_error > mean + self.k * std:
+                        self.d_t = target_dim + 1
+                        self.steps_since_recruitment = 0
+                        print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+
+    def clone(self):
+        import copy
+        cloned = NonParametricJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period,
+            pos_encoding=self.pos_encoding,
+            primary_objective=self.primary_objective,
+            sfa_weight=self.sfa_weight,
+            gdasr_log_only=self.gdasr_log_only,
+            dyn_readout=self.dyn_readout,
+            sub_features=self.sub_features,
+            dyn_source=self.dyn_source
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
+        return cloned
+]
+
+[Tool Call: read_file({'path': 'src/test_models_dual_stream.py'})]
+[Tool Result: import torch
+import numpy as np
+from src.models_dual_stream import (
+    calculate_centroid_and_variance,
+    add_positional_encoding,
+    DualStreamEncoder,
+    DualStreamPredictor,
+    DualStreamJEPASpatial,
+    PDRCEncoder,
+    PDRCJEPASpatial,
+    NonParametricEncoder,
+    NonParametricJEPASpatial
+)
+
+def test_shapes():
+    B = 4
+    H = 3
+    C = 3
+    W = 128
+    d_max = 8
+    
+    encoder = DualStreamEncoder(d_max=d_max)
+    x = torch.randn(B, C, W)
+    
+    # 1. forward_spatial
+    a_spatial = encoder.forward_spatial(x)
+    assert a_spatial.shape == (B, d_max, W), f"Expected {(B, d_max, W)}, got {a_spatial.shape}"
+    
+    # 2. forward_dynamics
+    z_dyn = encoder.forward_dynamics(x)
+    assert z_dyn.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_dyn.shape}"
+    
+    # 3. forward
+    z_coord, z_dyn_f = encoder(x)
+    assert z_coord.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_coord.shape}"
+    assert z_dyn_f.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_dyn_f.shape}"
+    
+    # 4. Predictor shapes
+    predictor = DualStreamPredictor(d_max=d_max, h=H)
+    z_coord_hist = torch.randn(B, H, d_max)
+    z_dyn_hist = torch.randn(B, H, d_max)
+    pred_coord, pred_dyn = predictor(z_coord_hist, z_dyn_hist, d_t=3)
+    assert pred_coord.shape == (B, d_max), f"Expected {(B, d_max)}, got {pred_coord.shape}"
+    assert pred_dyn.shape == (B, d_max), f"Expected {(B, d_max)}, got {pred_dyn.shape}"
+    
+    # Inactive dimensions (>= d_t) should be zeroed out
+    assert torch.all(pred_coord[:, 3:] == 0.0), "Inactive dimensions in pred_coord not zeroed out"
+    assert torch.all(pred_dyn[:, 3:] == 0.0), "Inactive dimensions in pred_dyn not zeroed out"
+    
+    # 5. DualStreamJEPA shapes
+    jepa = DualStreamJEPASpatial(d_max=d_max, h=H)
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = jepa(x_hist, x_target, lambda_spatial=1.0)
+    assert "loss" in loss_dict, "Missing loss in output dict"
+    assert "loss_spatial" in loss_dict, "Missing loss_spatial in output dict"
+    assert "sim_loss" in loss_dict, "Missing sim_loss in output dict"
+    assert "var_loss" in loss_dict, "Missing var_loss in output dict"
+    assert "cov_loss" in loss_dict, "Missing cov_loss in output dict"
+    
+    assert z_pred_c.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_pred_c.shape}"
+    assert z_pred_d.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_pred_d.shape}"
+    assert z_target_c.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_target_c.shape}"
+    assert z_target_d.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_target_d.shape}"
+    print("Shape and forward pass checks: PASSED")
+
+def test_backprop_specificity():
+    B = 4
+    H = 3
+    C = 3
+    W = 128
+    d_max = 8
+    
+    # Create model
+    jepa = DualStreamJEPASpatial(d_max=d_max, h=H)
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    # Zero gradients
+    jepa.zero_grad()
+    
+    # Run forward with lambda_spatial > 0
+    loss_dict, _, _ = jepa(x_hist, x_target, lambda_spatial=1.0)
+    loss_spatial = loss_dict["loss_spatial"]
+    loss_spatial.backward()
+    
+    # Verify gradient existence and correctness for loss_spatial:
+    # Gradients should ONLY flow to the coordinate head conv_spatial_coord
+    assert jepa.encoder.conv_spatial_coord.weight.grad is not None, "conv_spatial_coord should have gradients"
+    assert torch.any(jepa.encoder.conv_spatial_coord.weight.grad != 0), "conv_spatial_coord gradients should be non-zero"
+    
+    assert jepa.encoder.conv1.weight.grad is None or torch.all(jepa.encoder.conv1.weight.grad == 0), "conv1 should NOT have gradients from loss_spatial"
+    assert jepa.encoder.conv2.weight.grad is None or torch.all(jepa.encoder.conv2.weight.grad == 0), "conv2 should NOT have gradients from loss_spatial"
+    assert jepa.encoder.conv3.weight.grad is None or torch.all(jepa.encoder.conv3.weight.grad == 0), "conv3 should NOT have gradients from loss_spatial"
+    assert jepa.encoder.conv4.weight.grad is None or torch.all(jepa.encoder.conv4.weight.grad == 0), "conv4 should NOT have gradients from loss_spatial"
+    assert jepa.encoder.conv_spatial_dyn.weight.grad is None or torch.all(jepa.encoder.conv_spatial_dyn.weight.grad == 0), "conv_spatial_dyn should NOT have gradients from loss_spatial"
+    
+    # Reset gradients
+    jepa.zero_grad()
+    
+    # Run forward again and backprop through dynamics stream prediction loss only
+    loss_dict, _, _ = jepa(x_hist, x_target, lambda_spatial=0.0)
+    sim_loss_dyn = loss_dict["sim_loss_dyn"]
+    sim_loss_dyn.backward()
+    
+    # Gradients on dynamics stream should flow to conv_spatial_dyn and conv1-4
+    assert jepa.encoder.conv_spatial_dyn.weight.grad is not None, "conv_spatial_dyn should have gradients from prediction"
+    assert torch.any(jepa.encoder.conv_spatial_dyn.weight.grad != 0), "conv_spatial_dyn gradients should be non-zero"
+    
+    assert jepa.encoder.conv1.weight.grad is not None, "conv1 should have gradients from dynamics stream prediction"
+    assert torch.any(jepa.encoder.conv1.weight.grad != 0), "conv1 gradients should be non-zero"
+    assert jepa.encoder.conv2.weight.grad is not None, "conv2 should have gradients from dynamics stream prediction"
+    assert torch.any(jepa.encoder.conv2.weight.grad != 0), "conv2 gradients should be non-zero"
+    assert jepa.encoder.conv3.weight.grad is not None, "conv3 should have gradients from dynamics stream prediction"
+    assert torch.any(jepa.encoder.conv3.weight.grad != 0), "conv3 gradients should be non-zero"
+    assert jepa.encoder.conv4.weight.grad is not None, "conv4 should have gradients from dynamics stream prediction"
+    assert torch.any(jepa.encoder.conv4.weight.grad != 0), "conv4 gradients should be non-zero"
+    
+    # And they should NOT flow to conv_spatial_coord (the coordinate head)
+    assert jepa.encoder.conv_spatial_coord.weight.grad is None or torch.all(jepa.encoder.conv_spatial_coord.weight.grad == 0), "conv_spatial_coord should NOT have gradients from dynamics prediction"
+    
+    print("Backprop specificity checks: PASSED")
+
+def test_mask_coord():
+    B = 2
+    H = 3
+    d_max = 8
+    
+    predictor = DualStreamPredictor(d_max=d_max, h=H)
+    
+    # Create non-zero inputs
+    z_coord_hist = torch.randn(B, H, d_max)
+    z_dyn_hist = torch.randn(B, H, d_max)
+    
+    # 1. Output with mask_coord=True
+    pred_c_m, pred_d_m = predictor(z_coord_hist, z_dyn_hist, d_t=3, mask_coord=True)
+    
+    # 2. Output with coordinate input replaced by zeros and mask_coord=False
+    z_coord_zeros = torch.zeros_like(z_coord_hist)
+    pred_c_z, pred_d_z = predictor(z_coord_zeros, z_dyn_hist, d_t=3, mask_coord=False)
+    
+    # Verify they are identical
+    assert torch.allclose(pred_c_m, pred_c_z), "mask_coord=True output does not match zero-input output"
+    assert torch.allclose(pred_d_m, pred_d_z), "mask_coord=True output does not match zero-input output"
+    
+    # 3. Output with non-zero coordinates and mask_coord=False
+    pred_c_n, pred_d_n = predictor(z_coord_hist, z_dyn_hist, d_t=3, mask_coord=False)
+    
+    # Verify they are NOT identical to the masked ones (ensures coordinates are actually used when not masked)
+    assert not torch.allclose(pred_c_m, pred_c_n), "mask_coord=False should change output when coord is non-zero"
+    assert not torch.allclose(pred_d_m, pred_d_n), "mask_coord=False should change output when coord is non-zero"
+    
+    print("mask_coord verification: PASSED")
+
+def test_self_cloning():
+    jepa = DualStreamJEPASpatial(d_max=8, h=3)
+    jepa.d_t = 4
+    jepa.steps_since_recruitment = 123
+    jepa.ema_error = 0.45
+    
+    cloned = jepa.clone()
+    assert cloned is not jepa, "Cloned instance should be a separate object"
+    assert cloned.d_t == jepa.d_t, "cloned.d_t mismatch"
+    assert cloned.steps_since_recruitment == jepa.steps_since_recruitment, "cloned.steps_since_recruitment mismatch"
+    assert cloned.ema_error == jepa.ema_error, "cloned.ema_error mismatch"
+    
+    # Verify state dict matches
+    for p1, p2 in zip(jepa.parameters(), cloned.parameters()):
+        assert torch.allclose(p1, p2), "Cloned model parameters do not match original model"
+        
+    print("Self-cloning verification: PASSED")
+
+def test_pdrc_jepa_spatial():
+    print("Testing PDRCJEPASpatial...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    # 1. Initialize Stage 1
+    model = PDRCJEPASpatial(d_max=d_max, h=H, stage=1)
+    assert model.stage == 1, "Expected stage 1"
+    
+    # Verify requires_grad is True for all parameters in Stage 1
+    for p in model.parameters():
+        assert p.requires_grad, "All parameters must have requires_grad=True in Stage 1"
+        
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    # Forward check
+    loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target, lambda_spatial=1.0)
+    assert z_pred_c.shape == (B, d_max)
+    assert z_pred_d.shape == (B, d_max)
+    assert z_target_c.shape == (B, d_max)
+    assert z_target_d.shape == (B, d_max)
+    
+    # Test gradient flow in Stage 1
+    model.zero_grad()
+    loss_dict["sim_loss_coord"].backward()
+    
+    # Gradients should flow back to coordinate head
+    assert model.encoder.conv_spatial_coord.weight.grad is not None
+    assert torch.any(model.encoder.conv_spatial_coord.weight.grad != 0), "conv_spatial_coord should have gradients"
+    # Gradients should also flow to conv1-4 (the backbone) through the coordinate stream
+    assert model.encoder.conv1.weight.grad is not None
+    assert torch.any(model.encoder.conv1.weight.grad != 0), "Backbone conv1 should have gradients from coordinate stream in Stage 1"
+    
+    # 2. Transition to Stage 2
+    model.stage = 2
+    assert model.stage == 2, "Expected stage 2"
+    
+    # Verify requires_grad setup for Stage 2
+    for name, p in model.named_parameters():
+        if "encoder.conv_spatial_coord" in name:
+            assert not p.requires_grad, f"encoder.conv_spatial_coord parameter {name} should be frozen in Stage 2"
+        else:
+            assert p.requires_grad, f"Parameter {name} should be trainable in Stage 2"
+            
+    # Temporarily set requires_grad=True on conv_spatial_coord to test detachment in forward_spatial
+    for p in model.encoder.conv_spatial_coord.parameters():
+        p.requires_grad = True
+        
+    # Check that in forward_spatial, x is detached before conv_spatial_coord
+    model.zero_grad()
+    z_coord, _ = model.encoder(x_target)
+    z_coord.sum().backward()
+    
+    assert model.encoder.conv_spatial_coord.weight.grad is not None
+    assert torch.any(model.encoder.conv_spatial_coord.weight.grad != 0)
+    # conv1-4 should NOT have gradients
+    assert model.encoder.conv1.weight.grad is None or torch.all(model.encoder.conv1.weight.grad == 0), "Backbone should be detached from coordinate head in Stage 2"
+    
+    # Check that z_hist_coord and z_target_coord are detached before predictor/similarity loss in Stage 2
+    model.zero_grad()
+    loss_dict, _, _ = model(x_hist, x_target)
+    loss_dict["sim_loss_coord"].backward()
+    
+    # No gradients should flow back to conv_spatial_coord
+    assert model.encoder.conv_spatial_coord.weight.grad is None or torch.all(model.encoder.conv_spatial_coord.weight.grad == 0), "No gradients should flow back to coordinate head from sim_loss_coord in Stage 2"
+    
+    # Test clone in PDRCJEPASpatial
+    cloned = model.clone()
+    assert cloned.stage == model.stage, "Cloned model stage mismatch"
+    assert cloned.encoder.stage == model.encoder.stage, "Cloned encoder stage mismatch"
+    
+    print("PDRCJEPASpatial tests: PASSED")
+
+def test_non_parametric_jepa_spatial():
+    print("Testing NonParametricJEPASpatial...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    model = NonParametricJEPASpatial(d_max=d_max, h=H)
+    
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    # Forward check
+    loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target, lambda_spatial=1.0)
+    assert z_pred_c.shape == (B, d_max)
+    assert z_pred_d.shape == (B, d_max)
+    assert z_target_c.shape == (B, d_max)
+    assert z_target_d.shape == (B, d_max)
+    
+    # Check that there is only one encoder without separate heads and all parameters are trainable
+    for p in model.encoder.parameters():
+        assert p.requires_grad, "All encoder parameters should be trainable"
+        
+    # Check gradient flow: Backprop through coordinate stream similarity loss
+    model.zero_grad()
+    loss_dict["sim_loss_coord"].backward()
+    
+    # Gradients should flow back to all layers of the encoder since there are no stop-gradients
+    assert model.encoder.conv_spatial.weight.grad is not None
+    assert torch.any(model.encoder.conv_spatial.weight.grad != 0)
+    assert model.encoder.conv1.weight.grad is not None
+    assert torch.any(model.encoder.conv1.weight.grad != 0)
+    assert model.encoder.conv4.weight.grad is not None
+    assert torch.any(model.encoder.conv4.weight.grad != 0)
+    
+    # Test clone in NonParametricJEPASpatial
+    cloned = model.clone()
+    assert isinstance(cloned.encoder, NonParametricEncoder)
+    
+    print("NonParametricJEPASpatial tests: PASSED")
+
+def test_positional_encodings():
+    print("Testing NonParametricJEPASpatial with positional encodings...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    for pe_type in ["linear", "sinusoidal"]:
+        model = NonParametricJEPASpatial(d_max=d_max, h=H, pos_encoding=pe_type)
+        assert model.pos_encoding == pe_type
+        assert model.encoder.pos_encoding == pe_type
+        
+        # Check input channel size of self.conv1
+        expected_in_channels = 4 if pe_type == "linear" else 7
+        assert model.encoder.conv1.in_channels == expected_in_channels
+        
+        # Test clone propagates positional encoding
+        cloned = model.clone()
+        assert cloned.pos_encoding == pe_type
+        assert cloned.encoder.pos_encoding == pe_type
+        
+        # Forward check
+        x_hist = torch.randn(B, H, C, W)
+        x_target = torch.randn(B, C, W)
+        loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target)
+        assert z_pred_c.shape == (B, d_max)
+        assert z_pred_d.shape == (B, d_max)
+def test_default_parameters_sfa():
+    """Test that new SFA parameters have correct default values for backward compatibility."""
+    print("Testing default SFA parameter values...")
+    
+    # Default (JEPA mode, gdasr_log_only=True per Phase 0)
+    model = NonParametricJEPASpatial(d_max=8, h=3)
+    assert model.primary_objective == "jepa", f"Default primary_objective should be 'jepa', got {model.primary_objective}"
+    assert model.sfa_weight == 25.0, f"Default sfa_weight should be 25.0, got {model.sfa_weight}"
+    assert model.gdasr_log_only == True, f"Default gdasr_log_only should be True, got {model.gdasr_log_only}"
+    
+    print("Default parameter values: PASSED")
+
+
+def test_sfa_mode_shapes():
+    """Test that SFA mode produces correct output shapes and all expected loss keys."""
+    print("Testing SFA mode shapes...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    model = NonParametricJEPASpatial(d_max=d_max, h=H, primary_objective="sfa")
+    
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target, lambda_spatial=1.0)
+    
+    # Shape checks
+    assert z_pred_c.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_pred_c.shape}"
+    assert z_pred_d.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_pred_d.shape}"
+    assert z_target_c.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_target_c.shape}"
+    assert z_target_d.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_target_d.shape}"
+    
+    # Loss dict should contain SFA loss
+    assert "sfa_loss" in loss_dict, "Missing sfa_loss in SFA mode"
+    assert "loss" in loss_dict, "Missing loss in output dict"
+    assert "loss_spatial" in loss_dict, "Missing loss_spatial in output dict"
+    assert "sim_loss" in loss_dict, "Missing sim_loss in output dict"
+    assert "var_loss" in loss_dict, "Missing var_loss in output dict"
+    assert "cov_loss" in loss_dict, "Missing cov_loss in output dict"
+    assert "var_loss_dyn" in loss_dict, "Missing var_loss_dyn in output dict"
+    assert "cov_loss_dyn" in loss_dict, "Missing cov_loss_dyn in output dict"
+    
+    print("SFA mode shapes: PASSED")
+
+
+def test_sfa_backward_compatibility():
+    """Test that JEPA mode still works identically to before the change."""
+    print("Testing SFA/ JEPA backward compatibility...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    torch.manual_seed(42)
+    
+    # JEPA mode (default)
+    model = NonParametricJEPASpatial(d_max=d_max, h=H, primary_objective="jepa")
+    
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target)
+    
+    # JEPA mode should NOT have sfa_loss key (or it should not exist)
+    # Check that the standard keys are present
+    assert "sim_loss" in loss_dict
+    assert "sim_loss_coord" in loss_dict
+    assert "sim_loss_dyn" in loss_dict
+    assert "var_loss" in loss_dict
+    assert "cov_loss" in loss_dict
+    assert "ccr_smooth_loss" in loss_dict
+    
+    # SFA loss should NOT be in JEPA mode output
+    assert "sfa_loss" not in loss_dict, "sfa_loss should not be present in JEPA mode"
+    
+    # Gradient flow: sim_loss should flow to encoder
+    model.zero_grad()
+    loss_dict["sim_loss"].backward()
+    
+    assert model.encoder.conv_spatial.weight.grad is not None, "sim_loss should flow to encoder"
+    assert torch.any(model.encoder.conv_spatial.weight.grad != 0), "sim_loss gradients should be non-zero"
+    
+    print("SFA/ JEPA backward compatibility: PASSED")
+
+
+def test_sfa_gradient_flow_on_z_dyn():
+    """Test that in SFA mode, gradients flow correctly to the encoder via SFA on z_dyn."""
+    print("Testing SFA gradient flow on z_dyn...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    model = NonParametricJEPASpatial(d_max=d_max, h=H, primary_objective="sfa")
+    
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    # SFA loss should flow to encoder
+    model.zero_grad()
+    loss_dict, _, _ = model(x_hist, x_target)
+    sfa_loss = loss_dict["sfa_loss"]
+    sfa_loss.backward()
+    
+    assert model.encoder.conv_spatial.weight.grad is not None, "sfa_loss should flow to conv_spatial"
+    assert torch.any(model.encoder.conv_spatial.weight.grad != 0), "sfa_loss gradients should be non-zero on conv_spatial"
+    assert model.encoder.conv1.weight.grad is not None, "sfa_loss should flow to conv1"
+    assert torch.any(model.encoder.conv1.weight.grad != 0), "sfa_loss gradients should be non-zero on conv1"
+    
+    # Var and cov loss should also flow to encoder
+    model.zero_grad()
+    loss_dict, _, _ = model(x_hist, x_target)
+    loss_dict["var_loss_dyn"].backward()
+    assert model.encoder.conv1.weight.grad is not None, "var_loss should flow to encoder"
+    assert torch.any(model.encoder.conv1.weight.grad != 0), "var_loss gradients should be non-zero on encoder"
+    
+    print("SFA gradient flow on z_dyn: PASSED")
+
+
+def test_sfa_loss_produces_non_zero_values():
+    """Test that SFA loss and supporting terms produce reasonable non-zero values."""
+    print("Testing SFA loss non-zero values...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    model = NonParametricJEPASpatial(d_max=d_max, h=H, primary_objective="sfa")
+    
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    loss_dict, _, _ = model(x_hist, x_target)
+    
+    # SFA loss should be a concrete tensor value
+    assert loss_dict["sfa_loss"].item() >= 0.0, "SFA loss should be non-negative"
+    
+    # Total loss should be positive
+    assert loss_dict["loss"].item() >= 0.0, "Total loss should be non-negative"
+    
+    # Var and cov should be in the dictionary
+    assert loss_dict["var_loss"].item() >= 0.0, "Var loss should be non-negative"
+    assert loss_dict["cov_loss"].item() >= 0.0, "Cov loss should be non-negative"
+    
+    print("SFA loss non-zero values: PASSED")
+
+
+def test_gdasr_log_only_mode():
+    """Test that gdasr_log_only=True prevents dimension recruitment but logs growth points."""
+    print("Testing GDASR log-only mode...")
+    
+    # Log-only mode (default)
+    model = NonParametricJEPASpatial(d_max=8, h=3, gdasr_log_only=True)
+    model.d_t = 2
+    model.steps_since_recruitment = 500  # past cooldown
+    model.cooldown = 300
+    model.ema_error = 10.0  # very high error
+    # Fill error buffer with low error values to trigger recruitment
+    model.error_buffer.extend([0.01] * 200)
+    
+    old_d_t = model.d_t
+    # Update EMA with high value to potentially trigger growth point
+    model.update_recruitment_logic(error_val=10.0)
+    
+    # d_t should NOT change in log-only mode
+    assert model.d_t == old_d_t, f"d_t should not change in log-only mode, but changed from {old_d_t} to {model.d_t}"
+    
+    # Active recruitment mode
+    model2 = NonParametricJEPASpatial(d_max=8, h=3, gdasr_log_only=False)
+    model2.d_t = 2
+    model2.steps_since_recruitment = 500
+    model2.cooldown = 300
+    model2.ema_error = 10.0
+    model2.error_buffer.extend([0.01] * 200)
+    
+    # With active mode, this should recruit
+    old_d_t2 = model2.d_t
+    model2.update_recruitment_logic(error_val=10.0)
+    
+    # In active mode, d_t stays the same on first update (needs to pass threshold check)
+    # But the key point is the behavior difference exists
+    assert model2.d_t >= old_d_t2, "Active mode should potentially increase d_t"
+    
+    print("GDASR log-only mode: PASSED")
+
+
+def test_sfa_weight_parameter():
+    """Test that sfa_weight can be set via constructor and via forward call."""
+    print("Testing sfa_weight parameter...")
+    B, H, C, W = 4, 3, 3, 128
+    
+    # Constructor level
+    model = NonParametricJEPASpatial(d_max=8, h=H, primary_objective="sfa", sfa_weight=50.0)
+    assert model.sfa_weight == 50.0, f"sfa_weight should be 50.0, got {model.sfa_weight}"
+    
+    x_hist = torch.randn(B, H, C, W)
+    x_target = torch.randn(B, C, W)
+    
+    loss_dict1, _, _ = model(x_hist, x_target)
+    sfa_contrib1 = loss_dict1["sfa_loss"].item() * 50.0  # sfa_weight used in constructor
+    
+    # Override in forward call
+    loss_dict2, _, _ = model(x_hist, x_target, sfa_weight=1.0)
+    sfa_contrib2 = loss_dict2["sfa_loss"].item() * 1.0  # overridden sfa_weight
+    
+    # sfa_loss is the same value; check that the weighted contributions differ
+    # (total loss may not differ numerically due to float32 precision when
+    #  sfa_loss is tiny relative to other loss terms)
+    if loss_dict1["sfa_loss"].item() != 0.0:
+        assert sfa_contrib1 != sfa_contrib2, "Different sfa_weight should produce different sfa contribution"
+    
+    print("sfa_weight parameter: PASSED")
+
+
+def test_clone_sfa_parameters():
+    """Test that clone preserves SFA-related parameters."""
+    print("Testing clone preserves SFA parameters...")
+    
+    model = NonParametricJEPASpatial(
+        d_max=8, h=3,
+        primary_objective="sfa",
+        sfa_weight=50.0,
+        gdasr_log_only=True
+    )
+    model.d_t = 3
+    model.steps_since_recruitment = 42
+    
+    cloned = model.clone()
+    
+    assert cloned.primary_objective == "sfa", "cloned.primary_objective mismatch"
+    assert cloned.sfa_weight == 50.0, "cloned.sfa_weight mismatch"
+    assert cloned.gdasr_log_only == True, "cloned.gdasr_log_only mismatch"
+    assert cloned.d_t == model.d_t, "cloned.d_t mismatch"
+    assert cloned.steps_since_recruitment == model.steps_since_recruitment, "cloned.steps_since_recruitment mismatch"
+    
+    # State dict should match
+    for p1, p2 in zip(model.parameters(), cloned.parameters()):
+        assert torch.allclose(p1, p2), "Cloned model parameters do not match original"
+    
+    print("Clone preserves SFA parameters: PASSED")
+
+
+def test_sfa_mode_with_pos_encoding():
+    """Test SFA mode works correctly with different positional encodings."""
+    print("Testing SFA mode with positional encodings...")
+    B, H, C, W = 4, 3, 3, 128
+    d_max = 8
+    
+    for pe_type in ["none", "linear", "sinusoidal"]:
+        model = NonParametricJEPASpatial(
+            d_max=d_max, h=H,
+            pos_encoding=pe_type,
+            primary_objective="sfa"
+        )
+        
+        assert model.pos_encoding == pe_type
+        assert model.encoder.pos_encoding == pe_type
+        
+        x_hist = torch.randn(B, H, C, W)
+        x_target = torch.randn(B, C, W)
+        loss_dict, (z_pred_c, z_pred_d), (z_target_c, z_target_d) = model(x_hist, x_target)
+        
+        assert z_pred_c.shape == (B, d_max)
+        assert z_pred_d.shape == (B, d_max)
+        assert "sfa_loss" in loss_dict, f"sfa_loss missing with pos_encoding={pe_type}"
+    
+    print("SFA mode with positional encodings: PASSED")
+        
+    print("Positional encodings verification: PASSED")
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("RUNNING DUAL-STREAM ARCHITECTURE TESTS")
+    print("=" * 60)
+    test_shapes()
+    test_backprop_specificity()
+    test_mask_coord()
+    test_self_cloning()
+    test_pdrc_jepa_spatial()
+    test_non_parametric_jepa_spatial()
+    test_positional_encodings()
+    # SFA mode tests (Phase 0)
+    test_default_parameters_sfa()
+    test_sfa_mode_shapes()
+    test_sfa_backward_compatibility()
+    test_sfa_gradient_flow_on_z_dyn()
+    test_sfa_loss_produces_non_zero_values()
+    test_gdasr_log_only_mode()
+    test_sfa_weight_parameter()
+    test_clone_sfa_parameters()
+    test_sfa_mode_with_pos_encoding()
+    print("=" * 60)
+    print("ALL TESTS PASSED SUCCESSFULLY!")
+    print("=" * 60)
+]
+Now I have a full understanding of the code. Let me implement all the changes. I'll apply them using `edit_file`/`multi_edit` operations.
+
+
+[Tool Call: edit_file({'path': 'src/models_dual_stream.py', 'old_string': 'class NonParametricJEPASpatial(nn.Module):\n    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",\n                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean",\n                 sub_features=1, dyn_source="spatial"):\n        super().__init__()\n        self.d_max = d_max\n        self.h = h\n        self.k = k\n        self.cooldown = cooldown\n        self.stabilization_period = stabilization_period\n        self.pos_encoding = pos_encoding\n        self.primary_objective = primary_objective\n        self.sfa_weight = sfa_weight\n        self.gdasr_log_only = gdasr_log_only\n        self.dyn_readout = dyn_readout\n        self.sub_features = sub_features\n        self.dyn_source = dyn_source', 'new_string': 'class NonParametricJEPASpatial(nn.Module):\n    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",\n                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean",\n                 sub_features=1, dyn_source="spatial", contrastive_weight=25.0, temperature=0.1):\n        super().__init__()\n        self.d_max = d_max\n        self.h = h\n        self.k = k\n        self.cooldown = cooldown\n        self.stabilization_period = stabilization_period\n        self.pos_encoding = pos_encoding\n        self.primary_objective = primary_objective\n        self.sfa_weight = sfa_weight\n        self.gdasr_log_only = gdasr_log_only\n        self.dyn_readout = dyn_readout\n        self.sub_features = sub_features\n        self.dyn_source = dyn_source\n        self.contrastive_weight = contrastive_weight\n        self.temperature = temperature'})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+Now update the `forward()` signature to add `contrastive_weight=None` and `temperature=None`:
+
+
+[Tool Call: edit_file({'path': 'src/models_dual_stream.py', 'old_string': "    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None):\n        dt_pred = d_t_predict if d_t_predict is not None else self.d_t\n        _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight", 'new_string': "    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None, contrastive_weight=None, temperature=None):\n        dt_pred = d_t_predict if d_t_predict is not None else self.d_t\n        _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight\n        _contrastive_weight = contrastive_weight if contrastive_weight is not None else self.contrastive_weight\n        _temperature = temperature if temperature is not None else self.temperature"})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+Now I need to modify the SFA branch to also handle "contrastive". Let me find and update the objective check:
+
+
+[Tool Call: edit_file({'new_string': '        if self.primary_objective in ["sfa", "contrastive"]:', 'path': 'src/models_dual_stream.py', 'old_string': '        if self.primary_objective == "sfa":'})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+
+[Tool Call: read_file({'end_line': 530, 'path': 'src/models_dual_stream.py', 'start_line': 490})]
+[Tool Result: --- lines 490 to 530 of 1081 ---
+                z_hist_dyn[:, :, self.d_t-1:]
+            ], dim=-1)
+            z_target_dyn_stable = torch.cat([
+                z_target_dyn[:, :self.d_t-1].detach(),
+                z_target_dyn[:, self.d_t-1:]
+            ], dim=-1)
+        else:
+            z_hist_dyn_stable = z_hist_dyn
+            z_target_dyn_stable = z_target_dyn
+
+        # Predictive Coupling & Stop-Gradients on coordinate stream
+        if self.stage == 1:
+            # Stage 1: Do NOT detach before passing to predictor or in similarity loss
+            z_hist_coord_pred = z_hist_coord_stable
+            z_target_coord_pred = z_target_coord_stable
+        else:
+            # Stage 2: Detach z_hist_coord and z_target_coord before predictor or similarity loss
+            z_hist_coord_pred = z_hist_coord_stable.detach()
+            z_target_coord_pred = z_target_coord_stable.detach()
+
+        # Predict target representations
+        z_pred_coord, z_pred_dyn = self.predictor(
+            z_hist_coord_pred, 
+            z_hist_dyn_stable, 
+            self.d_t, 
+            mask_coord=mask_coord
+        )
+
+        # Apply stabilization stop-gradient to predictor outputs
+        if self.stage == 1:
+            # Stage 1: Do NOT detach coordinate predictor output
+            z_pred_coord_stable = z_pred_coord
+        else:
+            if self.steps_since_recruitment < self.stabilization_period and self.d_t > 1:
+                z_pred_coord_stable = torch.cat([
+                    z_pred_coord[:, :self.d_t-1].detach(),
+                    z_pred_coord[:, self.d_t-1:]
+                ], dim=-1)
+            else:
+                z_pred_coord_stable = z_pred_coord
+]
+
+[Tool Call: read_file({'end_line': 645, 'path': 'src/models_dual_stream.py', 'start_line': 585})]
+[Tool Result: --- lines 585 to 645 of 1081 ---
+                k_chan = self.d_t - 1
+            var_k = var_all[:, k_chan]
+            loss_spatial = lambda_spatial * var_k.mean()
+            loss = base_loss + loss_spatial
+        else:
+            loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            loss = base_loss
+            
+        return {
+            "loss": loss,
+            "sim_loss": sim_loss,
+            "sim_loss_coord": sim_loss_coord,
+            "sim_loss_dyn": sim_loss_dyn,
+            "var_loss": var_loss,
+            "var_loss_coord": var_loss_coord,
+            "var_loss_dyn": var_loss_dyn,
+            "cov_loss": cov_loss,
+            "cov_loss_coord": cov_loss_coord,
+            "cov_loss_dyn": cov_loss_dyn,
+            "loss_spatial": loss_spatial
+        }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def clone(self):
+        import copy
+        cloned = PDRCJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period,
+            stage=self.stage
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        return cloned
+
+
+class NonParametricEncoder(nn.Module):
+    def __init__(self, d_max=8, pos_encoding="none", dyn_readout="mean", sub_features=1, dyn_source="spatial"):
+        super().__init__()
+        self.d_max = d_max
+        self.pos_encoding = pos_encoding
+        self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
+        
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)]
+
+[Tool Call: read_file({'end_line': 610, 'path': 'src/models_dual_stream.py', 'start_line': 575})]
+[Tool Result: --- lines 575 to 610 of 1081 ---
+        cov_loss_dyn = 0.5 * (calc_cov_loss(z_pred_dyn_active) + calc_cov_loss(z_target_dyn_active))
+        cov_loss = cov_loss_coord + cov_loss_dyn
+        
+        base_loss = sim_weight * sim_loss + var_weight * var_loss + cov_weight * cov_loss
+        
+        # 4. Spatial Bottleneck Loss
+        if lambda_spatial > 0:
+            z_target_spatial = self.encoder.forward_spatial(x_target)
+            _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+            if k_chan is None:
+                k_chan = self.d_t - 1
+            var_k = var_all[:, k_chan]
+            loss_spatial = lambda_spatial * var_k.mean()
+            loss = base_loss + loss_spatial
+        else:
+            loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            loss = base_loss
+            
+        return {
+            "loss": loss,
+            "sim_loss": sim_loss,
+            "sim_loss_coord": sim_loss_coord,
+            "sim_loss_dyn": sim_loss_dyn,
+            "var_loss": var_loss,
+            "var_loss_coord": var_loss_coord,
+            "var_loss_dyn": var_loss_dyn,
+            "cov_loss": cov_loss,
+            "cov_loss_coord": cov_loss_coord,
+            "cov_loss_dyn": cov_loss_dyn,
+            "loss_spatial": loss_spatial
+        }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def clone(self):
+        import copy
+        cloned = PDRCJEPASpatial(
+            d_max=self.d_max,]
+
+[Tool Call: read_file({'end_line': 780, 'path': 'src/models_dual_stream.py', 'start_line': 720})]
+[Tool Result: --- lines 720 to 780 of 1081 ---
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
+                 primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean",
+                 sub_features=1, dyn_source="spatial", contrastive_weight=25.0, temperature=0.1):
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        self.pos_encoding = pos_encoding
+        self.primary_objective = primary_objective
+        self.sfa_weight = sfa_weight
+        self.gdasr_log_only = gdasr_log_only
+        self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
+        self.contrastive_weight = contrastive_weight
+        self.temperature = temperature
+        
+        self.encoder = NonParametricEncoder(
+            d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout,
+            sub_features=sub_features, dyn_source=dyn_source
+        )
+        self.predictor = DualStreamPredictor(d_max=d_max, d_dyn=self.encoder.d_dyn, h=h)
+        
+        # Dynamic state tracking
+        self.d_t = 2
+        self.steps_since_recruitment = cooldown  # start outside of cooldown
+        self.error_buffer = collections.deque(maxlen=500)
+        self.ema_error = None
+        self.ema_alpha = 0.05
+        self.gdasr_growth_points = []
+
+    def reset_error_buffer(self):
+        self.error_buffer.clear()
+        self.ema_error = None
+
+    def calculate_centroid_and_variance(self, a_spatial):
+        return calculate_centroid_and_variance(a_spatial)
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None, contrastive_weight=None, temperature=None):
+        dt_pred = d_t_predict if d_t_predict is not None else self.d_t
+        _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight
+        _contrastive_weight = contrastive_weight if contrastive_weight is not None else self.contrastive_weight
+        _temperature = temperature if temperature is not None else self.temperature
+        d_dyn = self.encoder.d_dyn
+        d_t_dyn = self.d_t * self.sub_features
+
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, d_dyn)
+
+        # Encode target
+        z_target_coord, z_target_dyn = self.encoder(x_target)
+
+        if self.primary_objective in ["sfa", "contrastive"]:
+            # SFA MODE]
+
+[Tool Call: read_file({'end_line': 820, 'path': 'src/models_dual_stream.py', 'start_line': 780})]
+[Tool Result: --- lines 780 to 820 of 1081 ---
+            # SFA MODE
+            z_prev_dyn = z_hist_dyn[:, -1]  # (B, d_dyn)
+
+            z_target_dyn_active = z_target_dyn[:, :d_t_dyn]
+            z_prev_dyn_active = z_prev_dyn[:, :d_t_dyn]
+            sfa_loss = F.mse_loss(z_target_dyn_active, z_prev_dyn_active.detach())
+
+            def calc_var_loss(x, gamma=1.0, eps=1e-4):
+                mean = x.mean(dim=0)
+                var = torch.mean((x - mean) ** 2, dim=0)
+                std = torch.sqrt(var + eps)
+                return torch.mean(F.relu(gamma - std))
+
+            def calc_cov_loss(x):
+                Bc, d = x.shape
+                if Bc <= 1 or d <= 1:
+                    return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+                mean = x.mean(dim=0, keepdim=True)
+                x_centered = x - mean
+                cov = (x_centered.T @ x_centered) / (Bc - 1)
+                diag = torch.diagonal(cov)
+                off_diag = cov - torch.diag(diag)
+                return (off_diag ** 2).sum() / d
+
+            var_loss_dyn = calc_var_loss(z_target_dyn_active)
+            var_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            var_loss = var_loss_dyn
+
+            cov_loss_dyn = calc_cov_loss(z_target_dyn_active)
+            cov_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            cov_loss = cov_loss_dyn
+
+            # JEPA readout with stop-gradient
+            z_target_sfa_dyn = z_target_dyn_active.detach()
+            z_hist_sfa_dyn = z_hist_dyn.detach()
+            z_hist_sfa_coord = z_hist_coord.detach()
+
+            z_pred_coord, z_pred_dyn = self.predictor(
+                z_hist_sfa_coord,
+                z_hist_sfa_dyn,
+                dt_pred,]
+
+[Tool Call: read_file({'end_line': 920, 'path': 'src/models_dual_stream.py', 'start_line': 820})]
+[Tool Result: --- lines 820 to 920 of 1081 ---
+                dt_pred,
+                mask_coord=mask_coord,
+                d_t_dyn=dt_pred * self.sub_features
+            )
+
+            # Prediction losses on active dims
+            z_pred_coord_pred = z_pred_coord[:, :dt_pred]
+            z_target_coord_pred_dt = z_target_coord[:, :dt_pred]
+            z_pred_dyn_pred = z_pred_dyn[:, :d_t_dyn]
+            z_target_dyn_pred = z_target_dyn_active.detach()
+
+            sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)
+            sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
+            sim_loss = sim_loss_coord + sim_loss_dyn
+
+            base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+
+            # Spatial bottleneck
+            if lambda_spatial > 0:
+                z_target_spatial = self.encoder.forward_spatial(x_target)
+                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)
+                if k_chan is None:
+                    k_chan = self.d_t - 1
+                var_k = var_all[:, k_chan]
+                loss_spatial = lambda_spatial * var_k.mean()
+                loss = base_loss + loss_spatial
+            else:
+                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+                loss = base_loss
+
+            # CCR
+            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            if ccr_mode != 'none':
+                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)
+                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0
+                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1]
+                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()
+
+                if ccr_mode == 'hinge':
+                    hinge_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        if self.d_t > 1:
+                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))
+                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)
+                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]
+                            hinge = F.relu(0.15 - diff_pairs)
+                            hinge_losses.append(hinge.mean())
+                        else:
+                            hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))
+                    ccr_spatial_loss = torch.stack(hinge_losses).mean()
+                elif ccr_mode == 'covariance':
+                    cov_losses = []
+                    for f in range(4):
+                        z_f = z_all_norm[:, f]
+                        cov_losses.append(calc_cov_loss(z_f))
+                    ccr_spatial_loss = torch.stack(cov_losses).mean()
+
+                ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss
+                loss = loss + ccr_total
+
+            return {
+                "loss": loss,
+                "sim_loss": sim_loss,
+                "sim_loss_coord": sim_loss_coord,
+                "sim_loss_dyn": sim_loss_dyn,
+                "var_loss": var_loss,
+                "var_loss_coord": var_loss_coord,
+                "var_loss_dyn": var_loss_dyn,
+                "cov_loss": cov_loss,
+                "cov_loss_coord": cov_loss_coord,
+                "cov_loss_dyn": cov_loss_dyn,
+                "loss_spatial": loss_spatial,
+                "sfa_loss": sfa_loss,
+                "ccr_smooth_loss": ccr_smooth_loss,
+                "ccr_spatial_loss": ccr_spatial_loss
+            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+        else:
+            # JEPA MODE (default, backward compatible)
+            z_hist_coord_pred = z_hist_coord
+            z_target_coord_pred = z_target_coord
+
+            z_pred_coord, z_pred_dyn = self.predictor(
+                z_hist_coord_pred,
+                z_hist_dyn,
+                dt_pred,
+                mask_coord=mask_coord,
+                d_t_dyn=dt_pred * self.sub_features
+            )
+
+            # For JEPA mode with K>1, dt_pred dims for coord, dt_pred*K for dyn
+            d_t_pred_dyn = dt_pred * self.sub_features
+            z_pred_coord_pred = z_pred_coord[:, :dt_pred]
+            z_target_coord_pred_dt = z_target_coord_pred[:, :dt_pred]
+
+            z_pred_dyn_pred = z_pred_dyn[:, :d_t_pred_dyn]
+            z_target_dyn_pred = z_target_dyn[:, :d_t_pred_dyn]
+]
+
+[Tool Call: edit_file({'path': 'src/models_dual_stream.py', 'old_string': '            sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)\n            sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)\n            sim_loss = sim_loss_coord + sim_loss_dyn\n\n            base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss\n\n            # Spatial bottleneck\n            if lambda_spatial > 0:\n                z_target_spatial = self.encoder.forward_spatial(x_target)\n                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)\n                if k_chan is None:\n                    k_chan = self.d_t - 1\n                var_k = var_all[:, k_chan]\n                loss_spatial = lambda_spatial * var_k.mean()\n                loss = base_loss + loss_spatial\n            else:\n                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)\n                loss = base_loss\n\n            # CCR\n            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)\n            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)\n\n            if ccr_mode != \'none\':\n                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)\n                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0\n                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1]\n                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()\n\n                if ccr_mode == \'hinge\':\n                    hinge_losses = []\n                    for f in range(4):\n                        z_f = z_all_norm[:, f]\n                        if self.d_t > 1:\n                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))\n                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)\n                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]\n                            hinge = F.relu(0.15 - diff_pairs)\n                            hinge_losses.append(hinge.mean())\n                        else:\n                            hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))\n                    ccr_spatial_loss = torch.stack(hinge_losses).mean()\n                elif ccr_mode == \'covariance\':\n                    cov_losses = []\n                    for f in range(4):\n                        z_f = z_all_norm[:, f]\n                        cov_losses.append(calc_cov_loss(z_f))\n                    ccr_spatial_loss = torch.stack(cov_losses).mean()\n\n                ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss\n                loss = loss + ccr_total\n\n            return {\n                "loss": loss,\n                "sim_loss": sim_loss,\n                "sim_loss_coord": sim_loss_coord,\n                "sim_loss_dyn": sim_loss_dyn,\n                "var_loss": var_loss,\n                "var_loss_coord": var_loss_coord,\n                "var_loss_dyn": var_loss_dyn,\n                "cov_loss": cov_loss,\n                "cov_loss_coord": cov_loss_coord,\n                "cov_loss_dyn": cov_loss_dyn,\n                "loss_spatial": loss_spatial,\n                "sfa_loss": sfa_loss,\n                "ccr_smooth_loss": ccr_smooth_loss,\n                "ccr_spatial_loss": ccr_spatial_loss\n            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)', 'new_string': '            sim_loss_coord = F.mse_loss(z_pred_coord_pred, z_target_coord_pred_dt)\n            sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)\n            sim_loss = sim_loss_coord + sim_loss_dyn\n\n            # Contrastive loss (NT-Xent)\n            if self.primary_objective == \'contrastive\':\n                d_t_dyn = self.d_t * self.sub_features\n                z_anchor = F.normalize(z_target_dyn[:, :d_t_dyn], dim=-1)\n                z_positive = F.normalize(z_hist_dyn[:, -1, :d_t_dyn], dim=-1)\n                sim_matrix = torch.matmul(z_anchor, z_positive.T) / _temperature\n                labels = torch.arange(B, device=x_target.device)\n                contrastive_loss = F.cross_entropy(sim_matrix, labels)\n            else:\n                contrastive_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)\n\n            # Compute base_loss based on primary objective\n            if self.primary_objective == \'contrastive\':\n                base_loss = _contrastive_weight * contrastive_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss\n            else:\n                base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss\n\n            # Spatial bottleneck\n            if lambda_spatial > 0:\n                z_target_spatial = self.encoder.forward_spatial(x_target)\n                _, var_all = self.calculate_centroid_and_variance(z_target_spatial)\n                if k_chan is None:\n                    k_chan = self.d_t - 1\n                var_k = var_all[:, k_chan]\n                loss_spatial = lambda_spatial * var_k.mean()\n                loss = base_loss + loss_spatial\n            else:\n                loss_spatial = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)\n                loss = base_loss\n\n            # CCR\n            ccr_smooth_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)\n            ccr_spatial_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)\n\n            if ccr_mode != \'none\':\n                z_all_coord = torch.cat([z_hist_coord, z_target_coord.unsqueeze(1)], dim=1)\n                z_all_norm = z_all_coord[:, :, :self.d_t] / 127.0\n                diffs = z_all_norm[:, 1:] - z_all_norm[:, :-1]\n                ccr_smooth_loss = torch.sqrt(torch.sum(diffs ** 2, dim=-1) + 1e-8).mean()\n\n                if ccr_mode == \'hinge\':\n                    hinge_losses = []\n                    for f in range(4):\n                        z_f = z_all_norm[:, f]\n                        if self.d_t > 1:\n                            diff = torch.abs(z_f.unsqueeze(2) - z_f.unsqueeze(1))\n                            triu_indices = torch.triu_indices(self.d_t, self.d_t, offset=1, device=z_f.device)\n                            diff_pairs = diff[:, triu_indices[0], triu_indices[1]]\n                            hinge = F.relu(0.15 - diff_pairs)\n                            hinge_losses.append(hinge.mean())\n                        else:\n                            hinge_losses.append(torch.tensor(0.0, device=z_f.device, dtype=z_f.dtype))\n                    ccr_spatial_loss = torch.stack(hinge_losses).mean()\n                elif ccr_mode == \'covariance\':\n                    cov_losses = []\n                    for f in range(4):\n                        z_f = z_all_norm[:, f]\n                        cov_losses.append(calc_cov_loss(z_f))\n                    ccr_spatial_loss = torch.stack(cov_losses).mean()\n\n                ccr_total = ccr_smooth_weight * ccr_smooth_loss + ccr_spatial_weight * ccr_spatial_loss\n                loss = loss + ccr_total\n\n            return {\n                "loss": loss,\n                "sim_loss": sim_loss,\n                "sim_loss_coord": sim_loss_coord,\n                "sim_loss_dyn": sim_loss_dyn,\n                "var_loss": var_loss,\n                "var_loss_coord": var_loss_coord,\n                "var_loss_dyn": var_loss_dyn,\n                "cov_loss": cov_loss,\n                "cov_loss_coord": cov_loss_coord,\n                "cov_loss_dyn": cov_loss_dyn,\n                "loss_spatial": loss_spatial,\n                "sfa_loss": sfa_loss,\n                "contrastive_loss": contrastive_loss,\n                "ccr_smooth_loss": ccr_smooth_loss,\n                "ccr_spatial_loss": ccr_spatial_loss\n            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)'})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+Good, that was written. Now let me check the `z_hist_dyn` reference in the contrastive block - `z_hist_dyn` is already defined and has shape `(B, H, d_dyn)`. The contrastive loss uses `z_hist_dyn[:, -1, :d_t_dyn]` which should work since we already have `d_t_dyn`. But I used `d_t_dyn` which was already defined earlier. Let me verify no issue with redefinition:
+
+
+[Tool Call: edit_file({'path': 'src/models_dual_stream.py', 'old_string': "            # Contrastive loss (NT-Xent)\n            if self.primary_objective == 'contrastive':\n                d_t_dyn = self.d_t * self.sub_features\n                z_anchor = F.normalize(z_target_dyn[:, :d_t_dyn], dim=-1)", 'new_string': "            # Contrastive loss (NT-Xent)\n            if self.primary_objective == 'contrastive':\n                z_anchor = F.normalize(z_target_dyn[:, :d_t_dyn], dim=-1)"})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+Wait, I need to re-check: `d_t_dyn` is defined at the top of forward as `d_t_dyn = self.d_t * self.sub_features`. But in the SFA/contrastive branch, there's also `d_t_dyn` used. Let me verify no variable shadowing issues by checking the code again:
+
+
+[Tool Call: read_file({'end_line': 770, 'path': 'src/models_dual_stream.py', 'start_line': 735})]
+[Tool Result: --- lines 735 to 770 of 1096 ---
+        self.dyn_source = dyn_source
+        self.contrastive_weight = contrastive_weight
+        self.temperature = temperature
+        
+        self.encoder = NonParametricEncoder(
+            d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout,
+            sub_features=sub_features, dyn_source=dyn_source
+        )
+        self.predictor = DualStreamPredictor(d_max=d_max, d_dyn=self.encoder.d_dyn, h=h)
+        
+        # Dynamic state tracking
+        self.d_t = 2
+        self.steps_since_recruitment = cooldown  # start outside of cooldown
+        self.error_buffer = collections.deque(maxlen=500)
+        self.ema_error = None
+        self.ema_alpha = 0.05
+        self.gdasr_growth_points = []
+
+    def reset_error_buffer(self):
+        self.error_buffer.clear()
+        self.ema_error = None
+
+    def calculate_centroid_and_variance(self, a_spatial):
+        return calculate_centroid_and_variance(a_spatial)
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None, contrastive_weight=None, temperature=None):
+        dt_pred = d_t_predict if d_t_predict is not None else self.d_t
+        _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight
+        _contrastive_weight = contrastive_weight if contrastive_weight is not None else self.contrastive_weight
+        _temperature = temperature if temperature is not None else self.temperature
+        d_dyn = self.encoder.d_dyn
+        d_t_dyn = self.d_t * self.sub_features
+
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+]
+Good - `d_t_dyn` is already defined at line 766. Now let me update the `clone()` method for `NonParametricJEPASpatial`:
+
+
+[Tool Call: read_file({'end_line': 1060, 'path': 'src/models_dual_stream.py', 'start_line': 1030})]
+[Tool Result: --- lines 1030 to 1060 of 1096 ---
+                "ccr_spatial_loss": ccr_spatial_loss
+            }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def update_recruitment_logic(self, error_val, target_dim=None, step=None):
+        if target_dim is None:
+            target_dim = self.d_t
+
+        if self.ema_error is None:
+            self.ema_error = error_val
+        else:
+            self.ema_error = self.ema_alpha * error_val + (1.0 - self.ema_alpha) * self.ema_error
+            
+        self.steps_since_recruitment += 1
+        
+        if self.d_t == target_dim:
+            self.error_buffer.append(self.ema_error)
+
+        # Log-only mode (M3): detect growth points without changing d_t
+        if self.gdasr_log_only:
+            if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+                if len(self.error_buffer) >= 200:
+                    mean = np.mean(self.error_buffer)
+                    std = np.std(self.error_buffer)
+                    if self.ema_error > mean + self.k * std:
+                        self.steps_since_recruitment = 0
+                        self.gdasr_growth_points.append({
+                            "step": step,
+                            "ema_error": self.ema_error,
+                            "mean": mean,
+                            "std": std
+                        })]
+
+[Tool Call: read_file({'end_line': 1096, 'path': 'src/models_dual_stream.py', 'start_line': 1065})]
+[Tool Result: --- lines 1065 to 1096 of 1096 ---
+            if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+                if len(self.error_buffer) >= 200:
+                    mean = np.mean(self.error_buffer)
+                    std = np.std(self.error_buffer)
+                    if self.ema_error > mean + self.k * std:
+                        self.d_t = target_dim + 1
+                        self.steps_since_recruitment = 0
+                        print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+
+    def clone(self):
+        import copy
+        cloned = NonParametricJEPASpatial(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period,
+            pos_encoding=self.pos_encoding,
+            primary_objective=self.primary_objective,
+            sfa_weight=self.sfa_weight,
+            gdasr_log_only=self.gdasr_log_only,
+            dyn_readout=self.dyn_readout,
+            sub_features=self.sub_features,
+            dyn_source=self.dyn_source
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
+        return cloned]
+
+[Tool Call: edit_file({'new_string': '    def clone(self):\n        import copy\n        cloned = NonParametricJEPASpatial(\n            d_max=self.d_max,\n            h=self.h,\n            k=self.k,\n            cooldown=self.cooldown,\n            stabilization_period=self.stabilization_period,\n            pos_encoding=self.pos_encoding,\n            primary_objective=self.primary_objective,\n            sfa_weight=self.sfa_weight,\n            gdasr_log_only=self.gdasr_log_only,\n            dyn_readout=self.dyn_readout,\n            sub_features=self.sub_features,\n            dyn_source=self.dyn_source,\n            contrastive_weight=self.contrastive_weight,\n            temperature=self.temperature\n        )\n        cloned.d_t = self.d_t\n        cloned.load_state_dict(self.state_dict())\n        cloned.steps_since_recruitment = self.steps_since_recruitment\n        cloned.error_buffer = copy.deepcopy(self.error_buffer)\n        cloned.ema_error = self.ema_error\n        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)\n        return cloned', 'old_string': '    def clone(self):\n        import copy\n        cloned = NonParametricJEPASpatial(\n            d_max=self.d_max,\n            h=self.h,\n            k=self.k,\n            cooldown=self.cooldown,\n            stabilization_period=self.stabilization_period,\n            pos_encoding=self.pos_encoding,\n            primary_objective=self.primary_objective,\n            sfa_weight=self.sfa_weight,\n            gdasr_log_only=self.gdasr_log_only,\n            dyn_readout=self.dyn_readout,\n            sub_features=self.sub_features,\n            dyn_source=self.dyn_source\n        )\n        cloned.d_t = self.d_t\n        cloned.load_state_dict(self.state_dict())\n        cloned.steps_since_recruitment = self.steps_since_recruitment\n        cloned.error_buffer = copy.deepcopy(self.error_buffer)\n        cloned.ema_error = self.ema_error\n        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)\n        return cloned', 'path': 'src/models_dual_stream.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/models_dual_stream.py]
+Wait, I need to check the contrastive block again. I notice that in the SFA/contrastive branch, the `z_hist_dyn` has shape `(B, H, d_dyn)`. In my contrastive code, I'm using `z_hist_dyn[:, -1, :d_t_dyn]`. But I need to look at that block more carefully:
+
+
+[Tool Call: read_file({'end_line': 850, 'path': 'src/models_dual_stream.py', 'start_line': 835})]
+[Tool Result: --- lines 835 to 850 of 1098 ---
+            # Contrastive loss (NT-Xent)
+            if self.primary_objective == 'contrastive':
+                z_anchor = F.normalize(z_target_dyn[:, :d_t_dyn], dim=-1)
+                z_positive = F.normalize(z_hist_dyn[:, -1, :d_t_dyn], dim=-1)
+                sim_matrix = torch.matmul(z_anchor, z_positive.T) / _temperature
+                labels = torch.arange(B, device=x_target.device)
+                contrastive_loss = F.cross_entropy(sim_matrix, labels)
+            else:
+                contrastive_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            # Compute base_loss based on primary objective
+            if self.primary_objective == 'contrastive':
+                base_loss = _contrastive_weight * contrastive_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+            else:
+                base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+]
+Now let me update the test file to add the contrastive test and update the existing clone test:
+
+
+[Tool Call: read_file({'end_line': 500, 'path': 'src/test_models_dual_stream.py', 'start_line': 445})]
+[Tool Result: --- lines 445 to 500 of 598 ---
+    # Var and cov should be in the dictionary
+    assert loss_dict["var_loss"].item() >= 0.0, "Var loss should be non-negative"
+    assert loss_dict["cov_loss"].item() >= 0.0, "Cov loss should be non-negative"
+    
+    print("SFA loss non-zero values: PASSED")
+
+
+def test_gdasr_log_only_mode():
+    """Test that gdasr_log_only=True prevents dimension recruitment but logs growth points."""
+    print("Testing GDASR log-only mode...")
+    
+    # Log-only mode (default)
+    model = NonParametricJEPASpatial(d_max=8, h=3, gdasr_log_only=True)
+    model.d_t = 2
+    model.steps_since_recruitment = 500  # past cooldown
+    model.cooldown = 300
+    model.ema_error = 10.0  # very high error
+    # Fill error buffer with low error values to trigger recruitment
+    model.error_buffer.extend([0.01] * 200)
+    
+    old_d_t = model.d_t
+    # Update EMA with high value to potentially trigger growth point
+    model.update_recruitment_logic(error_val=10.0)
+    
+    # d_t should NOT change in log-only mode
+    assert model.d_t == old_d_t, f"d_t should not change in log-only mode, but changed from {old_d_t} to {model.d_t}"
+    
+    # Active recruitment mode
+    model2 = NonParametricJEPASpatial(d_max=8, h=3, gdasr_log_only=False)
+    model2.d_t = 2
+    model2.steps_since_recruitment = 500
+    model2.cooldown = 300
+    model2.ema_error = 10.0
+    model2.error_buffer.extend([0.01] * 200)
+    
+    # With active mode, this should recruit
+    old_d_t2 = model2.d_t
+    model2.update_recruitment_logic(error_val=10.0)
+    
+    # In active mode, d_t stays the same on first update (needs to pass threshold check)
+    # But the key point is the behavior difference exists
+    assert model2.d_t >= old_d_t2, "Active mode should potentially increase d_t"
+    
+    print("GDASR log-only mode: PASSED")
+
+
+def test_sfa_weight_parameter():
+    """Test that sfa_weight can be set via constructor and via forward call."""
+    print("Testing sfa_weight parameter...")
+    B, H, C, W = 4, 3, 3, 128
+    
+    # Constructor level
+    model = NonParametricJEPASpatial(d_max=8, h=H, primary_objective="sfa", sfa_weight=50.0)
+    assert model.sfa_weight == 50.0, f"sfa_weight should be 50.0, got {model.sfa_weight}"
+    
+    x_hist = torch.randn(B, H, C, W)]
+
+[Tool Call: read_file({'end_line': 70, 'path': 'src/test_models_dual_stream.py', 'start_line': 56})]
+[Tool Result: --- lines 56 to 70 of 598 ---
+    assert "loss" in loss_dict, "Missing loss in output dict"
+    assert "loss_spatial" in loss_dict, "Missing loss_spatial in output dict"
+    assert "sim_loss" in loss_dict, "Missing sim_loss in output dict"
+    assert "var_loss" in loss_dict, "Missing var_loss in output dict"
+    assert "cov_loss" in loss_dict, "Missing cov_loss in output dict"
+    
+    assert z_pred_c.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_pred_c.shape}"
+    assert z_pred_d.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_pred_d.shape}"
+    assert z_target_c.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_target_c.shape}"
+    assert z_target_d.shape == (B, d_max), f"Expected {(B, d_max)}, got {z_target_d.shape}"
+    print("Shape and forward pass checks: PASSED")
+
+def test_backprop_specificity():
+    B = 4
+    H = 3]

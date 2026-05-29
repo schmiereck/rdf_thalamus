@@ -719,7 +719,7 @@ class NonParametricEncoder(nn.Module):
 class NonParametricJEPASpatial(nn.Module):
     def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
                  primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean",
-                 sub_features=1, dyn_source="spatial"):
+                 sub_features=1, dyn_source="spatial", contrastive_weight=25.0, temperature=0.1):
         super().__init__()
         self.d_max = d_max
         self.h = h
@@ -733,6 +733,8 @@ class NonParametricJEPASpatial(nn.Module):
         self.dyn_readout = dyn_readout
         self.sub_features = sub_features
         self.dyn_source = dyn_source
+        self.contrastive_weight = contrastive_weight
+        self.temperature = temperature
         
         self.encoder = NonParametricEncoder(
             d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout,
@@ -755,9 +757,11 @@ class NonParametricJEPASpatial(nn.Module):
     def calculate_centroid_and_variance(self, a_spatial):
         return calculate_centroid_and_variance(a_spatial)
 
-    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None):
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0, cov_weight=25.0, lambda_spatial=0.0, k_chan=None, mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0, ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None, contrastive_weight=None, temperature=None):
         dt_pred = d_t_predict if d_t_predict is not None else self.d_t
         _sfa_weight = sfa_weight if sfa_weight is not None else self.sfa_weight
+        _contrastive_weight = contrastive_weight if contrastive_weight is not None else self.contrastive_weight
+        _temperature = temperature if temperature is not None else self.temperature
         d_dyn = self.encoder.d_dyn
         d_t_dyn = self.d_t * self.sub_features
 
@@ -772,7 +776,7 @@ class NonParametricJEPASpatial(nn.Module):
         # Encode target
         z_target_coord, z_target_dyn = self.encoder(x_target)
 
-        if self.primary_objective == "sfa":
+        if self.primary_objective in ["sfa", "contrastive"]:
             # SFA MODE
             z_prev_dyn = z_hist_dyn[:, -1]  # (B, d_dyn)
 
@@ -828,7 +832,21 @@ class NonParametricJEPASpatial(nn.Module):
             sim_loss_dyn = F.mse_loss(z_pred_dyn_pred, z_target_dyn_pred)
             sim_loss = sim_loss_coord + sim_loss_dyn
 
-            base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+            # Contrastive loss (NT-Xent)
+            if self.primary_objective == 'contrastive':
+                z_anchor = F.normalize(z_target_dyn[:, :d_t_dyn], dim=-1)
+                z_positive = F.normalize(z_hist_dyn[:, -1, :d_t_dyn], dim=-1)
+                sim_matrix = torch.matmul(z_anchor, z_positive.T) / _temperature
+                labels = torch.arange(B, device=x_target.device)
+                contrastive_loss = F.cross_entropy(sim_matrix, labels)
+            else:
+                contrastive_loss = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+            # Compute base_loss based on primary objective
+            if self.primary_objective == 'contrastive':
+                base_loss = _contrastive_weight * contrastive_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
+            else:
+                base_loss = _sfa_weight * sfa_loss + var_weight * var_loss + cov_weight * cov_loss + sim_weight * sim_loss
 
             # Spatial bottleneck
             if lambda_spatial > 0:
@@ -889,6 +907,7 @@ class NonParametricJEPASpatial(nn.Module):
                 "cov_loss_dyn": cov_loss_dyn,
                 "loss_spatial": loss_spatial,
                 "sfa_loss": sfa_loss,
+                "contrastive_loss": contrastive_loss,
                 "ccr_smooth_loss": ccr_smooth_loss,
                 "ccr_spatial_loss": ccr_spatial_loss
             }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
@@ -1066,7 +1085,9 @@ class NonParametricJEPASpatial(nn.Module):
             gdasr_log_only=self.gdasr_log_only,
             dyn_readout=self.dyn_readout,
             sub_features=self.sub_features,
-            dyn_source=self.dyn_source
+            dyn_source=self.dyn_source,
+            contrastive_weight=self.contrastive_weight,
+            temperature=self.temperature
         )
         cloned.d_t = self.d_t
         cloned.load_state_dict(self.state_dict())
