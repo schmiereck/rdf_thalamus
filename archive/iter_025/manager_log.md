@@ -1,9 +1,20 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 025
 
-*   **Iteration:** 025
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 025 -> Planner [Pre-Planning Hints]
 
-## 1. Hypothesis
+Manager's Pre-Planning Hints — Iteration 025
+
+1. **Treat iter_025 as a localization probe, not a constructive attempt.** The journal already commits to ID-contrastive on the shared CNN; the Planner must structure the iteration so that the *informational outcome is the same in both directions*. Specifically: in addition to (or as a parallel arm to) end-to-end ID-contrastive shaping z_dyn, include a **supervised linear probe directly on z_dyn** (and ideally a frozen-encoder probe baseline) so that the result decomposes cleanly into "objective insufficient" vs. "architecture ceiling." Without that decomposition we will spend iter_026 swapping objectives again.
+
+2. **Pre-declare the falsification criterion and a fresh seed batch before any code is written.** Carry the 0.10 delta_R2_color threshold forward unchanged for direct comparability with iter_021–024, and explicitly state in advance: (a) what counts as "ID-contrastive succeeded" (threshold cleared, collapse ≤ 1/5, on a *new* seed set disjoint from iter_021–024), (b) what counts as "architecture ceiling reached" (linear probe also ≤ 0.10 under direct supervision), and (c) what the agreed next move is for each of the four quadrants. The seed-reuse limitation called out in iter_024 §6 must be closed this iteration, not deferred again.
+
+3. **Resist scope creep toward "separate encoder for z_dyn" inside iter_025.** That is the obvious next architectural move if the ceiling probe fails, but bundling it into the same iteration would re-couple objective and architecture and re-create exactly the disambiguation problem this iteration is meant to solve. Also: language in the report must stay restrained — "consistent with an architecture-level bottleneck", not "shows that the architecture cannot encode identity" — and any positive ID-contrastive result must be qualified as supervised (slot IDs are privileged information), not as evidence that the decoder-free self-supervised problem is solved.
+
+---
+
+## Iteration 025 -> Manager [Proposed Research Plan]
+
+**Proposed Hypothesis:**
 The failure of identity encoding in z_dyn (delta_R2_color < 0.10 across iter_021-024)
 is attributable to the objective being insufficiently discriminative, NOT to the
 architecture being incapable. Specifically:
@@ -22,7 +33,7 @@ The full hypothesis (H1 AND H2) is falsified if H1 fails (architecture ceiling
 reached). Partial falsification (H1 holds, H2 fails) means the architecture CAN
 encode but the contrastive formulation is insufficient — a less severe outcome.
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 PRIMARY FALSIFICATION (H1 — Architecture Ceiling):
 Arm B (Supervised Color Probe + VICReg, d_max=8) fails to achieve delta_R2_color ≥ 0.10
 (mean over non-collapsed seeds) OR collapse rate > 3/5, on the fresh seed set
@@ -51,7 +62,7 @@ Any positive ID-contrastive result is qualified as supervised (slot IDs are
 privileged information), NOT as evidence that the decoder-free self-supervised
 problem is solved.
 
-## 3. Proposed Method
+**Proposed Method:**
 EXPERIMENT DESIGN: 4 arms × 5 fresh seeds × 5000 steps = 20 runs.
 
 Fresh seeds: [7, 17, 31, 53, 71] — disjoint from [42, 123, 456, 789, 999].
@@ -173,4 +184,23 @@ CONSTRAINTS (per Manager pre-planning hints):
   and failure of ID-contrastive are informative when paired with the supervised arm)
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 025 -> Planner [Strategic Guidance]
+
+Manager's Note — Iteration 025 (Critique of Proposed Plan)
+
+The plan is well-aligned with the localization-probe framing from pre-planning, and the four-quadrant decision tree is exactly the disambiguation discipline this iteration needs. Three concerns require revision before execution:
+
+1. **The "channel-to-object matching via sorted positions" step is a silent confound that can fake or mask the ceiling result.** Arms B, C, D all match `z_dyn[:, d]` to object `d` by sorting `z_coord[:, :d_t]` against `info["positions"]`. Whenever sort orders disagree (collisions, near-equal positions, swaps across timesteps), the supervised target attached to a given z_dyn channel flips between objects — the loss then teaches z_dyn to encode *position rank*, not identity, and a positive Arm B result is compatible with "architecture can encode position rank" rather than "architecture can encode identity." Conversely, persistent mismatch will depress Arm B and produce a false ceiling result. **Required before execution:** (a) report, on the existing tracking-quality metric, the empirical mismatch rate for the sorted-position assignment over the eval set, and (b) add a Hungarian / minimum-cost assignment as an alternative match (or an oracle "true ID" assignment derived from the physics engine slot IDs the journal already commits to using) and run Arm B under both. If the two assignments disagree by more than a few percent on `delta_R2_color`, the ceiling claim is not interpretable.
+
+2. **Falsification thresholds are inherited but not validated against the new probe; pre-register a noise floor before the run.** The 0.10 `delta_R2_color` threshold was chosen against self-supervised objectives. Under a *supervised* color probe that backprops through the encoder (Arm B), the natural ceiling is likely well above 0.10, so passing 0.10 is weak evidence of "architecture sufficient" — it could be barely-above-trivial. Pre-register, in `src/pre_registration.md`: (i) the expected null/floor (frozen random encoder, fresh seeds) and (ii) a *separation* criterion, e.g. Arm B must clear the floor by ≥ X and Arm C must clear floor by ≥ Y, with X, Y declared *now*. Also pre-declare how Arm D (d_max=16) will be interpreted given iter_022–023 already attributed the 0.137 result there to channel-capacity, not objective — without that, a positive Arm D is uninformative.
+
+3. **Language and pre-registration hygiene — non-negotiable items the Orchestrator will commit.** The Orchestrator will automatically write `src/pre_registration.md` from the `hypothesis` and `falsification_criterion` fields *and commit it before execution*; the Planner's sub-agents must read and adhere to it. Tighten the registered text:
+   - Replace "consistent with an architecture-level bottleneck" gloss with the explicit fact that, in the failure quadrant, the claim is conditional on the matching scheme of point (1).
+   - State explicitly that **a positive Arm B result is not evidence for the decoder-free programme** — it is a *supervised upper bound*, and the report must use "is compatible with sufficient architectural capacity under direct supervision," not "demonstrates the architecture can encode identity."
+   - Pre-declare that if Arm A (JEPA control) on fresh seeds drifts materially from the iter_022–024 reference (e.g. > 0.03 absolute on `delta_R2_color`), the seed-batch is itself a confound and the comparison across iterations is suspended pending investigation — do not tune.
+
+The plan is approved to proceed to execution **once the matching-confound (point 1) is addressed in code and the quantitative floors / separations (point 2) are written into `src/pre_registration.md`**. A plan without those is not ready to run.
+
+---
+

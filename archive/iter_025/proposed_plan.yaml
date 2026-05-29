@@ -1,0 +1,168 @@
+falsification_criterion: 'PRIMARY FALSIFICATION (H1 — Architecture Ceiling):
+
+  Arm B (Supervised Color Probe + VICReg, d_max=8) fails to achieve delta_R2_color
+  ≥ 0.10
+
+  (mean over non-collapsed seeds) OR collapse rate > 3/5, on the fresh seed set
+
+  [7, 17, 31, 53, 71] disjoint from iter_021-024.
+
+
+  If H1 is falsified: the architecture cannot route identity information to z_dyn
+
+  under ANY objective through the shared CNN + soft-argmax centroid head. The next
+
+  iteration must modify the architecture (separate z_dyn encoder or relax decoder-free).
+
+  Language: "consistent with an architecture-level bottleneck on identity encoding."
+
+
+  SECONDARY FALSIFICATION (H2 — ID-Contrastive):
+
+  Arm C (ID-Contrastive + VICReg) fails to achieve delta_R2_color ≥ 0.10 with
+
+  collapse rate ≤ 1/5, while Arm B succeeds.
+
+  If H2 is falsified but H1 holds: the architecture CAN encode, but the contrastive
+
+  formulation is insufficient. Try direct supervised as training objective or stronger
+
+  contrastive variants. Language: "contrastive formulation insufficient; architecture
+
+  not the bottleneck."
+
+
+  FOUR OUTCOME QUADRANTS (pre-declared next moves):
+
+  B succeeds, C succeeds → H1+H2 confirmed; continue developing ID-contrastive
+
+  B succeeds, C fails → H1 confirmed, H2 refuted; try direct supervised objective
+
+  B fails, C succeeds → Check for implementation bugs (supervised ≥ contrastive)
+
+  B fails, C fails → Architecture ceiling; next iteration: separate z_dyn encoder
+
+
+  Any positive ID-contrastive result is qualified as supervised (slot IDs are
+
+  privileged information), NOT as evidence that the decoder-free self-supervised
+
+  problem is solved.
+
+  '
+hypothesis: 'The failure of identity encoding in z_dyn (delta_R2_color < 0.10 across
+  iter_021-024)
+
+  is attributable to the objective being insufficiently discriminative, NOT to the
+
+  architecture being incapable. Specifically:
+
+
+  H1 (Architecture Capacity): The shared-CNN dual-stream NonParametricJEPASpatial
+
+  encoder CAN encode object identity in z_dyn when provided with a direct supervised
+
+  color regression loss that backpropagates through the encoder. Under this condition,
+
+  delta_R2_color ≥ 0.10 (mean over non-collapsed seeds) with collapse rate ≤ 1/5.
+
+
+  H2 (ID-Contrastive Viability): A color-similarity-based contrastive objective
+
+  (using privileged environment slot IDs to define positive/negative pairs) is
+
+  sufficient as a self-supervised proxy for identity encoding, achieving delta_R2_color
+
+  ≥ 0.10 with collapse rate ≤ 1/5.
+
+
+  The full hypothesis (H1 AND H2) is falsified if H1 fails (architecture ceiling
+
+  reached). Partial falsification (H1 holds, H2 fails) means the architecture CAN
+
+  encode but the contrastive formulation is insufficient — a less severe outcome.
+
+  '
+pre_registration_file: src/pre_registration.md
+proposed_method: "EXPERIMENT DESIGN: 4 arms × 5 fresh seeds × 5000 steps = 20 runs.\n\
+  \nFresh seeds: [7, 17, 31, 53, 71] — disjoint from [42, 123, 456, 789, 999].\n\n\
+  ARM CONFIGURATIONS:\n\nArm A: JEPA+VICReg Control (5 seeds)\n  - primary_objective=\"\
+  jepa\", var_weight=25, cov_weight=25, sim_weight=25\n  - d_max=8, d_t=3, dyn_readout=\"\
+  centroid_gated\", pos_encoding=\"none\"\n  - CCR covariance mode (ccr_smooth_weight=10,\
+  \ ccr_spatial_weight=10)\n  - gdasr_log_only=True\n  - Provides baseline incidental\
+  \ identity encoding; directly comparable to\n    iter_022-024 control arms but on\
+  \ fresh seeds.\n\nArm B: Supervised Color Probe + VICReg (5 seeds) [CRITICAL DIAGNOSTIC]\n\
+  \  - primary_objective=\"jepa\" (KEEPS JEPA as readout, preserving the prediction\n\
+  \    pathway for centroid tracking and surprise readout)\n  - ADDITIONAL supervised_color_loss\
+  \ on z_dyn with supervised_weight=25.0\n  - Color probe head: per-channel linear\
+  \ mapping z_dyn[:, d] → 3D RGB of the\n    matched object (nn.Parameter weight (d_max,\
+  \ 3) + bias (d_max, 3))\n  - Channel-to-object matching: sort z_coord[:, :d_t] and\
+  \ info[\"positions\"][:, :N]\n    by position → monotonic assignment (reliable per\
+  \ tracking quality metrics)\n  - supervised_loss = MSE(color_pred, colors_target)\
+  \ averaged over d_t channels\n    and 3 color channels\n  - VICReg on z_dyn (var_weight=25,\
+  \ cov_weight=25) — prevents collapse\n  - CCR covariance mode, same as control\n\
+  \  - d_max=8, d_t=3, dyn_readout=\"centroid_gated\"\n  - Gradient flow: supervised_loss\
+  \ → color_probe_head → z_dyn → encoder\n  - This is the architecture ceiling probe:\
+  \ if z_dyn cannot encode identity\n    even under this strong signal, the architecture\
+  \ is the bottleneck.\n\nArm C: ID-Contrastive (Color-Similarity Metric Learning)\
+  \ + VICReg (5 seeds)\n  - primary_objective=\"jepa\" (KEEPS JEPA as readout)\n \
+  \ - ADDITIONAL id_contrastive_loss on z_dyn with contrastive_weight=25.0\n  - Implementation:\
+  \ \n    1. For each sample b in batch, match channels to objects via sorted positions\n\
+  \    2. Collect all (z_dyn[b,d], color[matched_obj[b,d]]) pairs across the batch\n\
+  \       → n = B * d_t = 96 pairs\n    3. Compute target color similarity matrix:\
+  \ c_sim[i,j] = cosine_sim(color_i, color_j)\n    4. Compute z_dyn distance matrix:\
+  \ z_dist[i,j] = |z_dyn[i] - z_dyn[j]|\n    5. Loss: MSE(z_dist_normalized, (1 -\
+  \ c_sim) * z_scale) where z_scale is\n       the current std of z_dyn distances\
+  \ (adaptive scaling to avoid collapse)\n    6. Alternative (simpler): SupCon with\
+  \ discretized color class labels.\n       Discretize each object's color into one\
+  \ of 8 bins based on which RGB\n       quadrant it falls in (R>G>B, R>B>G, G>R>B,\
+  \ etc.). Apply SupCon loss\n       with these labels. This gives a clear positive/negative\
+  \ structure.\n  - VICReg on z_dyn (var_weight=25, cov_weight=25)\n  - CCR covariance\
+  \ mode, same as control\n  - d_max=8, d_t=3, dyn_readout=\"centroid_gated\"\n  -\
+  \ Uses privileged information (environment colors) to define identity pairs.\n\n\
+  Arm D: Supervised Color Probe + VICReg, d_max=16 (5 seeds)\n  - Same as Arm B but\
+  \ with d_max=16\n  - Tests whether increased latent channel capacity improves supervised\
+  \ encoding\n  - d_max=16, d_t=3 (frozen at 3 active channels, same as all other\
+  \ arms)\n\nFILES TO CREATE/MODIFY:\n\n1. src/models_dual_stream.py:\n   - Add color_probe\
+  \ parameters to NonParametricJEPASpatial.__init__()\n     (weight: Parameter(d_max,\
+  \ 3), bias: Parameter(d_max, 3))\n   - Add compute_supervised_color_loss() method\
+  \ that:\n     (a) receives z_coord, z_dyn, and ground-truth positions/colors tensors\n\
+  \     (b) sorts z_coord channels and positions by value for monotonic matching\n\
+  \     (c) gathers z_dyn and colors in sorted order\n     (d) computes color_pred\
+  \ = z_dyn_sorted * weight + bias (per-channel linear)\n     (e) returns MSE(color_pred,\
+  \ colors_sorted[:,:d_t,:])\n   - Add compute_id_contrastive_loss() method that:\n\
+  \     (a) receives z_dyn, positions, colors tensors\n     (b) matches channels to\
+  \ objects via sorted positions\n     (c) discretizes object colors into 8 bins (RGB\
+  \ quadrant)\n     (d) applies SupCon loss with these discrete labels\n     (e) returns\
+  \ the contrastive loss\n   - These are computed EXTERNALLY in the training loop\
+  \ (not inside forward()),\n     similar to how multi-step SFA was handled in iter_024.\n\
+  \n2. src/run_phase0_id_probe.py (NEW):\n   - Main experiment runner, based on run_phase0_sfa_multistep.py\
+  \ structure\n   - Extended ReplayBuffer: stores (x_hist, x_target, positions, colors,\
+  \ radii)\n   - 4 arms × 5 seeds × 5000 steps\n   - For Arms B, D: compute supervised_color_loss\
+  \ after model forward pass;\n     add to total loss before backward()\n   - For\
+  \ Arm C: compute id_contrastive_loss after model forward pass;\n     add to total\
+  \ loss before backward()\n   - Same evaluation suite as iter_024: semantic probes,\
+  \ collapse checks,\n     centroid MSE, tracking quality, normalized temporal variance,\n\
+  \     within/between trajectory variance, shuffled-frame control\n   - Results saved\
+  \ to archive/iter_025/results/\n\n3. src/pre_registration.md: Updated with this\
+  \ plan.\n\nTRAINING PROTOCOL:\n- 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000\n\
+  - d_t=3 frozen, gdasr_log_only=True (M3 preserved)\n- VICReg: var_weight=25, cov_weight=25\
+  \ (batch-level, M1 preserved)\n- All arms: centroid_gated dyn_readout, CCR covariance\
+  \ mode\n- supervised_weight=25.0 (matching var_weight scale; if collapse occurs,\n\
+  \  ramp 0.1→25.0 over 500 steps as fallback)\n- contrastive_weight=25.0 for Arm\
+  \ C\n- Color probe head initialized with small random weights (std=0.01)\n\nEVALUATION\
+  \ PROTOCOL:\n- Same as iter_024: semantic probes, collapse check (per_dim_std <\
+  \ 0.5),\n  centroid MSE, tracking quality, normalized temporal variance,\n  within/between\
+  \ trajectory variance, shuffled-frame control\n- PRIMARY METRIC: delta_R2_color\
+  \ (frozen-encoder linear probe, same computation\n  as iter_021-024 for direct comparability)\n\
+  - ADDITIONAL: report the training-time color_probe_loss convergence for Arms B/D\n\
+  \  and contrastive_loss convergence for Arm C — these show whether the objective\n\
+  \  is being optimized successfully even if the downstream metric doesn't improve\n\
+  - Checkpoint evaluation at step 2000 (monitoring only; ALL 5000 steps must complete)\n\
+  \nCONSTRAINTS (per Manager pre-planning hints):\n- Fresh seed set [7, 17, 31, 53,\
+  \ 71], disjoint from iter_021-024\n- No separate encoder for z_dyn in this iteration\
+  \ (resist scope creep)\n- Language: \"consistent with an architecture-level bottleneck\"\
+  \ not \"architecture\n  cannot encode identity\"; positive ID-contrastive results\
+  \ qualified as supervised\n- The informational outcome must be the same in both\
+  \ directions (both success\n  and failure of ID-contrastive are informative when\
+  \ paired with the supervised arm)\n"
