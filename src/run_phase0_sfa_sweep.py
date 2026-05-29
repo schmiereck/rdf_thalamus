@@ -168,7 +168,7 @@ def fit_multivariate_probe_r2(z_feature, y_target):
 def compute_normalized_temporal_var(z_dyn_arr, z_coord_arr, d_t, sub_features=1):
     """z_dyn_arr: (N, d_max*K), z_coord_arr: (N, d_max)"""
     d_t_dyn = d_t * sub_features
-    # Temporal variance: mean(Δz²)
+    # Temporal variance: mean(dz^2)
     dyn_diffs = np.diff(z_dyn_arr[:, :d_t_dyn], axis=0)
     coord_diffs = np.diff(z_coord_arr[:, :d_t], axis=0)
     temporal_var_dyn = np.mean(dyn_diffs ** 2)
@@ -1148,16 +1148,16 @@ def main():
         if meets_threshold:
             primary_pass = True
         print(f"  {arm_name:25s} dR2_color={audit_obj['delta_r2_color']:.4f}  "
-              f"Δ={diff:+.4f}  {'** MEETS THRESHOLD **' if meets_threshold else ''}")
+              f"dR2_diff={diff:+.4f}  {'** MEETS THRESHOLD **' if meets_threshold else ''}")
         if diff > best_delta_color_diff:
             best_delta_color_diff = diff
             best_delta_color_arm = arm_name
 
     print(f"\n  A1 baseline delta_R2_color = {a1_delta_color:.4f}")
     if primary_pass:
-        print(f"  -> PASS: {best_delta_color_arm} achieves Δ={best_delta_color_diff:.4f}")
+        print(f"  -> PASS: {best_delta_color_arm} achieves dR2_diff={best_delta_color_diff:.4f}")
     else:
-        print(f"  -> FAIL: No arm achieves Δ >= 0.10. Best is {best_delta_color_arm} at Δ={best_delta_color_diff:.4f}")
+        print(f"  -> FAIL: No arm achieves dR2_diff >= 0.10. Best is {best_delta_color_arm} at dR2_diff={best_delta_color_diff:.4f}")
 
     # ------------------------------------------------------------------ #
     # COMPOSITE M2 VIABILITY
@@ -1218,12 +1218,12 @@ def main():
         print(f"\n  {arm_name}: {pass_count}/5 seeds pass all three criteria")
         for sp in per_seed_passes:
             markers = []
-            if sp["c5"]: markers.append("C5✓")
-            else: markers.append("C5✗")
-            if sp["delta_color_improved"]: markers.append("dR2✓")
-            else: markers.append(f"dR2✗({sp['delta_color_val']:.3f})")
-            if sp["non_collapse"]: markers.append("NC✓")
-            else: markers.append("NC✗")
+            if sp["c5"]: markers.append("C5[Y]")
+            else: markers.append("C5[N]")
+            if sp["delta_color_improved"]: markers.append("dR2[Y]")
+            else: markers.append(f"dR2[N]({sp['delta_color_val']:.3f})")
+            if sp["non_collapse"]: markers.append("NC[Y]")
+            else: markers.append("NC[N]")
             pass_str = "PASS" if sp["passes_all"] else "FAIL"
             print(f"    seed={sp['seed']:3d}  {' '.join(markers):15s}  -> {pass_str}")
 
@@ -1338,7 +1338,7 @@ def main():
         "| A3 | 8 | 5.0 | fixed | 20% of VICReg strength |",
         "| A4 | 8 | 10.0 | fixed | 40% of VICReg strength |",
         "| A5 | 8 | 25.0 | fixed | Full parity with VICReg |",
-        "| A6 | 8 | 0.1→25.0 | ramp | Linear ramp over 1000 steps |",
+        "| A6 | 8 | 0.1->25.0 | ramp | Linear ramp over 1000 steps |",
         "| B | 16 | 10.0 | fixed | Expanded channels, pre-set |",
         "",
         "Training: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000, d_t=3.",
@@ -1391,7 +1391,7 @@ def main():
         "",
         f"| Criterion | Result | Detail |",
         f"|-----------|--------|--------|",
-        f"| PRIMARY (dR2_color >= 0.10 over A1) | {'PASS' if primary_pass else 'FAIL'} | Best: {best_delta_color_arm} Δ={best_delta_color_diff:.4f} |",
+        f"| PRIMARY (dR2_color >= 0.10 over A1) | {'PASS' if primary_pass else 'FAIL'} | Best: {best_delta_color_arm} dR2_diff={best_delta_color_diff:.4f} |",
         f"| COMPOSITE M2 Viability | {'PASS' if composite_pass else 'FAIL'} | Best: {best_composite_arm} {best_composite_count}/5 seeds |",
         f"| TERTIARY (all heavy collapse) | {'TRIGGERED' if all_heavy_collapse else 'NOT TRIGGERED'} | SFA-VICRes conflict {'unresolvable' if all_heavy_collapse else 'resolvable in some arms'} |",
         "",
