@@ -1,24 +1,29 @@
 # RDF Scientific Pre-Registration
 
-*   **Iteration:** 025
+*   **Iteration:** 025 v2 (corrected re-run)
 *   **Pre-Registration File:** src/pre_registration.md
-*   **Revisions:** Updated for iter_025 review cycles (matching confound protocol, noise floor criteria, language hygiene)
+*   **Revisions:** Corrected for five critical methodological flaws identified by the Research Manager after iter_025:
+    1. Collapse fix: lr 3e-4 + gradient clipping + 8000 steps
+    2. Defensible threshold: pre-declared effect size 0.10 (no noise floor)
+    3. Matching resolved: Hungarian is sole primary scheme; sorted is secondary check
+    4. Adequate power: 10 seeds (target ≥5 non-collapsed per arm)
+    5. Capacity audit: Arm E (d_max=16 control) tests iter_023 claim without identity objective
 
 ## 1. Hypothesis
 The failure of identity encoding in z_dyn (delta_R2_color < 0.10 across iter_021-024)
 is attributable to the objective being insufficiently discriminative, NOT to the
 architecture being incapable. Specifically:
 
-H1 (Architecture Capacity): The shared-CNN dual-stream NonParametricJEPASpatial
+**H1 (Architecture Capacity):** The shared-CNN dual-stream NonParametricJEPASpatial
 encoder CAN encode object identity in z_dyn when provided with a direct supervised
 color regression loss that backpropagates through the encoder. Under this condition,
-delta_R2_color ≥ max(0.10, floor_mean + 0.08) (mean over non-collapsed seeds) with
-collapse rate ≤ 1/5.
+delta_R2_color ≥ 0.10 (mean over non-collapsed seeds, Hungarian matching) with
+collapse rate ≤ 2/10.
 
-H2 (ID-Contrastive Viability): A color-similarity-based contrastive objective
+**H2 (ID-Contrastive Viability):** A color-similarity-based contrastive objective
 (using privileged environment slot IDs to define positive/negative pairs) is
 sufficient as a self-supervised proxy for identity encoding, achieving delta_R2_color
-≥ max(0.10, floor_mean + 0.08) with collapse rate ≤ 1/5.
+≥ 0.10 (mean over non-collapsed seeds, Hungarian matching) with collapse rate ≤ 2/10.
 
 The full hypothesis (H1 AND H2) is falsified if H1 fails (architecture ceiling
 reached). Partial falsification (H1 holds, H2 fails) means the architecture CAN
@@ -28,69 +33,60 @@ encode but the contrastive formulation is insufficient — a less severe outcome
 
 ### PRIMARY FALSIFICATION (H1 — Architecture Ceiling):
 Arm B (Supervised Color Probe + VICReg, d_max=8) fails to achieve
-delta_R2_color ≥ max(0.10, floor_mean + 0.08) (mean over non-collapsed seeds)
-OR collapse rate > 3/5, on the fresh seed set [7, 17, 31, 53, 71] disjoint from
-iter_021-024. The ceiling threshold uses dual-scheme matching (see §3); if the
-two schemes disagree by > 5% on delta_R2_color outcome, the ceiling claim is
-**conditional on the matching scheme** and must be reported as such.
+delta_R2_color ≥ 0.10 (mean over non-collapsed seeds, Hungarian matching)
+OR collapse rate > 2/10, on the seed set [7, 17, 31, 53, 71, 83, 97, 113, 127, 149].
 
-If H1 is falsified: the architecture cannot route identity information to z_dyn
-under ANY objective through the shared CNN + soft-argmax centroid head — **conditional
-on the sorted-position matching scheme** (mismatch rate: X%, where X is the
-empirical disagreement rate with the oracle/Hungarian scheme). The next iteration
-must modify the architecture (separate z_dyn encoder or relax decoder-free).
+If sorted and Hungarian matching disagree on pass/fail for >25% of non-collapsed
+seeds in Arm B, the outcome is **matching-dependent** and the falsification claim
+is NOT earned.
 
-Language: "consistent with an architecture-level bottleneck on identity encoding,
-conditional on the sorted-position matching scheme (mismatch rate: X%)" — **NOT**
+If H1 is falsified: the result is **consistent with an architecture-level bottleneck
+on identity encoding, conditional on the matching disagreement rate** — **NOT**
 "the architecture cannot encode identity."
 
+Language: "consistent with an architecture-level bottleneck on identity encoding,
+conditional on [mismatch rate]%" — **NOT** "architecture cannot encode identity."
+
 ### SECONDARY FALSIFICATION (H2 — ID-Contrastive):
-Arm C (ID-Contrastive + VICReg) fails to achieve delta_R2_color ≥ max(0.10,
-floor_mean + 0.08) with collapse rate ≤ 1/5, while Arm B succeeds. The dual-scheme
-matching applies: report mismatch rate and run with both schemes.
+Arm C (ID-Contrastive + VICReg) fails to achieve delta_R2_color ≥ 0.10 (mean over
+non-collapsed seeds, Hungarian matching) with collapse rate ≤ 2/10, while Arm B
+succeeds.
+
+If sorted and Hungarian matching disagree on pass/fail for >25% of non-collapsed
+seeds in Arm C, the outcome is **matching-dependent** and the falsification claim
+is NOT earned.
+
 If H2 is falsified but H1 holds: the architecture CAN encode, but the contrastive
 formulation is insufficient. Try direct supervised as training objective or stronger
 contrastive variants.
 
 Language: "contrastive formulation insufficient; architecture not the bottleneck."
 
-### NOISE FLOOR AND SEPARATION CRITERIA:
+### EFFECT-SIZE THRESHOLD:
+**Threshold = 0.10** (pre-declared effect size). This means "the improvement in
+color predictability from z_dyn over z_coord is at least 10% of variance" — a
+meaningful effect size, NOT derived from a flawed noise floor.
 
-**Noise floor protocol:** Before the main experiment, run 3 frozen-random-encoder
-baselines with seeds [7, 17, 31], d_max=8, measuring delta_R2_color. These are
-short runs (1000 steps each) with the encoder weights frozen at random initialization
-and only the linear probe head trained. This establishes the empirical floor.
-Expected: near 0 or slightly negative.
+### ARM A POWER CHECK:
+If Arm A (JEPA control) collapse rate > 2/10, the experiment is **UNDERPOWERED**
+and NO architecture claim is valid — report this honestly and suspend comparative
+analysis until collapse is fixed.
 
-Pre-declared thresholds (using floor_mean, the mean delta_R2_color of the 3 floor runs):
-
-(i) **Arm B** must achieve delta_R2_color ≥ max(0.10, floor_mean + 0.08) to confirm
-    H1 (architecture capacity). The 0.10 absolute threshold ensures the signal is
-    non-trivial; the floor+0.08 ensures it clears the noise floor with separation.
-
-(ii) **Arm C** must achieve delta_R2_color ≥ max(0.10, floor_mean + 0.08) with
-     collapse rate ≤ 1/5 to confirm H2 (ID-contrastive viability).
-
-(iii) **Arm D interpretation:** If Arm D succeeds but Arm B fails, the result is
-     attributed to **channel capacity**, not objective — consistent with
-     iter_022-023 findings. Arm D alone succeeding is NOT evidence for H1.
-     If both B and D succeed, the supervised signal works at both capacities.
-
-### ARM A SEED-BATCH DRIFT CHECK:
-If Arm A (JEPA control) on fresh seeds [7, 17, 31, 53, 71] drifts materially
-from the iter_022-024 reference (e.g., > 0.03 absolute on delta_R2_color), the
-seed batch itself is a confound and the cross-iteration comparison is **suspended**
-pending investigation. No tuning — the batch must be flagged and the root cause
-identified before drawing conclusions.
+### CAPACITY AUDIT (Arm E):
+Arm E (JEPA+VICReg Control, d_max=16, NO supervised/contrastive objective) tests
+whether the d_max=16 improvement observed in iter_023 is a capacity effect.
+- If Arm E achieves delta_R2_color ≥ 0.10, the d_max=16 improvement is confirmed
+  as a capacity effect (occurs without identity objective).
+- If Arm E does NOT achieve delta_R2_color ≥ 0.10, the iter_023 claim needs revision.
 
 ### FOUR OUTCOME QUADRANTS (pre-declared next moves):
 
 | Arm B | Arm C | Interpretation | Next Move |
 |-------|-------|----------------|-----------|
-| ✓ | ✓ | H1+H2 confirmed | Continue developing ID-contrastive |
-| ✓ | ✗ | H1 confirmed, H2 refuted | Try direct supervised objective |
+| ✓ | ✓ | Architecture CAN encode identity; ID-contrastive viable | Continue developing ID-contrastive |
+| ✓ | ✗ | Architecture CAN encode; contrastive formulation insufficient | Try direct supervised objective |
 | ✗ | ✓ | Check implementation (supervised ≥ contrastive expected) | Debug matching / contrastive impl |
-| ✗ | ✗ | Architecture-level bottleneck (conditional on matching, mismatch: X%) | Next iter: separate z_dyn encoder |
+| ✗ | ✗ | Consistent with architecture-level bottleneck (conditional on mismatch rate%) | Next iter: separate z_dyn encoder |
 
 Any positive Arm B result is stated as: **"is compatible with sufficient
 architectural capacity under direct supervision"** — **NOT** "demonstrates the
@@ -102,173 +98,105 @@ information), not evidence that the decoder-free self-supervised problem is solv
 ## 3. Proposed Method
 
 ### EXPERIMENT DESIGN:
-- **Noise floor runs (pre-experiment):** 3 runs × 1000 steps = short baselines
-- **Main experiment:** 4 arms × 5 fresh seeds × 5000 steps = 20 runs
-- **Total:** 23 runs
+- **Main experiment:** 5 arms × 10 seeds × 8000 steps = 50 runs
+- No noise floor runs (the previous floor was invalid because R² on random
+  encoders can exceed 1, making floor-derived thresholds unsupportable).
 
-Fresh seeds: [7, 17, 31, 53, 71] — disjoint from [42, 123, 456, 789, 999].
-
-### NOISE FLOOR RUNS (3 runs, before main experiment):
-- Seeds: [7, 17, 31]
-- Encoder: frozen random initialization (no training)
-- d_max=8, d_t=3, dyn_readout="centroid_gated"
-- Only the linear probe head is trained (1000 steps, same protocol as iter_021-024 probe)
-- Measure delta_R2_color for each; compute floor_mean
-- These 3 runs establish the empirical noise floor under the current setup
+Seeds: [7, 17, 31, 53, 71, 83, 97, 113, 127, 149] — disjoint from iter_021-024.
 
 ### ARM CONFIGURATIONS:
 
-Arm A: JEPA+VICReg Control (5 seeds)
+**Arm A: JEPA+VICReg Control (d_max=8)** — 10 seeds
   - primary_objective="jepa", var_weight=25, cov_weight=25, sim_weight=25
   - d_max=8, d_t=3, dyn_readout="centroid_gated", pos_encoding="none"
   - CCR covariance mode (ccr_smooth_weight=10, ccr_spatial_weight=10)
   - gdasr_log_only=True
-  - Provides baseline incidental identity encoding; directly comparable to
-    iter_022-024 control arms but on fresh seeds.
-  - **Drift check:** If mean delta_R2_color differs from iter_022-024 control
-    by > 0.03 absolute, the seed batch is a confound — suspend comparative analysis.
+  - NO supervised/contrastive loss
+  - Learning rate: 3e-4, gradient clipping: max_norm=1.0
+  - Provides baseline incidental identity encoding and **power check**.
 
-Arm B: Supervised Color Probe + VICReg (5 seeds) [CRITICAL DIAGNOSTIC]
-  - primary_objective="jepa" (KEEPS JEPA as readout, preserving the prediction
-    pathway for centroid tracking and surprise readout)
-  - ADDITIONAL supervised_color_loss on z_dyn with supervised_weight=25.0
-  - Color probe head: per-channel linear mapping z_dyn[:, d] → 3D RGB of the
-    matched object (nn.Parameter weight (d_max, 3) + bias (d_max, 3))
-  - **Dual matching schemes (CONFOUND PROTOCOL):** All supervised arms run TWICE:
-    (a) **Sorted-position matching** (as planned): sort z_coord[:, :d_t] and
-        info["positions"][:, :N] ascending → monotonic assignment
-    (b) **Oracle/Hungarian matching:** use scipy.optimize.linear_sum_assignment
-        with cost matrix C[d,o] = mean(|z_coord[:, d] - positions[:, o]|) per
-        batch, which finds the optimal assignment minimizing total distance.
-  - supervised_loss = MSE(color_pred, colors_target) averaged over d_t channels
-    and 3 color channels
-  - VICReg on z_dyn (var_weight=25, cov_weight=25) — prevents collapse
-  - CCR covariance mode, same as control
-  - d_max=8, d_t=3, dyn_readout="centroid_gated"
-  - Gradient flow: supervised_loss → color_probe_head → z_dyn → encoder
-  - Report the empirical mismatch rate between schemes (a) and (b) on the
-    evaluation set. If the two assignments disagree by > 5% of samples on
-    delta_R2_color outcome, the ceiling claim is conditional on the matching
-    scheme and must be reported as such.
-  - This is the architecture ceiling probe: if z_dyn cannot encode identity
-    even under this strong signal, the architecture is the bottleneck.
+**Arm B: Supervised Color Probe + VICReg (d_max=8)** — 10 seeds [CRITICAL DIAGNOSTIC]
+  - Same as Arm A PLUS supervised_color_loss with supervised_weight=25.0
+  - Training matching: **Hungarian** (not sorted)
+  - Ramp supervised weight 0.1 → 25.0 over first 500 steps
+  - Learning rate: 3e-4, gradient clipping: max_norm=1.0
 
-Arm C: ID-Contrastive (Color-Similarity Metric Learning) + VICReg (5 seeds)
-  - primary_objective="jepa" (KEEPS JEPA as readout)
-  - ADDITIONAL id_contrastive_loss on z_dyn with contrastive_weight=25.0
-  - Implementation:
-    1. For each sample b in batch, match channels to objects via sorted positions
-    2. Collect all (z_dyn[b,d], color[matched_obj[b,d]]) pairs across the batch
-       → n = B * d_t = 96 pairs
-    3. Compute target color similarity matrix: c_sim[i,j] = cosine_sim(color_i, color_j)
-    4. Compute z_dyn distance matrix: z_dist[i,j] = |z_dyn[i] - z_dyn[j]|
-    5. Loss: MSE(z_dist_normalized, (1 - c_sim) * z_scale) where z_scale is
-       the current std of z_dyn distances (adaptive scaling to avoid collapse)
-    6. Alternative (simpler): SupCon with discretized color class labels.
-       Discretize each object's color into one of 8 bins based on which RGB
-       quadrant it falls in (R>G>B, R>B>G, G>R>B, etc.). Apply SupCon loss
-       with these labels. This gives a clear positive/negative structure.
-  - **Dual matching schemes:** Also run with both (a) sorted-position and
-    (b) oracle/Hungarian matching. Report mismatch rate.
-  - VICReg on z_dyn (var_weight=25, cov_weight=25)
-  - CCR covariance mode, same as control
-  - d_max=8, d_t=3, dyn_readout="centroid_gated"
-  - Uses privileged information (environment colors) to define identity pairs.
+**Arm C: ID-Contrastive + VICReg (d_max=8)** — 10 seeds
+  - Same as Arm A PLUS id_contrastive_loss with contrastive_weight=25.0
+  - Training matching: **Hungarian** (not sorted)
+  - Learning rate: 3e-4, gradient clipping: max_norm=1.0
 
-Arm D: Supervised Color Probe + VICReg, d_max=16 (5 seeds)
-  - Same as Arm B but with d_max=16
-  - Tests whether increased latent channel capacity improves supervised encoding
-  - d_max=16, d_t=3 (frozen at 3 active channels, same as all other arms)
-  - **Dual matching schemes:** Run with both (a) sorted-position and
-    (b) oracle/Hungarian matching. Report mismatch rate.
+**Arm D: Supervised Color Probe + VICReg (d_max=16)** — 10 seeds
+  - Same as Arm B but d_max=16
+  - Tests whether more channels help supervised encoding
+
+**Arm E: JEPA+VICReg Control (d_max=16)** — 10 seeds [NEW — capacity audit]
+  - Same as Arm A but d_max=16
+  - NO supervised/contrastive loss
+  - If this achieves delta_R2_color ≥ 0.10, the d_max=16 improvement is confirmed
+    as a capacity effect (not objective effect).
 
 ### FILES TO CREATE/MODIFY:
 
-1. src/models_dual_stream.py:
-   - Add color_probe parameters to NonParametricJEPASpatial.__init__()
-     (weight: Parameter(d_max, 3), bias: Parameter(d_max, 3))
-   - Add compute_supervised_color_loss() method that:
-     (a) receives z_coord, z_dyn, and ground-truth positions/colors tensors
-     (b) supports BOTH sorted-position matching AND Hungarian matching
-         (passable via a `matching_mode` argument: "sorted" or "hungarian")
-     (c) gathers z_dyn and colors in matched order
-     (d) computes color_pred = z_dyn_sorted * weight + bias (per-channel linear)
-     (e) returns MSE(color_pred, colors_sorted[:,:d_t,:])
-   - Add compute_id_contrastive_loss() method that:
-     (a) receives z_dyn, positions, colors tensors
-     (b) supports both matching schemes
-     (c) discretizes object colors into 8 bins (RGB quadrant)
-     (d) applies SupCon loss with these discrete labels
-     (e) returns the contrastive loss
-   - Add compute_mismatch_rate() method that:
-     (a) for each sample, compares sorted-position assignment vs Hungarian assignment
-     (b) returns the fraction of samples where assignments disagree
-   - These are computed EXTERNALLY in the training loop (not inside forward()),
-     similar to how multi-step SFA was handled in iter_024.
-
-2. src/run_phase0_id_probe.py (NEW):
-   - Main experiment runner, based on run_phase0_sfa_multistep.py structure
+1. src/run_phase0_id_probe_v2.py (NEW):
+   - Main experiment runner, based on run_phase0_id_probe.py structure
    - Extended ReplayBuffer: stores (x_hist, x_target, positions, colors, radii)
-   - Noise floor runs: 3 short runs with frozen random encoder, probe-only training
-   - 4 arms × 5 fresh seeds × 5000 steps
-   - For Arms B, D: compute supervised_color_loss after model forward pass (both
-     matching schemes); add to total loss before backward()
-   - For Arm C: compute id_contrastive_loss after model forward pass (both
-     matching schemes); add to total loss before backward()
-   - Mismatch rate computation at evaluation checkpoints
-   - Same evaluation suite as iter_024: semantic probes, collapse checks,
+   - 5 arms × 10 seeds × 8000 steps
+   - For Arms B, D: compute supervised_color_loss with **Hungarian matching** during
+     training; sorted is computed only for logging mismatch rate.
+   - For Arm C: compute id_contrastive_loss with **Hungarian matching** during
+     training; sorted computed for logging mismatch rate.
+   - Gradient clipping before optimizer.step()
+   - Per-dimension std logging every 500 steps to diagnose WHEN collapse happens
+   - Checkpoint evaluations at steps 2000, 4000, 6000, 8000
+   - Same evaluation suite as iter_025: semantic probes, collapse checks,
      centroid MSE, tracking quality, normalized temporal variance,
      within/between trajectory variance, shuffled-frame control
-   - Results saved to archive/iter_025/results/
+   - PRIMARY evaluation: Hungarian matching. SECONDARY: sorted matching.
+   - Report mismatch rate and scheme agreement on pass/fail.
+   - Results saved to archive/iter_025/results_v2/
 
-3. src/pre_registration.md: Updated with this plan.
+2. src/pre_registration.md: Updated with this corrected v2 plan.
 
 ### TRAINING PROTOCOL:
-- Noise floor: 1000 steps, frozen encoder, probe head lr=1e-3, batch_size=32
-- Main runs: 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000
+- Main runs: 8000 steps, Adam lr=3e-4, batch_size=32, replay_buffer=2000
+- Gradient clipping: torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 - d_t=3 frozen, gdasr_log_only=True (M3 preserved)
-- VICReg: var_weight=25, cov_weight=25 (batch-level, M1 preserved)
+- VICReg: var_weight=25, cov_weight=25, sim_weight=25 (batch-level, M1 preserved)
 - All arms: centroid_gated dyn_readout, CCR covariance mode
-- supervised_weight=25.0 (matching var_weight scale; if collapse occurs,
-  ramp 0.1→25.0 over 500 steps as fallback)
+- supervised_weight=25.0 (ramped 0.1→25.0 over first 500 steps)
 - contrastive_weight=25.0 for Arm C
 - Color probe head initialized with small random weights (std=0.01)
 
 ### EVALUATION PROTOCOL:
-- Same as iter_024: semantic probes, collapse check (per_dim_std < 0.5),
+- Same as iter_025: semantic probes, collapse check (per_dim_std < 0.5),
   centroid MSE, tracking quality, normalized temporal variance,
   within/between trajectory variance, shuffled-frame control
-- PRIMARY METRIC: delta_R2_color (frozen-encoder linear probe, same computation
-  as iter_021-024 for direct comparability)
-- ADDITIONAL: report the training-time color_probe_loss convergence for Arms B/D
-  and contrastive_loss convergence for Arm C — these show whether the objective
-  is being optimized successfully even if the downstream metric doesn't improve
-- Checkpoint evaluation at step 2000 (monitoring only; ALL 5000 steps must complete)
-- **Dual-scheme evaluation:** For all supervised arms (B, C, D), evaluate with
-  both sorted-position and Hungarian matching. Compute and report:
-  - delta_R2_color under each scheme
-  - Empirical mismatch rate (fraction of eval samples with different assignments)
-  - Whether the pass/fail outcome differs between schemes
+- PRIMARY METRIC: delta_R2_color (frozen-encoder linear probe, Hungarian matching)
+- ADDITIONAL: report sorted-matching delta_R2_color as secondary check
+- Checkpoint evaluations at steps 2000, 4000, 6000, 8000
+- Compute and report:
+  - delta_R2_color under Hungarian (primary) and sorted (secondary)
+  - Eval mismatch rate (fraction of dims with different assignments)
+  - Whether pass/fail outcome differs between schemes per seed
 
-### CONSTRAINTS (per Manager pre-planning hints):
-- Fresh seed set [7, 17, 31, 53, 71], disjoint from iter_021-024
+### CONSTRAINTS (corrected from iter_025):
+- Seed set [7, 17, 31, 53, 71, 83, 97, 113, 127, 149], disjoint from iter_021-024
 - No separate encoder for z_dyn in this iteration (resist scope creep)
-- **Matching confound protocol:** All supervised arms (B, D) and Arm C run with
-  BOTH sorted-position AND Hungarian matching. Report mismatch rate. If
-  disagreement > 5% on delta_R2_color outcome, ceiling claim is conditional.
-- **Noise floor:** 3 frozen-random-encoder baselines establish empirical floor
-  before threshold comparison. Threshold = max(0.10, floor_mean + 0.08).
-- **Arm A drift check:** If fresh-seed control drifts > 0.03 from reference,
-  suspend cross-iteration comparison — no tuning.
-- Language: "consistent with an architecture-level bottleneck on identity encoding,
-  conditional on the sorted-position matching scheme (mismatch rate: X%)" not
-  "architecture cannot encode identity"; positive Arm B results as "compatible
-  with sufficient architectural capacity under direct supervision"; positive Arm C
-  results as "supervised (slot IDs are privileged information), not evidence that
-  the decoder-free self-supervised problem is solved."
-- The informational outcome must be the same in both directions (both success
-  and failure of ID-contrastive are informative when paired with the supervised arm)
+- **Matching scheme:** Hungarian is the SOLE primary matching scheme for both
+  training and evaluation. Sorted is reported as a secondary stability check.
+  If sorted and Hungarian disagree on pass/fail for >25% of non-collapsed seeds
+  in Arm B or C, report "matching-dependent outcome; falsification claim not earned."
+- **No noise floor:** The previous noise floor was methodologically invalid
+  (R² on random encoders can exceed 1). Threshold is pre-declared at 0.10 as an
+  effect-size criterion.
+- **Arm A power check:** If collapse rate > 2/10, the experiment is underpowered.
+  Report this honestly and do NOT claim architecture-level bottlenecks.
+- Language hygiene:
+  - Positive Arm B: "compatible with sufficient architectural capacity under direct supervision"
+  - Positive Arm C: "supervised (slot IDs are privileged), not evidence decoder-free self-supervision solved"
+  - Negative result: "consistent with an architecture-level bottleneck on identity encoding, conditional on [mismatch rate]%"
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
-*Revised: matching confound protocol, noise floor criteria, language hygiene (iter_025 review).*
+*Corrected v2 pre-registration addressing all five Research Manager criticisms.*
+*Date: Auto-generated.*

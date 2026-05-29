@@ -1,26 +1,72 @@
 artifacts:
-- src/models_dual_stream.py
-- src/run_phase0_id_probe.py
-- archive/iter_025/results/
-experimenter_view: "I fully implemented the iter_025 Architecture Ceiling Probe experiment\
-  \ according to the pre-registration specification, including:\n1. Added color_probe_head,\
-  \ id_contrastive_proj, and dual matching methods (sorted + Hungarian) to NonParametricJEPASpatial\
-  \ in src/models_dual_stream.py.\n2. Created src/run_phase0_id_probe.py with ExtendedReplayBuffer,\
-  \ noise floor runs, 4 arms (A-D), dual-scheme evaluation, and automated analysis\
-  \ generation.\n3. Two dry-run debugging cycles were performed:\n   - Fixed Hungarian\
-  \ matching shape bug (unsqueeze(-1) for scalar features).\n   - Fixed in-place operation\
-  \ bug in SupCon loss (masked_fill_ -> masked_fill).\nHowever, the execution limit\
-  \ was reached during debugging before verifying the final fix or running the full\
-  \ experiment (noise floor + 20 runs x 5000 steps). The code is believed to be correct\
-  \ after the last fix, but the actual experiment was not executed.\n"
-log_excerpt: "Traceback (most recent call last):\n  File \"src\\run_phase0_id_probe.py\"\
-  , line 1491, in <module>\n    main()\n  File \"src\\run_phase0_id_probe.py\", line\
-  \ 1245, in main\n    entries = _run_single_worker(task)\n  File \"src\\run_phase0_id_probe.py\"\
-  , line 1076, in _run_single_worker\n    results_list, model, logs = run_single(arm,\
-  \ seed, device, dry_run=dry_run)\n  File \"src\\run_phase0_id_probe.py\", line 940,\
-  \ in run_single\n    total_loss.backward()\nRuntimeError: one of the variables needed\
-  \ for gradient computation has been modified by an inplace operation\n"
-metrics: {}
-notes: Experiment implemented but not executed; execution limit hit during dry-run
-  debugging of contrastive loss inplace operation.
-status: code_error
+- src/run_phase0_id_probe_v2.py
+- src/pre_registration.md
+- archive/iter_025/results_v2/final_analysis.md
+- archive/iter_025/results_v2/summary_phase0_id_probe_v2.csv
+- archive/iter_025/results_v2/summary_phase0_id_probe_v2_cp.csv
+- archive/iter_025/results_v2/aggregated_phase0_id_probe_v2.csv
+experimenter_view: 'The corrected v2 experiment (lower LR 3e-4, gradient clipping,
+  8000 steps, 10 seeds,
+
+  Hungarian-primary matching, no noise floor) successfully ran all 50 runs but did
+  NOT
+
+  achieve its scientific goals. The control arm (A) collapse rate is 30% (>20% power
+
+  threshold), rendering the experiment underpowered and invalidating any architecture-
+
+  level bottleneck claim. Arm B (supervised) also has 30% collapse and a negative
+  mean
+
+  delta_R2_color (-0.024), far below the 0.10 threshold. Critically, sorted vs Hungarian
+
+  matching disagree on pass/fail for 43% of Arm B''s non-collapsed seeds, making the
+
+  outcome matching-dependent and the falsification claim unearned. Arm C (contrastive)
+
+  fares worse with 50% collapse. The one positive finding: Arm E (d_max=16 control)
+
+  achieves delta_R2_color = 0.14 without any identity objective, confirming the iter_023
+
+  d_max=16 improvement as a pure capacity effect. The core issue remains representation
+
+  collapse in z_dyn despite VICReg regularization — the architecture can encode position
+
+  but not identity reliably. Next step must focus on fixing collapse (e.g., even lower
+  LR,
+
+  larger batch size, stronger variance regularization, or architectural changes) before
+
+  any architecture-ceiling probe can be valid.
+
+  '
+log_excerpt: '[50/50] COMPLETED: E (JEPA+VICReg Control d_max=16) seed=149
+
+  Saved full results to archive/iter_025/results_v2\summary_phase0_id_probe_v2.csv
+
+  Saved checkpoint results to archive/iter_025/results_v2\summary_phase0_id_probe_v2_cp.csv
+
+  Aggregated stats saved to archive/iter_025/results_v2\aggregated_phase0_id_probe_v2.csv
+
+  Saved analysis to archive/iter_025/results_v2\final_analysis.md
+
+  Done.
+
+  '
+metrics:
+  arm_a_collapse_rate: 0.3
+  arm_b_collapse_rate: 0.3
+  arm_b_delta_r2_hu_noncollapsed: -0.0241
+  arm_b_matching_disagreement_rate: 0.43
+  arm_c_collapse_rate: 0.5
+  arm_c_delta_r2_hu_noncollapsed: -0.028
+  arm_d_collapse_rate: 0.4
+  arm_e_collapse_rate: 0.3
+  arm_e_delta_r2_hu_noncollapsed: 0.1398
+  seeds: 10
+  threshold: 0.1
+  total_runs: 50
+  training_steps: 8000
+notes: Experiment underpowered due to 30% collapse in control; capacity audit confirms
+  d_max=16 effect.
+status: experiment_failed
