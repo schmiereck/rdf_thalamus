@@ -1,100 +1,132 @@
 # Research Journal – Thalamus Project
 
 ## 1. High-Level Strategy & Trajectory
-*   **Current Phase:** Phase 0 (Objective Migration) — M2 DEFINITIVELY REFUTED across all
-    slowness formulations. Transition phase: pivot from slowness-prior to
-    identity-discrimination signal.
-*   **Active Direction:** With iter_024's double null, the entire slowness-based pathway
-    (single-step SFA, weight-swept SFA, multi-step SFA, temporal contrastive NT-Xent) has
-    failed to produce identity encoding in z_dyn (delta_R2_color ≥ 0.10 threshold never
-    cleared). The next iteration (025) pivots to object-tracking-ID contrastive learning,
-    using the physics engine's slot IDs as positive-pair anchors. This is a deliberate
-    departure from M2 as written, justified by the empirical refutation.
-*   **Next Priority:** Treat iter_025 as a **diagnostic probe to localize the bottleneck**:
-    is the failure of slowness-based objectives an objective-level problem (in which case
-    ID-contrastive should succeed), or an architecture-level problem (z_dyn cannot encode
-    identity through the shared CNN given the soft-argmax centroid head, in which case
-    ID-contrastive will also fail)? Both outcomes are informative.
-*   **Confidence Score:** 60% (Reduced from 70%. M2's core mechanism is now refuted across
-    four objective variants in three consecutive iterations. The decoder-free + identity
-    requirement now lacks a validated mechanism in this architecture. The path forward
-    is diagnostic, not constructive.)
+*   **Current Phase:** Phase 0 (Objective Migration) — M2 DEFINITIVELY REFUTED;
+    iter_025 v2 diagnostic also yielded a null due to underpowered training regime.
+    Now in **stabilization sub-phase**: before testing any new objective, the
+    base training regime itself must be made non-collapsing at the required
+    confidence level (≤10% collapse over ≥10 seeds).
+*   **Active Direction:** The iter_025 v2 ceiling probe was correctly executed
+    against the Research Manager's prior critique but the result is *not earned*
+    under its own falsification rule:
+      - Control Arm A collapsed in 30% of seeds (>20% power threshold).
+      - Supervised Arm B was *worse* than control (delta_R2_color: -0.024 vs +0.027),
+        but with 30% control collapse and 43% Hungarian/sorted matching disagreement
+        on the surviving seeds, this cannot be promoted to "architecture refutes
+        identity encoding."
+      - Arm E (d_max=16 JEPA+VICReg, no identity objective) reached 0.14
+        delta_R2_color WITHOUT any identity term — confirming, as measured, that
+        the iter_023 d_max=16 result was a **capacity effect**, not an objective
+        effect.
+    The honest synthesis: we still cannot disambiguate objective-bottleneck from
+    architecture-bottleneck because the training regime is not stable enough to
+    carry the probe. The supervised arm performing below control is *suggestive*
+    that z_dyn may not carry identity-discriminative information through the
+    shared CNN under the current regime, but this inference is **conditional on
+    first eliminating collapse**.
+*   **Next Priority (iter_026):** **Collapse-elimination sub-experiment** — single
+    focused iteration whose only job is to drive Arm A (control / training regime
+    only, no identity objective) collapse rate ≤10% over ≥10 seeds. Candidate
+    interventions to sweep, independently and minimally:
+      1. Learning-rate further reduction (1e-4, 3e-4 as anchor).
+      2. VICReg variance-target re-scaling (current floor std≥1 may be the
+         collapse driver under the new optimization regime).
+      3. Warm-up schedule on the VICReg coefficients.
+      4. Batch-size sensitivity (since pooled-VICReg gradient ~1/B; smaller B
+         may already be the issue).
+    No new objectives may be tested in iter_026. Until the regime is stable,
+    every "objective falsification" claim is unearned. This is a deliberate,
+    Manager-authorized scope reduction.
+*   **Confidence Score:** 50% (reduced from 60%). Two consecutive iterations
+    have failed to clear their own pre-declared gates due to training-regime
+    instability rather than objective-level evidence. The project is now
+    bottlenecked on baseline-stability, not on objective choice. This is a
+    worse position than after iter_024 because the iter_025 v2 design was
+    supposed to resolve the question and did not.
 
 ## 2. Strategic Insights & Lessons Learned
-*   **MULTI-STEP SFA AMPLIFIES, DOES NOT RESOLVE, THE SFA-VICReg CONFLICT (iter_024):**
-    Multi-step SFA at sfa_weight=10.0 produced 100% collapse, worse than single-step SFA at
-    the same weight (2/5 collapse in iter_023). Longer temporal windows give SFA a larger
-    gradient that more directly opposes VICReg's variance floor. The standard SFA-literature
-    remedy of multi-timescale slowness does not transfer to this architecture.
-*   **TEMPORAL CONTRASTIVE (NT-Xent) FIGHTS VICReg WITHOUT WINNING SEMANTICS (iter_024):**
-    NT-Xent + VICReg produced 4/5 surviving seeds but the survivors are high-variance noise
-    (within_traj_var=0.630), no semantic structure on the color probe. The contrastive
-    "push apart different timesteps" signal is incompatible with VICReg's
-    variance-decorrelation objective in a non-obvious way.
-*   **INVARIANCE-vs-DISCRIMINATION DIAGNOSTIC IS THE CORRECT TOOL (iter_024, METHOD WIN):**
-    The shuffled-frame control plus within-trajectory vs. between-trajectory variance
-    decomposition cleanly distinguished "smoother that reduces all variance" from "extractor
-    that preserves identity-discriminative variance." This diagnostic should be standard for
-    any future self-supervised objective candidate.
-*   **M2 REFUTATION IS NOW DEFINITIVE (iter_022–024 cumulative):** Four objective variants
-    tested, none clear delta_R2_color ≥ 0.10:
-      - Single-step SFA, weight sweep (iter_022–023): max 0.064
-      - Multi-step SFA, k ∈ {20, 50, 100} (iter_024): max 0.034
-      - Temporal contrastive NT-Xent (iter_024): no semantic structure
-    The slowness prior is empirically insufficient on RGB+CNN+soft-argmax inputs.
-*   **DECODER-FREE + IDENTITY-IN-z_dyn IS NOW UNDERDETERMINED (CRITICAL):** The original
-    M2 framing rested on a validated transfer from sml. The transfer has now been refuted
-    at the RGB layer. The conjunction (decoder-free × identity-encoding × dual-stream
-    shared CNN × soft-argmax centroid head) lacks any validated mechanism. iter_025 must
-    decide whether to relax decoder-free, relax shared CNN, or accept identity encoding
-    as an unsolved sub-problem.
-*   **sml TRANSFER WAS PARTIAL (NOW CONFIRMED EMPIRICALLY):** M1 (pooled VICReg) transferred
-    cleanly. M2 (SFA-primary) did not. The sml binary-input result was indeed task-specific,
-    vindicating the "measure-before-impose" caution but at the cost of the M2 mandate.
-    Prior insights (gradient propagation, ramp strategy, d_max=16 best for color)
-    preserved from earlier journal entries.
+*   **A REGIME THAT COLLAPSES 30% OF SEEDS IS NOT A SUBSTRATE FOR FALSIFICATION
+    (iter_025 v2, METHOD WIN):** When the control arm collapses at 30%, *any*
+    negative claim about a tested arm is confounded by survivor bias on the
+    non-collapsed seeds. The 20% power threshold pre-declared in iter_025 v2 is
+    the correct rule and it correctly disqualified the experiment's primary
+    claim. Maintain this rule going forward: no objective comparison is valid
+    unless the control arm meets the collapse threshold first.
+*   **THE d_max=16 EFFECT IS A CAPACITY EFFECT, MEASURED (iter_025 v2 Arm E,
+    CONFIRMED):** Arm E reached delta_R2_color = 0.14 with *no* identity
+    objective — only JEPA+VICReg at d_max=16. This is the cleanest disentangling
+    possible: any future "objective X improved color decoding at d_max=16"
+    claim must subtract the Arm E baseline (~0.14) before being interpreted.
+    Update reference value: **d_max=16 capacity baseline ≈ 0.14**.
+*   **SUPERVISED COLOR LOSS CONVERGES IN TRAINING BUT DOES NOT TRANSFER TO z_dyn
+    (iter_025 v2 Arm B, SUGGESTIVE NOT CONCLUSIVE):** Arm B reached near-zero
+    training loss yet produced delta_R2_color = -0.024 — *below* the no-identity
+    control. Two interpretations remain open: (a) the supervised signal is
+    absorbed by parameters outside z_dyn (e.g., the conv head or z_coord
+    pathway leaks into solving the task without z_dyn carrying the
+    information); (b) the training regime's instability prevents the supervised
+    signal from settling into z_dyn. Disambiguating requires iter_026's stable
+    regime as a prerequisite.
+*   **MATCHING-CONFOUND IS REAL AND MUST BE PRE-DECLARED (iter_025 v2):** 43%
+    disagreement between sorted and Hungarian matching on the surviving seeds
+    means downstream metrics depend critically on the matching procedure. The
+    pre-declared Hungarian-primary rule correctly invalidated post-hoc cherry-
+    picking. Keep Hungarian-primary as the standing rule for all future
+    delta_R2_* claims.
+*   **LOWER LR + GRADIENT CLIPPING HELP BUT DO NOT SOLVE COLLAPSE (iter_025 v2):**
+    The reduction from 40-60% (v1) to 30% (v2) is real progress but insufficient.
+    Collapse mechanism likely has additional drivers (VICReg variance floor
+    under low-LR regime, ramp duration, batch-level statistics) that single-knob
+    tuning will not fix.
+*   **PRESERVED FROM EARLIER ENTRIES:** M2 refutation across iter_022–024 stands;
+    M1 (pooled VICReg) stands; sml transfer is partial at the objective level;
+    decoder-free × identity × dual-stream × shared CNN conjunction still lacks
+    a validated mechanism.
 
 ## 3. Loop & Bottleneck Detection
-*   **Identity Encoding Bottleneck (ACTIVE, FUNDAMENTAL):** No objective tested across
-    iter_021–024 produces delta_R2_color ≥ 0.10. This is now the dominant bottleneck;
-    everything downstream (gating, motor, generalization) is gated on resolving it. The
-    iter_025 ID-contrastive probe is designed to attribute the bottleneck to either the
-    objective or the architecture.
-*   **Slowness-Prior Loop (CLOSED):** Three iterations of "make SFA work harder" produced
-    monotonically improving SFA-mechanism evidence but no improvement on the downstream
-    metric. The loop is empirically closed.
-*   **Objective-vs-Architecture Disambiguation (NEW):** The next loop to avoid is repeated
-    objective swapping without ruling out the architecture. iter_025 must include an
-    architecture-independent probe (e.g., supervised linear probe on z_dyn under ID-contrastive
-    training) to put a ceiling on what the architecture can encode.
-*   **Metric Artifact Loop (CLOSED, iter_023):** C5 abandoned, delta_R2_color is the
-    primary criterion.
-*   **Gating Design Loop (STALE):** M3 still sidesteps. Not the active concern.
-*   **Logistics:** Executor token limits remain a recurring issue across iter_020–024. Not
-    blocking but should be tracked.
+*   **Identity Encoding Bottleneck (ACTIVE, NOT YET ATTRIBUTABLE):** Still the
+    dominant bottleneck. iter_025 v2 was the intended attribution probe; it did
+    not earn its conclusion. Architecture-vs-objective question remains **open
+    pending a stable regime**.
+*   **Training-Regime-Stability Bottleneck (NEWLY PROMOTED TO PRIMARY):** The
+    current regime collapses 30% of control seeds even after lower LR + gradient
+    clipping. This is now the most immediate blocker — every downstream
+    experiment requires a stable base. Promote to active focus for iter_026.
+*   **Capacity-vs-Objective Confound (RESOLVED, iter_025 v2 Arm E):** d_max=16
+    improvement attributed to capacity, not objective. Any future claim must
+    subtract the ~0.14 baseline. Loop closed.
+*   **Matching-Procedure Confound (RESOLVED, iter_025 v2):** Hungarian-primary
+    is the standing rule. Loop closed.
+*   **Diagnostic-vs-Constructive Iteration Loop (ACTIVE WARNING):** Two
+    consecutive iterations (025 v1, v2) attempted diagnostic disambiguation and
+    both produced unearned conclusions due to regime instability. The lesson:
+    a diagnostic experiment is only as good as its baseline. iter_026 must be
+    *purely* constructive on the baseline before any further diagnostic.
+*   **Objective-Swapping Loop (DORMANT, ENFORCEABLE):** Resist the temptation
+    to test a "next objective" (ID-contrastive, separate encoder, BYOL) until
+    the regime is stable. The Manager will reject planning proposals that test
+    a new objective in iter_026.
+*   **Logistics:** Executor token limits persist. Tracked, not blocking.
 
 ## 4. Alternate Research Paths
-*   **Object-Tracking-ID Contrastive (IMMEDIATE, iter_025):** Use physics-engine slot IDs to
-    build positive pairs (same object, different time) and negative pairs (different
-    objects, same time). This is a stronger supervisory signal than self-supervised
-    contrastive but maintains the "no pixel decoder" property. It is also a **diagnostic
-    probe**: if z_dyn cannot encode identity even under this strong signal, the bottleneck
-    is the architecture, not the objective.
-*   **Supervised Linear Probe on z_dyn (DIAGNOSTIC, parallel to iter_025):** Train an
-    ID-contrastive z_dyn, then fit a linear probe predicting object color/size from
-    z_dyn alone. The probe accuracy is the architecture's ceiling — if it is low even
-    under direct supervision, z_dyn cannot encode identity through this CNN.
-*   **Separate Identity Encoder (HIGH PRIORITY if ID-contrastive on shared CNN fails):**
-    Decouple the encoder for z_coord (current CNN + soft-argmax) from a second encoder for
-    z_dyn. This relaxes the shared-CNN constraint that may be the structural bottleneck.
-    Expensive but clean.
-*   **Augmentation-Based Self-Supervision (BYOL/SimCLR style) (MEDIUM PRIORITY):** Only
-    revisit if ID-contrastive succeeds, to recover self-supervision after using ID labels
-    as a diagnostic.
-*   **Accept Decoder-Free Constraint Relaxation (LAST RESORT):** A small pixel decoder
-    restricted to z_dyn (not z_coord) would directly force identity encoding. This breaks
-    the decoder-free principle and should only be considered if all decoder-free paths
-    fail.
-*   **Micro-Columns (DEFERRED per semantic caution):** Still gated on a working objective.
-    The objective is the active gap.
+*   **iter_026: Collapse-Elimination Sub-Experiment (IMMEDIATE, MANDATORY):**
+    No new objective. Sweep regime knobs (LR, VICReg coefficients with warm-up,
+    batch size, VICReg variance floor) on a single canonical control arm. Gate:
+    ≤10% collapse rate over ≥10 seeds. Until this gate clears, all other paths
+    are blocked.
+*   **Object-Tracking-ID Contrastive (DEFERRED to iter_027+):** Still the
+    leading objective candidate, but now conditional on the iter_026 baseline.
+*   **Supervised Linear Probe on z_dyn (DEFERRED, requires stable regime):**
+    Re-attempt only with a regime meeting the iter_026 gate. The iter_025 v2
+    Arm B result is suggestive but not conclusive; re-run is mandatory.
+*   **Separate Identity Encoder (HIGH PRIORITY, conditional):** If iter_027
+    ID-contrastive on the shared CNN fails under a stable regime, this becomes
+    the next architectural intervention.
+*   **VICReg Variance Floor Re-Calibration (NEW, candidate for iter_026):** The
+    current std≥1 target may be over-strict given the current latent norms; a
+    lower or scheduled floor may be the missing piece for collapse-elimination.
+*   **Augmentation-Based Self-Supervision (BYOL/SimCLR) (MEDIUM PRIORITY, on
+    hold):** Unchanged.
+*   **Accept Decoder-Free Constraint Relaxation (LAST RESORT):** Unchanged.
+*   **Micro-Columns (DEFERRED per semantic caution):** Unchanged.
 *   **Fixed-Dimensionality + M3 Regime (ACTIVE):** Preserved.

@@ -997,3 +997,55 @@ completely des
 
 **Notes:** Double null result. Both multi-step SFA and temporal contrastive failed definitively. 100% collapse in multi-step SFA arms is a new severe finding.
 
+
+---
+```yaml
+cached_tokens: 4996355
+cost_usd: 6.92076
+hypothesis: 'phase-25: corrected v2 ceiling probe is underpowered (30% control collapse);
+  supervised probe worse than control; d_max=16 capacity effect confirmed as measured'
+input_tokens: 8603094
+iter: 25
+metrics:
+  arm_a_collapse_rate: 0.3
+  arm_a_delta_r2_hu_noncollapsed: 0.027
+  arm_b_collapse_rate: 0.3
+  arm_b_delta_r2_hu_noncollapsed: -0.024
+  arm_b_matching_disagreement_rate: 0.43
+  arm_c_collapse_rate: 0.5
+  arm_c_delta_r2_hu_noncollapsed: -0.028
+  arm_c_matching_disagreement_rate: 0.0
+  arm_d_collapse_rate: 0.4
+  arm_d_delta_r2_hu_noncollapsed: -0.099
+  arm_e_collapse_rate: 0.3
+  arm_e_delta_r2_hu_noncollapsed: 0.14
+  lr: 3e-4
+  seeds: 10
+  threshold: 0.1
+  training_steps: 8000
+output_tokens: 182988
+status: experiment_failed
+```
+
+## iter_025: phase-25: corrected v2 ceiling probe is underpowered (30% control collapse); supervised probe worse than control; d_max=16 capacity effect confirmed as measured
+
+**Analysis:** This phase addressed five Research Manager criticisms of the original iter_025
+experiment by running a corrected v2 with: lower LR (3e-4 vs 1e-3), gradient
+clipping, more steps (8000 vs 5000), more seeds (10 vs 5), Hungarian-primary
+matching (eliminating the matching-confound ambiguity), a defensible effect-size
+threshold (0.10, not derived from the invalid noise floor), and an added Arm E
+(d_max=
+
+**Status:** experiment_failed
+
+**Metrics:** `{'arm_a_collapse_rate': 0.3, 'arm_a_delta_r2_hu_noncollapsed': 0.027, 'arm_b_collapse_rate': 0.3, 'arm_b_delta_r2_hu_noncollapsed': -0.024, 'arm_c_collapse_rate': 0.5, 'arm_c_delta_r2_hu_noncollapsed': -0.028, 'arm_d_collapse_rate': 0.4, 'arm_d_delta_r2_hu_noncollapsed': -0.099, 'arm_e_collapse_rate': 0.3, 'arm_e_delta_r2_hu_noncollapsed': 0.14, 'arm_b_matching_disagreement_rate': 0.43, 'arm_c_matching_disagreement_rate': 0.0, 'threshold': 0.1, 'training_steps': 8000, 'seeds': 10, 'lr': '3e-4'}`
+
+**Experimenter view:** CORRECTED v2 experiment (per Research Manager requirements): lower LR 3e-4,
+gradient clipping max_norm=1.0, 8000 steps, 10 seeds [7,17,31,53,71,83,97,113,127,149],
+Hungarian-primary matching, effect-size threshold 0.10, added Arm E (d_max=16 control).
+
+CRITICISM 1 (Broken threshold): Resolved. Pre-declared threshold = 0.10 as an
+effect-size criterion (z_dyn explains ≥10% more color variance than z
+
+**Notes:** Underpowered due to 30% control collapse; capacity audit confirms d_max=16 effect; supervised probe worse than control
+

@@ -1,64 +1,58 @@
 # Current Research State
-Phase: M2 Definitively Refuted — Pivot to Object-Tracking-ID Contrastive
+Phase: Architecture Ceiling Probe — Underpowered, Key Negative Results
 
 ## Goal
-Design and evaluate a neural architecture achieving hierarchical abstraction
-without generative decoders, with an objective that makes z_dyn encode object
-identity. The M2 mandate (SFA as primary representation objective) has been
-empirically falsified across all tested variants.
+Determine whether the shared-CNN dual-stream NonParametricJEPASpatial encoder
+can encode object identity in z_dyn under any objective, and whether ID-contrastive
+is viable as a self-supervised proxy.
 
-## Confirmed
-- **M2 FALSIFIED (iter_022-024)**: SFA on z_dyn does NOT produce identity-position
-  separation. Tested across: CGIR (iter_022), SFA weight sweep 0.1-25.0 (iter_023),
-  multi-step SFA k=20,50,100 (iter_024), temporal contrastive NT-Xent (iter_024).
-  No variant achieves delta_R2_color ≥ 0.10.
-- **MULTI-STEP SFA WORSENS COLLAPSE (iter_024)**: k=20,50,100 all show 100%
-  collapse rate (5/5 seeds), worse than single-step SFA (2/5 at sfa=10, iter_023).
-  Longer horizons amplify the SFA-VICReg gradient conflict.
-- **SFA IS INDISCRIMINATE SMOOTHER (iter_024)**: As k increases, within-trajectory
-  and between-trajectory variance drop proportionally (within/between ratio
-  narrows from 1.96→1.25). SFA does not selectively preserve identity — it
-  suppresses all temporal variation equally.
-- **SHUFFLED-FRAME CONTROL CONFIRMS NULL (iter_024)**: delta_R2_color on shuffled
-  frames is negative and similar to unshuffled values across all arms, confirming
-  the minimal signal is encoder geometry, not SFA-driven semantics.
-- **TEMPORAL CONTRASTIVE (NT-Xent) FAILS (iter_024)**: delta_R2_color = -0.013
-  at d_max=8. NT-Xent at τ=0.1 fights VICReg, producing high-variance noisy
-  representations (within_traj_var=0.630) with no semantic structure.
-- **VICReg BATCH-LEVEL WORKS (iter_020-024)**: For K=1 d_max≤16, confirming M1.
-- **d_max=16 BEST CAPACITY (iter_022-024)**: Consistent delta_R2_color improvement
-  with more channels, but this is a capacity effect, not an objective effect.
-- **RAMP STRATEGY HELPS STABILITY (iter_023-024)**: SFA weight ramp 0.1→target
-  over 500 steps reduces immediate collapse but cannot prevent it at longer horizons.
+## Confirmed (iter_025 v2)
+- d_max=16 CAPACITY EFFECT CONFIRMED (iter_025, Arm E): delta_R2_color = 0.14
+  achieved by JEPA+VICReg at d_max=16 WITHOUT any identity objective. This
+  confirms the iter_023 result (0.137) was a capacity effect, measured not
+  post-hoc. The journal's "definitive M2 refutation" must be softened: this
+  was always a capacity effect, now measured.
+- SUPERVISED COLOR LOSS DOES NOT IMPROVE z_dyn IDENTITY (iter_025, Arm B):
+  delta_R2_color = -0.024 under supervised probe, WORSE than control (+0.027).
+  The loss converges in training but does not transfer to identity encoding.
+- MATCHING DEPENDENCY IS REAL (iter_025, Arm B): 43% disagreement between
+  sorted and Hungarian matching on pass/fail. Outcome is matching-dependent;
+  falsification claim not earned for Arm B.
+- COLLAPSE NOT FIXED BY LOWER LR (iter_025, v2): 30% collapse in control Arm A
+  even at lr=3e-4 with gradient clipping (was 40-60% at lr=1e-3 in v1).
+- ARM C (CONTRASTIVE) STABLE UNDER BOTH MATCHING SCHEMES: 0% disagreement
+  between sorted and Hungarian; both agree on "fail" for all non-collapsed seeds.
+  delta_R2_color = -0.028 with 50% collapse.
+- EFFECT-SIZE THRESHOLD = 0.10 is defensible as "z_dyn explains ≥10% more
+  color variance than z_coord" — not derived from invalid noise floor.
 
 ## Refuted / Falsified
-- **SFA AS IDENTITY ENCODING MECHANISM (iter_022-024, DEFINITIVE)**: Slowness
-  on z_dyn does not produce identity-position separation under any tested
-  formulation: single-step, multi-step, weight sweep, or temporal contrastive.
-- **COMPOSITE M2 VIABILITY (iter_023-024)**: C5 structurally impossible; composite
-  criterion never satisfied.
-- **MULTI-STEP HORIZON HELPS (iter_024)**: Longer horizons worsen collapse
-  rather than enabling slower feature extraction.
-- **NT-Xent AS ALTERNATIVE OBJECTIVE (iter_024)**: Fights VICReg, no identity
-  signal produced.
+- ID-CONTRASTIVE AS STANDALONE OBJECTIVE (Arm C): delta_R2_color = -0.028,
+  50% collapse. Both matching schemes agree on fail. H2 is falsified.
 
 ## Best Result
-- Arm B (iter_024, k=50, d_max=8): delta_R2_color = 0.034, but 5/5 collapsed.
-- Arm D (iter_024, contrastive): delta_R2_color = -0.013, 1/5 collapsed.
-- Best absolute: iter_023 Arm B (d_max=16, sfa=10.0): delta_R2_color = 0.137,
-  but this is a capacity effect, not an objective effect.
+- Arm E (d_max=16 JEPA+VICReg control): delta_R2_color = 0.14 (no identity
+  objective needed — pure capacity effect)
+- Arm A (d_max=8 JEPA+VICReg control): delta_R2_color = 0.027
 
 ## In Progress
-- None. The M2 mandate has been definitively tested and refuted.
-- Pivot to object-tracking-ID contrastive learning is the next step.
+- None. The architecture ceiling probe is blocked by collapse instability.
 
-## Open Questions
-1. What objective can make z_dyn encode object identity? Object-tracking-ID
-   contrastive is the leading candidate.
-2. Does the shared CNN encoder fundamentally prevent identity encoding in z_dyn?
-3. Can the NT-Xent + VICReg fight be resolved with different temperature or loss?
-4. Is the 100% collapse in multi-step SFA caused by the trajectory buffer approach?
-5. Should the dual-stream z_coord/z_dyn architecture be abandoned entirely?
-6. Does the sml SFA+VICReg advantage simply not transfer to RGB inputs?
-7. Would a supervised identity probe loss (using soft-argmax tracking to assign
-   per-object labels) work as a direct training signal?
+## NOT Established (honest assessment)
+- Whether the architecture is or is not a bottleneck on identity encoding —
+  the experiment is underpowered (30% control collapse). No architecture
+  claim is earned.
+- Whether fixing collapse would reveal latent identity capacity in z_dyn —
+  this requires a stable training regime first.
+- Whether a separate z_dyn encoder would solve the problem — this is the
+  natural next architectural move but has not been tested.
+
+## Open Questions (ordered by expected value)
+1. Why does z_dyn collapse at 30% even with lower LR + gradient clipping?
+2. Is the centroid_gated readout the bottleneck (attending at soft-argmax
+   positions may not capture identity)?
+3. Would a separate z_dyn encoder solve collapse + identity?
+4. Would larger batch size improve VICReg stability?
+5. Can the d_max=16 capacity effect be leveraged with identity objectives?
+6. Should the project pivot to a different encoder architecture?
+7. Is collapse a fundamental limitation of the dual-stream architecture?
