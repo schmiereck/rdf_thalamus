@@ -742,6 +742,17 @@ class NonParametricJEPASpatial(nn.Module):
         )
         self.predictor = DualStreamPredictor(d_max=d_max, d_dyn=self.encoder.d_dyn, h=h)
         
+        # Color probe head (for supervised color regression)
+        self.color_probe_weight = nn.Parameter(torch.randn(d_max, 3) * 0.01)
+        self.color_probe_bias = nn.Parameter(torch.zeros(d_max, 3))
+        
+        # ID contrastive projection head (scalar channel -> 8D embedding)
+        self.id_contrastive_proj = nn.Sequential(
+            nn.Linear(1, 16),
+            nn.ReLU(),
+            nn.Linear(16, 8)
+        )
+        
         # Dynamic state tracking
         self.d_t = 2
         self.steps_since_recruitment = cooldown  # start outside of cooldown
@@ -1030,6 +1041,194 @@ class NonParametricJEPASpatial(nn.Module):
                 "ccr_spatial_loss": ccr_spatial_loss
             }, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
 
+
+    # ------------------------------------------------------------------
+    # Matching and supervised/contrastive loss methods (iter_025)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def match_channels_sorted(z_coord, positions, d_t, N):
+        """Match z_coord channels to objects by sorting both by position.
+        Returns: (z_sorted_idx, pos_sorted_idx) each of shape (B, d_t) or (B, N)
+        """
+        z_sorted_idx = torch.argsort(z_coord[:, :d_t], dim=1)  # (B, d_t)
+        pos_sorted_idx = torch.argsort(positions[:, :N], dim=1)  # (B, N)
+        return z_sorted_idx, pos_sorted_idx
+
+    @staticmethod
+    def match_channels_hungarian(z_coord, positions, d_t, N):
+        """Match z_coord channels to objects using optimal assignment (Hungarian).
+        Returns list of (row_ind, col_ind) tuples per batch sample.
+        """
+        from scipy.optimize import linear_sum_assignment
+        B = z_coord.shape[0]
+        assignments = []
+        for b in range(B):
+            cost = torch.cdist(
+                z_coord[b, :d_t].unsqueeze(0).unsqueeze(-1),
+                positions[b, :N].unsqueeze(0).unsqueeze(-1)
+            ).squeeze(0)  # (d_t, N)
+            row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())
+            assignments.append(list(zip(row_ind.tolist(), col_ind.tolist())))
+        return assignments
+
+    def compute_supervised_color_loss(self, z_coord, z_dyn, positions, colors, d_t, N, matching_mode="sorted"):
+        """
+        Compute supervised color regression loss.
+        Args:
+            z_coord: (B, d_max)
+            z_dyn: (B, d_max) or (B, d_dyn)
+            positions: (B, N)
+            colors: (B, N, 3)
+            d_t: int
+            N: int
+            matching_mode: str, "sorted" or "hungarian"
+        Returns:
+            loss: scalar MSE
+            info: dict with matched tensors
+        """
+        B = z_coord.shape[0]
+        device = z_coord.device
+
+        if matching_mode == "sorted":
+            z_sorted_idx, pos_sorted_idx = self.match_channels_sorted(z_coord, positions, d_t, N)
+            # Gather z_dyn in sorted z_coord order
+            z_dyn_matched = torch.gather(z_dyn[:, :d_t], dim=1, index=z_sorted_idx)  # (B, d_t)
+            # Gather colors in sorted position order
+            pos_sorted_idx_exp = pos_sorted_idx.unsqueeze(-1).expand(-1, -1, 3)
+            colors_matched = torch.gather(colors[:, :N], dim=1, index=pos_sorted_idx_exp)  # (B, N, 3)
+            colors_matched = colors_matched[:, :d_t, :]  # (B, d_t, 3)
+        elif matching_mode == "hungarian":
+            assignments = self.match_channels_hungarian(z_coord, positions, d_t, N)
+            z_dyn_matched = torch.zeros(B, d_t, device=device)
+            colors_matched = colors[:, :d_t, :]  # Already in object order
+            for b in range(B):
+                for chan_idx, obj_idx in assignments[b]:
+                    if obj_idx < d_t and chan_idx < d_t:
+                        z_dyn_matched[b, obj_idx] = z_dyn[b, chan_idx]
+        else:
+            raise ValueError(f"Unknown matching_mode: {matching_mode}")
+
+        # Predict colors: per-channel linear mapping
+        # (B, d_t, 1) * (d_t, 3) + (d_t, 3) -> (B, d_t, 3)
+        color_pred = z_dyn_matched.unsqueeze(-1) * self.color_probe_weight[:d_t].unsqueeze(0) + self.color_probe_bias[:d_t].unsqueeze(0)
+        loss = F.mse_loss(color_pred, colors_matched)
+
+        return loss, {
+            "z_dyn_matched": z_dyn_matched,
+            "colors_matched": colors_matched,
+            "color_pred": color_pred,
+        }
+
+    def compute_id_contrastive_loss(self, z_coord, z_dyn, positions, colors, d_t, N, matching_mode="sorted", temperature=0.1):
+        """
+        Compute ID-contrastive loss with discretized color labels.
+        Args:
+            z_coord: (B, d_max)
+            z_dyn: (B, d_max) or (B, d_dyn)
+            positions: (B, N)
+            colors: (B, N, 3)
+            d_t: int
+            N: int
+            matching_mode: str, "sorted" or "hungarian"
+            temperature: float
+        Returns:
+            loss: scalar contrastive loss
+            info: dict with matched tensors and labels
+        """
+        B = z_coord.shape[0]
+        device = z_coord.device
+
+        if matching_mode == "sorted":
+            z_sorted_idx, pos_sorted_idx = self.match_channels_sorted(z_coord, positions, d_t, N)
+            z_dyn_matched = torch.gather(z_dyn[:, :d_t], dim=1, index=z_sorted_idx)  # (B, d_t)
+            # Discretize colors in sorted position order
+            pos_sorted_idx_exp = pos_sorted_idx.unsqueeze(-1).expand(-1, -1, 3)
+            colors_sorted = torch.gather(colors[:, :N], dim=1, index=pos_sorted_idx_exp)
+            binary = (colors_sorted > 0.65).long()
+            labels = (binary[:, :, 0] * 4 + binary[:, :, 1] * 2 + binary[:, :, 2])[:, :d_t]  # (B, d_t)
+        elif matching_mode == "hungarian":
+            assignments = self.match_channels_hungarian(z_coord, positions, d_t, N)
+            z_dyn_matched = torch.zeros(B, d_t, device=device)
+            for b in range(B):
+                for chan_idx, obj_idx in assignments[b]:
+                    if obj_idx < d_t and chan_idx < d_t:
+                        z_dyn_matched[b, obj_idx] = z_dyn[b, chan_idx]
+            # Discretize colors in natural object order
+            binary = (colors[:, :N, :] > 0.65).long()
+            labels = (binary[:, :, 0] * 4 + binary[:, :, 1] * 2 + binary[:, :, 2])[:, :d_t]  # (B, d_t)
+        else:
+            raise ValueError(f"Unknown matching_mode: {matching_mode}")
+
+        # Flatten to get all (batch, channel) pairs
+        z_flat = z_dyn_matched.reshape(-1, 1)  # (B*d_t, 1)
+        labels_flat = labels.reshape(-1)  # (B*d_t,)
+
+        # Project to higher dim
+        z_proj = self.id_contrastive_proj(z_flat)  # (B*d_t, 8)
+        features = F.normalize(z_proj, dim=-1)  # (B*d_t, 8)
+
+        # SupCon-style loss
+        N_total = features.shape[0]
+        sim_matrix = torch.matmul(features, features.T) / temperature  # (N_total, N_total)
+
+        mask_self = torch.eye(N_total, device=device).bool()
+        labels_expanded = labels_flat.unsqueeze(0) == labels_flat.unsqueeze(1)  # (N_total, N_total)
+        positive_mask = labels_expanded & ~mask_self
+
+        # Numerical stability
+        sim_matrix = sim_matrix - sim_matrix.max(dim=1, keepdim=True)[0].detach()
+
+        exp_sim = torch.exp(sim_matrix)
+        exp_sim = exp_sim.masked_fill(mask_self, 0.0)
+
+        log_prob = torch.log(exp_sim.sum(dim=1) + 1e-8)
+        log_pos = torch.log((exp_sim * positive_mask.float()).sum(dim=1) + 1e-8)
+
+        loss_vec = -(log_pos - log_prob)
+        valid = positive_mask.sum(dim=1) > 0
+        if valid.any():
+            loss = loss_vec[valid].mean()
+        else:
+            loss = torch.tensor(0.0, device=device)
+
+        return loss, {
+            "z_dyn_matched": z_dyn_matched,
+            "labels": labels,
+        }
+
+    def compute_mismatch_rate(self, z_coord, positions, d_t, N):
+        """
+        Compute the fraction of (batch, channel) pairs where sorted and Hungarian assignments disagree.
+        """
+        z_sorted_idx, pos_sorted_idx = self.match_channels_sorted(z_coord, positions, d_t, N)
+        assignments_hungarian = self.match_channels_hungarian(z_coord, positions, d_t, N)
+
+        B = z_coord.shape[0]
+        mismatches = 0
+        total = 0
+
+        for b in range(B):
+            # Build sorted assignment: channel -> object
+            sorted_assign = {}
+            for rank in range(min(d_t, N)):
+                chan = int(z_sorted_idx[b, rank].item())
+                obj = int(pos_sorted_idx[b, rank].item())
+                sorted_assign[chan] = obj
+
+            # Build Hungarian assignment: channel -> object
+            hungarian_assign = {}
+            for chan_idx, obj_idx in assignments_hungarian[b]:
+                hungarian_assign[chan_idx] = obj_idx
+
+            for chan in range(d_t):
+                if chan in sorted_assign and chan in hungarian_assign:
+                    if sorted_assign[chan] != hungarian_assign[chan]:
+                        mismatches += 1
+                    total += 1
+
+        if total == 0:
+            return 0.0
+        return mismatches / total
     def update_recruitment_logic(self, error_val, target_dim=None, step=None):
         if target_dim is None:
             target_dim = self.d_t
