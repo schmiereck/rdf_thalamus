@@ -6,21 +6,27 @@
 ## 1. Hypothesis
 Two-part hypothesis tested simultaneously:
 
-PART A (last slowness shot): Multi-step SFA with temporal horizon k∈{20,50,100}
-accumulates gradient over longer windows than single-step SFA (k=1), enabling
-extraction of features that are slow at longer timescales. Specifically, multi-step
-SFA computes L_SFA_k = ||z_dyn(t) - z_dyn(t-k)||² / k using a z_dyn trajectory
-buffer maintained during training. If identity features require longer temporal
-integration to separate from position-related z_dyn variation, then k>>1 should
-produce delta_R2_color improvement where k=1 failed.
+PART A (multi-step slowness): We test whether multi-step SFA with temporal
+horizon k∈{20,50,100} accumulates gradient over longer windows than single-step
+SFA (k=1), enabling extraction of features that are slow at longer timescales.
+Specifically, multi-step SFA computes L_SFA_k = ||z_dyn(t) - z_dyn(t-k)||² / k
+using a z_dyn trajectory buffer maintained during training. We predict that if
+identity features require longer temporal integration to separate from
+position-related z_dyn variation, then k>>1 should produce delta_R2_color
+improvement where k=1 failed. This is refuted if delta_R2_color does not exceed
+the single-step baseline across all k values.
 
-PART B (non-slowness probe): Temporal contrastive learning (NT-Xent) on z_dyn,
-where positive pairs are same-trajectory z_dyn at different timesteps and negative
-pairs are z_dyn from different trajectories in the same batch, will produce
-identity encoding because: (1) temporal invariance (positives) makes z_dyn stable
-like SFA, and (2) cross-scene discrimination (negatives) forces z_dyn to encode
-scene-specific information that is NOT position (handled by z_coord), leaving
-identity as the primary discriminable attribute. The NT-Xent loss is:
+PART B (temporal contrastive probe): We test whether temporal contrastive
+learning (NT-Xent) on z_dyn — where positive pairs are same-trajectory z_dyn at
+different timesteps and negative pairs are z_dyn from different trajectories in
+the same batch — can produce identity encoding. The hypothesis is that:
+(1) temporal invariance (positives) makes z_dyn stable like SFA, and
+(2) cross-scene discrimination (negatives) forces z_dyn to encode scene-specific
+information that is NOT position (handled by z_coord), leaving identity as the
+primary discriminable attribute. This is refuted if delta_R2_color does not
+exceed established baselines. Note: NT-Xent at τ=0.1 with VICReg simultaneously
+is a known fight, and a silently-collapsed Arm D would be misread as a null.
+The NT-Xent loss is:
 L_contra = -log(exp(sim(z_target_dyn[i], z_hist_dyn[i,-1])/τ) / Σ_j exp(sim(z_target_dyn[i], z_hist_dyn[j,-1])/τ))
 with cosine similarity and temperature τ=0.1.
 
@@ -33,19 +39,23 @@ PRE-DECLARED FALSIFICATION CRITERIA:
    No post-hoc reframing of "SFA works" if only z_dyn temporal variance moves —
    variance reduction is mechanical, not the claim.
 
-2. Temporal contrastive (Arm D) is deemed PROMISING iff delta_R2_color ≥ 0.15,
-   exceeding the iter_023 best of 0.137 (which was a capacity effect, not an
-   objective effect). If delta_R2_color < 0.10 for Arm D, the temporal
-   contrastive approach does not meaningfully improve identity encoding.
+2. Arm D is consistent with a genuine objective-driven effect iff
+   delta_R2_color ≥ 0.10 at d_max=8 AND exceeds the best d_max=8 multi-step SFA
+   arm by ≥ 0.05 with non-overlapping seed CIs. Also, Arm D must pass a collapse
+   gate: ≤ 2/5 collapsed seeds (matching the SFA arms). NT-Xent at τ=0.1
+   with VICReg simultaneously is a known fight, and a silently-collapsed Arm D
+   would be misread as a null.
 
 3. C5 is DROPPED ENTIRELY from this iteration. It is a structurally impossible
    metric artifact (iter_023: 0/35 seeds). Re-running it would be construction,
    not evidence.
 
-4. Early checkpoint at step 2000: if ALL multi-step SFA arms (A-C) show
-   delta_R2_color < 0.08 at the checkpoint, the slowness hypothesis is
-   effectively dead regardless of final-step results, and the contrastive
-   finding becomes the primary outcome.
+4. All 5000 steps MUST complete before any falsification judgment. The early
+   step-2000 checkpoint is diagnostic/monitoring only — it must not be used to
+   terminate runs or declare the narrative "killed." Killing runs early destroys
+   the dataset needed for the post-mortem analysis. A clean double null at step
+   5000 is a successful iteration outcome that justifies pivoting to
+   object-tracking-ID contrastive in iter_025.
 
 ## 3. Proposed Method
 EXPERIMENT DESIGN: 6 arms × variable seeds × 5000 steps.
@@ -73,7 +83,7 @@ Arm D (Temporal Contrastive, d_max=8): 5 seeds
 Arm E (d_max=16 + Multi-step SFA k=50): 5 seeds
   - Same as Arm B but d_max=16 (carrying forward the best capacity from iter_023)
 
-Arm F (JEPA stop-gradient diagnostic): 1 seed
+Arm F (JEPA stop-gradient diagnostic): 1 seed [n=1, indicative only, not evidence on its own]
   - Same as Arm B (k=50, d_max=8) but sim_weight=0
   - Tests whether removing the JEPA readout entirely changes the picture
 
@@ -83,6 +93,11 @@ MULTI-STEP SFA IMPLEMENTATION:
 - At each step, encode the current environment frame (x_current) through the
   encoder WITH gradients and store z_dyn.detach() in the trajectory buffer
 - For the multi-step SFA loss: sfa_loss_k = MSE(z_dyn_current, z_dyn_trajectory[-k-1]) / k
+- NOTE on k=100: with k=100, objects may exit and re-enter over that horizon.
+  A representation encoding a batch-statistic (e.g., global color histogram,
+  slowly drifting scene mean) would satisfy ||z_dyn(t) - z_dyn(t-k)||² at
+  near-zero cost without encoding per-object identity. The invariance-vs-
+  discrimination diagnostic (Metric 1b above) must accompany any k=100 claim.
 - The gradient flows through z_dyn_current back to the encoder; z_past is a
   fixed (detached) target from the buffer
 - This requires one additional encoder forward pass per step (batch_size=1),
@@ -126,6 +141,16 @@ CODE CHANGES:
 
 METRICS (same as iter_023, directly comparable):
 1. delta_R2_color (PRIMARY criterion — improvement over iter_023 baseline of 0.05)
+1b. INVAR-VS-DISCRIMINATIVE DIAGNOSTIC (required before any 'k=N works' claim):
+    (a) within-trajectory z_dyn variance vs. between-trajectory z_dyn variance,
+    (b) whether the same z_dyn would pass delta_R2_color on a shuffled-frame
+        control where the temporal label is destroyed.
+    If shuffling does not collapse the probe, the signal was not in
+    z_dyn-via-SFA — it was in the encoder geometry, and the result is
+    constructional. This guards against a representation encoding a batch
+    statistic (e.g., global color histogram, slowly drifting scene mean) that
+    satisfies ||z_dyn(t) - z_dyn(t-k)||² at near-zero cost without encoding
+    per-object identity, which is a constructional pass, not evidence for M2.
 2. delta_R2_identity
 3. C1 (Collapse): per_dim_std < 0.5 in < 2/5 seeds per arm
 4. Centroid MSE
@@ -134,7 +159,7 @@ METRICS (same as iter_023, directly comparable):
 7. Per-dim std, collapse counts
 8. Tracking quality
 9. GDASR growth-point logs (log-only mode)
-10. Step-2000 checkpoint evaluation for early falsification
+10. Step-2000 checkpoint evaluation (diagnostic/monitoring only; ALL 5000 steps must complete)
 
 TRAINING PROTOCOL:
 - 5000 steps, Adam lr=1e-3, batch_size=32, replay_buffer=2000
