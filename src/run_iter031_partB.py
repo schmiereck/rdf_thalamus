@@ -137,7 +137,7 @@ def run_single_evaluation(model, seed, condition, d_t, device):
             d_t_eval, centroids,
         )
 
-        # Take action → get new info with updated velocities for collision detection
+        # Take action -> get new info with updated velocities for collision detection
         obs, info = env.step(action)
         history.append(obs)
 
@@ -298,7 +298,7 @@ def main():
                     "perturbation_window_steps": result["perturbation_steps"],
                 }
                 all_results.append(row)
-                print(f"  → tracking_err={result['mean_tracking_error']:.2f}, "
+                print(f"  -> tracking_err={result['mean_tracking_error']:.2f}, "
                       f"collisions={result['collision_count']}, "
                       f"sel_b={result['selectivity_version_b']:.4f}, "
                       f"pert_sel={result['perturbation_selectivity']:.4f}")
@@ -308,7 +308,7 @@ def main():
     # ─── Write Per-Seed CSV ───────────────────────────────────────────────
     per_seed_path = os.path.join(RESULTS_DIR, "partB_per_seed.csv")
     df_all = pd.DataFrame(all_results)
-    df_all.to_csv(per_seed_path, index=False)
+    df_all.to_csv(per_seed_path, index=False, encoding="utf-8")
     print(f"Saved per-seed results to {per_seed_path}")
 
     # ─── Compute Summary Statistics ──────────────────────────────────────
@@ -339,7 +339,7 @@ def main():
 
     df_summary = pd.DataFrame(summary_rows)
     summary_path = os.path.join(RESULTS_DIR, "partB_summary.csv")
-    df_summary.to_csv(summary_path, index=False)
+    df_summary.to_csv(summary_path, index=False, encoding="utf-8")
     print(f"Saved summary results to {summary_path}")
 
     # ─── Gate Evaluation (G1-G3) ─────────────────────────────────────────
@@ -394,11 +394,11 @@ def main():
 
         print(f"\n[Gate Evaluation for {d_t_name}]")
         print(f"  G1_tracking: sd={sd_track:.2f} <= {g1_threshold:.2f} "
-              f"(random_mean={random_track_mean:.2f}, random_std={random_track_std:.2f}) → {'PASS' if g1_pass else 'FAIL'}")
+              f"(random_mean={random_track_mean:.2f}, random_std={random_track_std:.2f}) -> {'PASS' if g1_pass else 'FAIL'}")
         print(f"  G2_collision_sel(B): sd={sd_sel_b:.4f} >= {g2_threshold:.4f} "
-              f"(random_sel_b_mean={random_sel_b_mean:.4f}) → {'PASS' if g2_pass else 'FAIL'}")
+              f"(random_sel_b_mean={random_sel_b_mean:.4f}) -> {'PASS' if g2_pass else 'FAIL'}")
         print(f"  G3_perturbation_sel: sd={sd_pert:.4f} >= {g3_threshold:.4f} "
-              f"(random_pert_mean={random_pert_mean:.4f}) → {'PASS' if g3_pass else 'FAIL'}")
+              f"(random_pert_mean={random_pert_mean:.4f}) -> {'PASS' if g3_pass else 'FAIL'}")
 
     # Determine best d_t setting
     best_dt = None
