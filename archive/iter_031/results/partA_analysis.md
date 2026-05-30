@@ -6,37 +6,37 @@ This analysis tests whether Reconstruction+VICReg on the separate-backbone archi
 
 | Gate | Criterion | Meaning | Result / Status |
 |------|-----------|---------|-----------------|
-| **F1** | mean ΔR²_color (Arm A) ≥ 0.30 | Ceiling clearance | FAIL (mean=-0.3944) |
-| **F2** | Lower 95% CI of mean ΔR²_color (Arm A) ≥ 0.18 | Variance stability | FAIL (lower CI=-0.3944, n=1) |
-| **F3** | mean ΔR²_color (Arm A) — mean ΔR²_color (Arm B) ≥ 0.10 | Capacity-matters | FAIL (diff=-0.3885) |
+| **F1** | mean ΔR²_color (Arm A) ≥ 0.30 | Ceiling clearance | FAIL (mean=0.0631) |
+| **F2** | Lower 95% CI of mean ΔR²_color (Arm A) ≥ 0.18 | Variance stability | FAIL (lower CI=-0.0127, n=20) |
+| **F3** | mean ΔR²_color (Arm A) — mean ΔR²_color (Arm B) ≥ 0.10 | Capacity-matters | FAIL (diff=0.0361) |
 | **F4** | mean ΔR²_color (Arm A) — mean ΔR²_color (Arm C) ≥ 0.10 | Training-matters | FAIL (diff=nan) |
 
 
 ## Detailed Summary per Arm (all seeds)
 
 ### Arm A (d_max=8, trained)
-- N seeds: 1
-- Collapse rate: 0.00 (0/1)
-- Mean ΔR²_color (all): -0.3944 ± nan
-- Mean reconstruction MSE: 0.008821
-- Mean centroid MSE: 69.55
-- Mean abs corr: 0.402
+- N seeds: 20
+- Collapse rate: 0.00 (0/20)
+- Mean ΔR²_color (all): 0.0631 ± 0.1729
+- Mean reconstruction MSE: 0.018496
+- Mean centroid MSE: 160.32
+- Mean abs corr: 0.134
 
 ### Arm B (d_max=2, trained)
-- N seeds: 1
-- Collapse rate: 0.00 (0/1)
-- Mean ΔR²_color (all): -0.0059 ± nan
-- Mean reconstruction MSE: 0.020130
-- Mean centroid MSE: 28.63
-- Mean abs corr: 0.708
+- N seeds: 20
+- Collapse rate: 0.00 (0/20)
+- Mean ΔR²_color (all): 0.0271 ± 0.2029
+- Mean reconstruction MSE: 0.035154
+- Mean centroid MSE: 165.98
+- Mean abs corr: 0.142
 
 ### Arm C (d_max=8, random-encoder)
-- N seeds: 1
-- Collapse rate: 1.00 (1/1)
-- Mean ΔR²_color (all): 0.9176 ± nan
-- Mean reconstruction MSE: 0.021822
-- Mean centroid MSE: 75.90
-- Mean abs corr: 0.314
+- N seeds: 20
+- Collapse rate: 1.00 (20/20)
+- Mean ΔR²_color (all): 1705348.0261 ± 7626543.7590
+- Mean reconstruction MSE: 0.033462
+- Mean centroid MSE: 1949.11
+- Mean abs corr: 0.285
 
 ## Pre-Committed Mandate Revision Language
 
