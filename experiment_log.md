@@ -1234,3 +1234,65 @@ prevent z_dyn collapse on the
 
 **Notes:** F1 falsified; mask_dyn_sim on shared backbone insufficient. Hard-seed pattern identified. C2 at 0% reveals seed-dependence.
 
+
+---
+```yaml
+cached_tokens: 548611
+cost_usd: 5.03612
+hypothesis: 'phase-29: SFA+VICReg on separate backbone shows directional trend (ΔR²_color
+  0.27 vs 0.04) but fails pre-registered F1 gate (0.27 < 0.30); M2 mandate not supported
+  by evidence'
+input_tokens: 3012206
+iter: 29
+metrics:
+  arm_a_centroid_mse_mean: 159.83
+  arm_a_collapse_rate: 0.0
+  arm_a_delta_r2_color_mean: 0.0445
+  arm_a_delta_r2_color_std: 0.2108
+  arm_b_centroid_mse_mean: 159.85
+  arm_b_collapse_rate: 0.0
+  arm_b_delta_r2_color_mean: 0.2749
+  arm_b_delta_r2_color_std: 0.5772
+  arm_b_final_sfa_loss_mean: 0.1408
+  arm_b_fresh_seeds_delta_r2: 0.3576
+  arm_b_original_seeds_delta_r2: 0.1921
+  arm_c_centroid_mse_mean: 167.13
+  arm_c_collapse_rate: 0.0
+  arm_c_delta_r2_color_mean: 0.1428
+  arm_c_delta_r2_color_std: 0.2634
+  arm_c_final_sfa_loss_mean: 0.2052
+  completed_runs: 60
+  f1_gate_delta_r2_color: FAIL (0.2749 < 0.30)
+  f2_gate_collapse_rate: PASS (0.0 <= 0.10)
+  f3_gate_centroid_mse: PASS (159.85 <= 241.88)
+  failed_runs: 0
+  hard_seed_53_arm_b_delta_r2: -0.0484
+  hard_seed_71_arm_b_delta_r2: 0.0413
+  pre_registered_outcome: FALSIFIED
+  total_runs: 60
+output_tokens: 63487
+status: ok
+```
+
+## iter_029: phase-29: SFA+VICReg on separate backbone shows directional trend (ΔR²_color 0.27 vs 0.04) but fails pre-registered F1 gate (0.27 < 0.30); M2 mandate not supported by evidence
+
+**Analysis:** This phase tested whether adding an explicit SFA slowness term to the VICReg-only
+z_dyn objective on the separate-backbone architecture would improve identity encoding
+(ΔR²_color) above a practical-significance threshold of 0.30. The experiment was
+designed with three Manager-mandated structural fixes: (1) union seed bank including
+hard seeds 53 and 71, (2) coord_vicreg=True to eliminate the confo
+
+**Status:** ok
+
+**Metrics:** `{'total_runs': 60, 'completed_runs': 60, 'failed_runs': 0, 'arm_a_collapse_rate': 0.0, 'arm_a_delta_r2_color_mean': 0.0445, 'arm_a_delta_r2_color_std': 0.2108, 'arm_a_centroid_mse_mean': 159.83, 'arm_b_collapse_rate': 0.0, 'arm_b_delta_r2_color_mean': 0.2749, 'arm_b_delta_r2_color_std': 0.5772, 'arm_b_centroid_mse_mean': 159.85, 'arm_b_final_sfa_loss_mean': 0.1408, 'arm_c_collapse_rate': 0.0, 'arm_c_delta_r2_color_mean': 0.1428, 'arm_c_delta_r2_color_std': 0.2634, 'arm_c_centroid_mse_mean': 167.13, 'arm_c_final_sfa_loss_mean': 0.2052, 'f1_gate_delta_r2_color': 'FAIL (0.2749 < 0.30)', 'f2_gate_collapse_rate': 'PASS (0.0 <= 0.10)', 'f3_gate_centroid_mse': 'PASS (159.85 <= 241.88)', 'hard_seed_53_arm_b_delta_r2': -0.0484, 'hard_seed_71_arm_b_delta_r2': 0.0413, 'arm_b_fresh_seeds_delta_r2': 0.3576, 'arm_b_original_seeds_delta_r2': 0.1921, 'pre_registered_outcome': 'FALSIFIED'}`
+
+**Experimenter view:** The iter_029 experiment completed all 60 runs (3 arms × 20 seeds, union bank)
+with zero failures and zero timeouts.
+
+PRE-REGISTERED OUTCOME: F1 FALSIFIED. Arm B (SFA+VICReg, sfa_weight=5.0)
+mean ΔR²_color = 0.2749, narrowly missing the pre-registered 0.30 practical-
+significance threshold. The hypothesis that SFA+VICReg is consistent with M2's
+predicted mechanism for improving identity encoding is
+
+**Notes:** F1 falsified: ΔR²_color=0.2749<0.30; F2/F3 passed. Zero collapse across all 60 runs. Trend present but not robust.
+
