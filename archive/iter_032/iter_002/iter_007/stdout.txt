@@ -1,0 +1,1849 @@
+
+[Tool Call: list_dir({'path': '.'})]
+[Tool Result: [DIR] -p
+[DIR] .antigravitycli
+[DIR] .git
+      .gitignore
+[DIR] .pytest_cache
+[DIR] .venv
+[DIR] __pycache__
+      apply_fix.py
+[DIR] archive
+[DIR] cache
+      config.toml
+      crash.log
+      current_state.md
+      debug_arm1.py
+      experiment.log
+      experiment_log.md
+      find_files.py
+      fix_theta.py
+      goal.md
+      hello.py
+      manager_log.md
+      modify_separate_dyn.py
+      patch_thalamus.py
+      patch_thalamus_sync.py
+[DIR] pictures
+      print_summary.py
+      README.md
+      RESEARCH-RESULT-002.md
+      RESEARCH-RESULT-003.md
+      RESEARCH-RESULT-004.md
+      RESEARCH-RESULT-005.md
+      RESEARCH-RESULT-006.md
+      RESEARCH-RESULT-007.md
+      RESEARCH-RESULT-008.md
+      RESEARCH-RESULT-009.md
+      RESEARCH-RESULT-010.md
+      RESEARCH-RESULT-011.md
+      RESEARCH-RESULT-012.md
+      RESEARCH-RESULT-013.md
+      RESEARCH-RESULT-014.md
+      RESEARCH-RESULT-015.md
+      RESEARCH-RESULT-016.md
+      RESEARCH-RESULT-017.md
+      RESEARCH-RESULT-018.md
+      RESEARCH-RESULT-020.md
+      RESEARCH-RESULT-023.md
+      RESEARCH-RESULT-024.md
+      RESEARCH-RESULT-025.md
+      RESEARCH-RESULT-026.md
+      RESEARCH-RESULT-027.md
+      RESEARCH-RESULT-028.md
+      RESEARCH-RESULT-029.md
+      RESEARCH-RESULT-030.md
+      RESEARCH-RESULT-031.md
+      research_journal.md
+[DIR] scripts
+[DIR] src
+      summary_output.txt
+      test_models_spatial.py
+      verify_results.py]
+
+[Tool Call: read_file({'path': 'src/run_iter032.py'})]
+[Tool Result: #!/usr/bin/env python3
+"""
+Iter_032: Rich Dyn Readout + Run 4-Arm Experiment.
+"""
+
+import os, sys, json, random, argparse, collections, warnings, concurrent.futures
+import numpy as np, pandas as pd, torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
+from scipy.optimize import linear_sum_assignment
+import scipy.stats as stats
+warnings.filterwarnings("ignore", category=UserWarning)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.environment import PhysicsSandbox
+from src.models_separate_dyn import NonParametricJEPASpatialSeparateDyn
+
+class ExtendedReplayBuffer:
+    def __init__(self, capacity=4000):
+        self.capacity = capacity; self.buffer = []; self.position = 0
+    def push(self, x_hist, x_target, positions, colors, radii):
+        if len(self.buffer) < self.capacity: self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target, positions, colors, radii)
+        self.position = (self.position + 1) % self.capacity
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        xh, xt, p, c, r = zip(*batch)
+        return np.stack(xh), np.stack(xt), np.stack(p), np.stack(c), np.stack(r)
+    def clear(self): self.buffer = []; self.position = 0
+    def __len__(self): return len(self.buffer)
+
+def set_seed(seed):
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True; torch.backends.cudnn.benchmark = False
+
+def check_collapse(z_dyn, d_t, std_threshold=0.5):
+    z_active = z_dyn[:, :d_t]; per_dim_std = np.std(z_active, axis=0)
+    return np.any(per_dim_std < std_threshold), per_dim_std
+
+def compute_vicreg_health(z_dyn, d_t):
+    z_active = z_dyn[:, :d_t]; per_dim_std = np.std(z_active, axis=0)
+    if d_t > 1:
+        corr = np.corrcoef(z_active.T); triu = np.triu_indices(d_t, k=1)
+        mean_abs_corr = float(np.mean(np.abs(corr[triu])))
+    else: mean_abs_corr = 0.0
+    return {"per_dim_std": per_dim_std.tolist(), "mean_abs_corr": mean_abs_corr}
+
+def fit_linear_probe(z, y):
+    Z = np.stack([z, np.ones_like(z)], axis=1)
+    theta = np.linalg.pinv(Z.T @ Z) @ Z.T @ y; return theta[0], theta[1]
+
+def fit_multivariate_probe_r2(z_feature, y_target):
+    z = z_feature.reshape(-1); y = y_target.reshape(len(z), -1); N = len(z)
+    if N < 5 or y.shape[1] < 1: return 0.0
+    Z_aug = np.stack([z, np.ones_like(z)], axis=1)
+    theta = np.linalg.pinv(Z_aug.T @ Z_aug) @ Z_aug.T @ y
+    y_pred = Z_aug @ theta; ss_res = np.sum((y - y_pred)**2); ss_tot = np.sum((y - np.mean(y, axis=0))**2)
+    if ss_tot < 1e-12: return 0.0
+    return float(1.0 - ss_res / (ss_tot + 1e-12))
+
+def compute_centroid_mse(model, test_env, test_history, num_samples=200, device="cpu"):
+    model.eval(); centroids_list = []; pos_list = []
+    obs = test_env.reset(); test_history.clear(); test_history.append(obs)
+    for _ in range(4): obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)
+    collected = 0
+    while collected < num_samples:
+        obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)
+        if len(test_history) == 4:
+            x_target_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad(): z_coord, _ = model.encoder(x_target_t)
+            centroids_list.append(z_coord[:, :model.d_t].cpu().numpy())
+            true_pos = np.array(info["positions"][:model.d_t])
+            if len(true_pos) < model.d_t: true_pos = np.pad(true_pos, (0, model.d_t - len(true_pos)), constant_values=np.nan)
+            pos_list.append(true_pos); collected += 1
+    centroids_arr = np.concatenate(centroids_list, axis=0); pos_arr = np.array(pos_list)
+    mse_per_object = []; r_per_object = []
+    for obj_idx in range(model.d_t):
+        mask = ~np.isnan(pos_arr[:, obj_idx])
+        if mask.sum() < 10: mse_per_object.append(float("nan")); r_per_object.append(0.0); continue
+        z_obj = centroids_arr[mask, obj_idx]; y_obj = pos_arr[mask, obj_idx]
+        w, b = fit_linear_probe(z_obj, y_obj); y_pred = z_obj * w + b
+        mse = float(np.mean((y_obj - y_pred)**2)); r = float(np.corrcoef(z_obj, y_obj)[0, 1]) if len(z_obj) > 2 else 0.0
+        if np.isnan(r): r = 0.0
+        mse_per_object.append(mse); r_per_object.append(abs(r))
+    return {"mse_per_object": mse_per_object, "mse_mean": float(np.nanmean(mse_per_object)), "r_per_object": r_per_object, "r_mean": float(np.nanmean(r_per_object))}
+
+def collect_multitraj_eval_data(model, num_samples=200, base_seed=30000, device="cpu"):
+    model.eval(); num_trajectories = max(1, num_samples // 20); samples_per_traj = max(1, num_samples // num_trajectories)
+    traj_z_dyn, traj_z_coord, traj_pos, traj_colors, traj_radii = [], [], [], [], []
+    with torch.no_grad():
+        for t_idx in range(num_trajectories):
+            env_seed = base_seed + t_idx * 100; env = PhysicsSandbox(N=3, seed=env_seed)
+            history = collections.deque(maxlen=4); obs = env.reset(); history.append(obs)
+            for _ in range(3): obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)
+            z_dyn_t, z_coord_t, pos_t, colors_t, radii_t = [], [], [], [], []
+            collected = 0
+            while collected < samples_per_traj:
+                obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)
+                if len(history) == 4:
+                    x_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+                    z_c, z_d = model.encoder(x_t)
+                    z_dyn_t.append(z_d[0].cpu().numpy()); z_coord_t.append(z_c[0].cpu().numpy())
+                    pos_t.append(info["positions"]); colors_t.append(info["colors"]); radii_t.append(info["radii"])
+                    collected += 1
+            traj_z_dyn.append(np.array(z_dyn_t)); traj_z_coord.append(np.array(z_coord_t))
+            traj_pos.append(np.array(pos_t)); traj_colors.append(np.array(colors_t)); traj_radii.append(np.array(radii_t))
+    return (traj_z_dyn, traj_z_coord, traj_pos, traj_colors, traj_radii,
+            np.concatenate(traj_z_dyn, axis=0), np.concatenate(traj_z_coord, axis=0),
+            np.concatenate(traj_pos, axis=0), np.concatenate(traj_colors, axis=0), np.concatenate(traj_radii, axis=0))
+
+def _compute_semantic_probes_core(z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr, d_t, sub_features, train_ratio=0.5):
+    N = pos_arr.shape[1]; num_samples = z_dyn_arr.shape[0]
+    if sub_features > 1: z_dyn_pooled = z_dyn_arr[:, :d_t * sub_features].reshape(num_samples, d_t, sub_features).mean(axis=2)
+    else: z_dyn_pooled = z_dyn_arr[:, :d_t]
+    cost = np.zeros((d_t, N))
+    for d in range(d_t):
+        for o in range(N): cost[d, o] = np.mean(np.abs(z_coord_arr[:, d] - pos_arr[:, o]))
+    row_ind, col_ind = linear_sum_assignment(cost)
+    dim_to_obj = {int(r): int(c) for r, c in zip(row_ind, col_ind)}
+    n_train = int(num_samples * train_ratio)
+    def fit_probe_r2(z_feature, y_target):
+        z_train, y_train = z_feature[:n_train], y_target[:n_train]; z_test, y_test = z_feature[n_train:], y_target[n_train:]
+        if z_train.size < 5 or y_train.size < 5: return 0.0
+        w, b = fit_linear_probe(z_train, y_train); y_pred = z_test * w + b
+        ss_res = np.sum((y_test - y_pred)**2); ss_tot = np.sum((y_test - np.mean(y_train))**2)
+        if ss_tot < 1e-12: return 0.0
+        return float(1.0 - ss_res / ss_tot)
+    r2_per_dim = []
+    for d in range(d_t):
+        if d not in dim_to_obj:
+            r2_per_dim.append({"dyn_color": 0.0, "coord_color": 0.0, "dyn_pos": 0.0, "coord_pos": 0.0, "dyn_identity": 0.0, "coord_identity": 0.0}); continue
+        obj = dim_to_obj[d]; z_d = z_dyn_pooled[:, d]; z_c = z_coord_arr[:, d]
+        r2_dyn_pos = fit_probe_r2(z_d, pos_arr[:, obj]); r2_coord_pos = fit_probe_r2(z_c, pos_arr[:, obj])
+        r2_dyn_ch = [fit_probe_r2(z_d, colors_arr[:, obj, ch]) for ch in range(3)]
+        r2_coord_ch = [fit_probe_r2(z_c, colors_arr[:, obj, ch]) for ch in range(3)]
+        max_radius = 20.0; identity_vec = np.zeros((num_samples, 4))
+        identity_vec[:, :3] = colors_arr[:, obj, :]; identity_vec[:, 3] = radii_arr[:, obj] / max_radius
+        r2_per_dim.append({
+            "dyn_color": float(np.mean(r2_dyn_ch)), "coord_color": float(np.mean(r2_coord_ch)),
+            "dyn_pos": r2_dyn_pos, "coord_pos": r2_coord_pos,
+            "dyn_identity": fit_multivariate_probe_r2(z_d, identity_vec), "coord_identity": fit_multivariate_probe_r2(z_c, identity_vec),
+        })
+    r2_dyn_color_all = np.mean([p["dyn_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_color_all = np.mean([p["coord_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_dyn_pos_all = np.mean([p["dyn_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_pos_all = np.mean([p["coord_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_dyn_identity_all = np.mean([p["dyn_identity"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_identity_all = np.mean([p["coord_identity"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    return {"dim_to_obj": dim_to_obj, "r2_per_dim": r2_per_dim,
+            "r2_dyn_color": float(r2_dyn_color_all), "r2_coord_color": float(r2_coord_color_all),
+            "delta_r2_color": float(r2_dyn_color_all - r2_coord_color_all),
+            "r2_dyn_pos": float(r2_dyn_pos_all), "r2_coord_pos": float(r2_coord_pos_all),
+            "r2_dyn_identity": float(r2_dyn_identity_all), "r2_coord_identity": float(r2_coord_identity_all),
+            "delta_r2_identity": float(r2_dyn_identity_all - r2_coord_identity_all)}
+
+def compute_semantic_probes(model, num_samples=200, train_ratio=0.5, base_seed=30000, device="cpu"):
+    model.eval()
+    (_, _, _, _, _, z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr) = collect_multitraj_eval_data(model, num_samples=num_samples, base_seed=base_seed, device=device)
+    return _compute_semantic_probes_core(z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr, model.d_t, model.sub_features, train_ratio=train_ratio)
+
+def evaluate_run(model, arm_config, seed, device, eval_steps=200):
+    d_t = arm_config.get("d_t", 3); sub_features = arm_config.get("sub_features", 1); name = arm_config["name"]
+    eval_env = PhysicsSandbox(N=3, seed=seed + 10000); eval_history = collections.deque(maxlen=4)
+    obs = eval_env.reset(); eval_history.append(obs)
+    for _ in range(4): obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)
+    z_dyn_all, z_coord_all = [], []
+    for _ in range(eval_steps):
+        obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)
+        if len(eval_history) == 4:
+            x_t = torch.from_numpy(eval_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad(): z_coord, z_dyn = model.encoder(x_t)
+            z_dyn_all.append(z_dyn[:, :d_t * sub_features].cpu().numpy()); z_coord_all.append(z_coord[:, :d_t].cpu().numpy())
+    z_dyn_arr = np.concatenate(z_dyn_all, axis=0); z_coord_arr = np.concatenate(z_coord_all, axis=0)
+    if sub_features > 1: z_dyn_pooled_check = z_dyn_arr[:, :d_t * sub_features].reshape(eval_steps, d_t, sub_features).mean(axis=2)
+    else: z_dyn_pooled_check = z_dyn_arr[:, :d_t]
+    has_collapsed_eval, per_dim_std = check_collapse(z_dyn_pooled_check, d_t); vh = compute_vicreg_health(z_dyn_pooled_check, d_t)
+    test_env = PhysicsSandbox(N=3, seed=seed + 20000); test_history = collections.deque(maxlen=4)
+    obs = test_env.reset(); test_history.append(obs)
+    centroid_mse = compute_centroid_mse(model, test_env, test_history, num_samples=eval_steps, device=device)
+    semantic = compute_semantic_probes(model, num_samples=eval_steps, base_seed=seed + 30000, device=device)
+    return {"arm": name, "seed": seed, "collapsed_eval": bool(has_collapsed_eval),
+            "per_dim_std": per_dim_std.tolist(), "vicreg_per_dim_std": per_dim_std.tolist(),
+            "vicreg_mean_abs_corr": vh["mean_abs_corr"],
+            "centroid_mse_mean": centroid_mse["mse_mean"], "centroid_r_mean": centroid_mse["r_mean"],
+            "delta_r2_color": semantic["delta_r2_color"], "r2_dyn_color": semantic["r2_dyn_color"],
+            "r2_coord_color": semantic["r2_coord_color"], "r2_dyn_pos": semantic["r2_dyn_pos"],
+            "r2_coord_pos": semantic["r2_coord_pos"], "r2_dyn_identity": semantic["r2_dyn_identity"],
+            "r2_coord_identity": semantic["r2_coord_identity"], "delta_r2_identity": semantic["delta_r2_identity"],
+            "dim_to_obj": semantic["dim_to_obj"]}
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def run_single(arm_config, seed, device, dry_run=False):
+    name = arm_config["name"]; sim_weight = arm_config.get("sim_weight", 25.0)
+    var_weight = arm_config.get("var_weight", 25.0); cov_weight = arm_config.get("cov_weight", 25.0)
+    pos_encoding = arm_config.get("pos_encoding", "none"); d_t = arm_config.get("d_t", 3)
+    d_max = arm_config.get("d_max", 8); lr = arm_config.get("lr", 3e-4)
+    batch_size = arm_config.get("batch_size", 32)
+    replay_buffer_capacity = arm_config.get("replay_buffer_capacity", 4000)
+    primary_objective = arm_config.get("primary_objective", "sfa")
+    sfa_weight_val = arm_config.get("sfa_weight", 25.0)
+    mask_dyn_sim = arm_config.get("mask_dyn_sim", False)
+    dyn_readout = arm_config.get("dyn_readout", "mean")
+    sub_features = arm_config.get("sub_features", 1)
+    coord_vicreg = arm_config.get("coord_vicreg", True)
+    set_seed(seed)
+    total_steps = 5 if dry_run else 8000; eval_steps = min(200, total_steps // 2) if dry_run else 200
+
+    model = NonParametricJEPASpatialSeparateDyn(
+        d_max=d_max, h=3, k=4, cooldown=300, stabilization_period=100,
+        pos_encoding=pos_encoding, primary_objective=primary_objective,
+        sfa_weight=sfa_weight_val, gdasr_log_only=True,
+        dyn_readout=dyn_readout, sub_features=sub_features, dyn_source="spatial",
+        mask_dyn_sim=mask_dyn_sim, coord_vicreg=coord_vicreg)
+    model.d_t = d_t; model = model.to(device)
+    param_count = count_parameters(model)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    env = PhysicsSandbox(N=3, seed=seed); obs = env.reset()
+    history = collections.deque(maxlen=4); history.append(obs)
+    replay_buffer = ExtendedReplayBuffer(capacity=replay_buffer_capacity)
+    def _prefill(n):
+        while len(replay_buffer) < n:
+            obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)
+            if len(history) == 4: replay_buffer.push(np.stack(list(history)[:3], axis=0), history[3], info["positions"], info["colors"], info["radii"])
+    prefill_steps = max(1, min(total_steps - 2, 200)); _prefill(prefill_steps)
+    logs = []
+    for step in range(max(1, prefill_steps + 1), total_steps + 1):
+        obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)
+        if len(history) == 4: replay_buffer.push(np.stack(list(history)[:3], axis=0), history[3], info["positions"], info["colors"], info["radii"])
+        x_hist_b, x_target_b, pos_b, colors_b, radii_b = replay_buffer.sample(min(batch_size, len(replay_buffer)))
+        x_hist_t = torch.from_numpy(x_hist_b).float().to(device); x_target_t = torch.from_numpy(x_target_b).float().to(device)
+        model.train(); optimizer.zero_grad()
+        loss_dict, _, (z_target_coord, z_target_dyn) = model(
+            x_hist_t, x_target_t,
+            sim_weight=sim_weight, var_weight=var_weight, cov_weight=cov_weight,
+            d_t_predict=d_t, sfa_weight=sfa_weight_val)
+        total_loss = loss_dict["loss"]; total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0); optimizer.step()
+        sim_loss_val = loss_dict["sim_loss"].item(); model.update_recruitment_logic(sim_loss_val, target_dim=d_t, step=step)
+        log_entry = {"step": step, "loss": total_loss.item(),
+                     "sim_loss": loss_dict["sim_loss"].item(),
+                     "var_loss": loss_dict["var_loss"].item(),
+                     "cov_loss": loss_dict["cov_loss"].item(),
+                     "sfa_loss": loss_dict.get("sfa_loss", 0.0),
+                     "per_dim_std": None}
+        if step % 500 == 0:
+            with torch.no_grad():
+                if sub_features > 1:
+                    z_target_dyn_pooled = z_target_dyn[:, :d_t * sub_features].reshape(-1, d_t, sub_features).mean(dim=2)
+                else:
+                    z_target_dyn_pooled = z_target_dyn[:, :d_t]
+                per_dim_std_train = z_target_dyn_pooled.std(dim=0).cpu().numpy()
+            log_entry["per_dim_std"] = per_dim_std_train.tolist()
+        logs.append(log_entry)
+        if step % 1000 == 0 or step == total_steps:
+            sfa_str = ""
+            if "sfa_loss" in loss_dict:
+                sfa_str = f"  sfa={loss_dict['sfa_loss'].item():.4f}"
+            print(f"  [{name}] seed={seed} step={step:5d}/{total_steps}"
+                  f"  loss={log_entry['loss']:.4f}  sim={log_entry['sim_loss']:.4f}"
+                  f"  var={log_entry['var_loss']:.4f}  cov={log_entry['cov_loss']:.4f}"
+                  f"{sfa_str}")
+    eval_res = evaluate_run(model, arm_config, seed, device, eval_steps=eval_steps)
+    final_log = logs[-1]
+    eval_res["final_train_loss"] = final_log["loss"]; eval_res["final_sim_loss"] = final_log["sim_loss"]
+    eval_res["final_var_loss"] = final_log["var_loss"]; eval_res["final_cov_loss"] = final_log["cov_loss"]
+    if "sfa_loss" in loss_dict:
+        eval_res["final_sfa_loss"] = loss_dict.get("sfa_loss", torch.tensor(0.0)).item() if isinstance(loss_dict.get("sfa_loss"), torch.Tensor) else loss_dict.get("sfa_loss", 0.0)
+    eval_res["param_count"] = param_count
+    per_dim_std_train_last = None
+    for entry in reversed(logs):
+        if entry["per_dim_std"] is not None: per_dim_std_train_last = np.array(entry["per_dim_std"]); break
+    if per_dim_std_train_last is not None:
+        eval_res["collapsed_train"] = bool(np.any(per_dim_std_train_last < 0.5))
+        eval_res["per_dim_std_train"] = per_dim_std_train_last.tolist()
+    else:
+        eval_res["collapsed_train"] = False; eval_res["per_dim_std_train"] = None
+    eval_res["collapsed"] = eval_res["collapsed_eval"] or eval_res["collapsed_train"]
+    if eval_res["final_train_loss"] > 50.0: eval_res["disqualified"] = True; eval_res["collapsed"] = True
+    else: eval_res["disqualified"] = False
+    return eval_res, model, logs
+
+ARMS = [
+    {
+        "name": "E1 (VICReg-only, mean-pool)",
+        "dyn_readout": "mean", "sub_features": 1,
+        "primary_objective": "sfa", "sfa_weight": 0.0,
+        "mask_dyn_sim": True, "coord_vicreg": True,
+        "sim_weight": 1.0, "var_weight": 25.0, "cov_weight": 25.0,
+        "d_max": 8, "d_t": 3, "pos_encoding": "none",
+        "lr": 3e-4, "batch_size": 32, "replay_buffer_capacity": 4000,
+    },
+    {
+        "name": "E1.5 (VICReg-only, centroid-gated scalar)",
+        "dyn_readout": "centroid_gated", "sub_features": 1,
+        "primary_objective": "sfa", "sfa_weight": 0.0,
+        "mask_dyn_sim": True, "coord_vicreg": True,
+        "sim_weight": 1.0, "var_weight": 25.0, "cov_weight": 25.0,
+        "d_max": 8, "d_t": 3, "pos_encoding": "none",
+        "lr": 3e-4, "batch_size": 32, "replay_buffer_capacity": 4000,
+    },
+    {
+        "name": "E2 (VICReg-only, centroid-gated rich K=4)",
+        "dyn_readout": "centroid_gated", "sub_features": 4,
+        "primary_objective": "sfa", "sfa_weight": 0.0,
+        "mask_dyn_sim": True, "coord_vicreg": True,
+        "sim_weight": 1.0, "var_weight": 25.0, "cov_weight": 25.0,
+        "d_max": 8, "d_t": 3, "pos_encoding": "none",
+        "lr": 3e-4, "batch_size": 32, "replay_buffer_capacity": 4000,
+    },
+    {
+        "name": "E3 (SFA+VICReg, centroid-gated rich K=4)",
+        "dyn_readout": "centroid_gated", "sub_features": 4,
+        "primary_objective": "sfa", "sfa_weight": 5.0,
+        "mask_dyn_sim": True, "coord_vicreg": True,
+        "sim_weight": 1.0, "var_weight": 25.0, "cov_weight": 25.0,
+        "d_max": 8, "d_t": 3, "pos_encoding": "none",
+        "lr": 3e-4, "batch_size": 32, "replay_buffer_capacity": 4000,
+    },
+]
+
+SEEDS = [7, 17, 31, 53, 71, 83, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163]
+
+def _sanitize_arm_name(name):
+    return name.lower().replace(' ', '_').replace('(', '').replace(')', '').replace('+', '').replace('=', '_').replace("'", "").replace(",", "")
+
+def _flatten_result(res, runs_dir):
+    flat = {k: v for k, v in res.items() if k not in ("centroid_mse_per_object", "r2_per_dim", "dim_to_obj")}
+    flat["per_dim_std"] = str(res.get("per_dim_std", [])); flat["per_dim_std_train"] = str(res.get("per_dim_std_train", []))
+    safe_name = _sanitize_arm_name(res["arm"]); run_id = f"{safe_name}_seed{res['seed']}"
+    csv_path = os.path.join(runs_dir, f"{run_id}.csv"); json_path = os.path.join(runs_dir, f"{run_id}.json")
+    pd.DataFrame([flat]).to_csv(csv_path, index=False)
+    with open(json_path, "w") as f: json.dump(res, f, indent=2, default=str)
+    return csv_path
+
+def _run_single_worker(args_tuple):
+    arm, seed, device_str, dry_run, runs_dir, checkpoints_dir = args_tuple
+    device = torch.device(device_str); torch.set_num_threads(1)
+    name = arm["name"]; print(f"[{name}] seed={seed} -> starting on {device} (dry_run={dry_run})")
+    eval_res, model, logs = run_single(arm, seed, device, dry_run=dry_run)
+    csv_path = _flatten_result(eval_res, runs_dir)
+    safe_name = _sanitize_arm_name(eval_res["arm"]); run_id = f"{safe_name}_seed{seed}"
+    ckpt_path = os.path.join(checkpoints_dir, f"{safe_name}_seed{seed}.pt")
+    torch.save(model.state_dict(), ckpt_path)
+    logs_path = os.path.join(runs_dir, f"{safe_name}_seed{seed}_logs.csv")
+    pd.DataFrame(logs).to_csv(logs_path, index=False)
+    return eval_res
+
+def compute_ci_lower_t(vals):
+    n = len(vals)
+    if n < 2: return np.mean(vals) if n == 1 else 0.0
+    mean = np.mean(vals)
+    std = np.std(vals, ddof=1)
+    sem = std / np.sqrt(n)
+    t_crit = stats.t.ppf(0.975, df=n-1)
+    return float(mean - t_crit * sem)
+
+def _generate_analysis(df_all, results_dir, seeds_run):
+    lines = []
+    lines.append("# Iter_032: Rich Dyn Readout + Run 4-Arm Experiment — Analysis\\n\\n")
+    lines.append("**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train\\n\\n")
+    lines.append("**Arms:** E1, E1.5, E2, E3\\n\\n")
+    lines.append(f"**Seed bank:** {len(seeds_run)} seeds: {seeds_run}\\n\\n")
+    lines.append("## Per-Arm Summary\\n\\n")
+    
+    arm_names = [a["name"] for a in ARMS]
+    for arm_name in arm_names:
+        df_arm = df_all[df_all["arm"] == arm_name]
+        if len(df_arm) == 0: continue
+        lines.append(f"### {arm_name}\\n")
+        lines.append(f"- N seeds: {len(df_arm)}\\n")
+        cr_dual = df_arm["collapsed"].mean(); cc_dual = int(df_arm["collapsed"].sum())
+        lines.append(f"- Collapse rate: {cr_dual:.2f} ({cc_dual}/{len(df_arm)})\\n")
+        lines.append(f"- Mean ΔR²_color: {df_arm['delta_r2_color'].mean():.4f} ± {df_arm['delta_r2_color'].std():.4f}\\n")
+        lines.append(f"- Mean centroid MSE: {df_arm['centroid_mse_mean'].mean():.2f}\\n")
+        lines.append(f"- Mean abs corr: {df_arm['vicreg_mean_abs_corr'].mean():.3f}\\n")
+        if "param_count" in df_arm.columns: lines.append(f"- Parameter count: {int(df_arm['param_count'].iloc[0])}\\n")
+        lines.append("\\n")
+
+    lines.append("## Gate Evaluation (CRITICAL)\\n\\n")
+    df_E2 = df_all[df_all["arm"] == "E2 (VICReg-only, centroid-gated rich K=4)"]
+    df_E1 = df_all[df_all["arm"] == "E1 (VICReg-only, mean-pool)"]
+    df_E15 = df_all[df_all["arm"] == "E1.5 (VICReg-only, centroid-gated scalar)"]
+    df_E3 = df_all[df_all["arm"] == "E3 (SFA+VICReg, centroid-gated rich K=4)"]
+
+    # F1: mean ΔR²_color (E2, non-collapsed seeds) >= 0.30
+    df_E2_nc = df_E2[~df_E2["collapsed"]] if len(df_E2) > 0 else df_E2
+    if len(df_E2_nc) > 0:
+        mean_E2_dr2_nc = df_E2_nc["delta_r2_color"].mean()
+        f1_pass = mean_E2_dr2_nc >= 0.30
+        lines.append(f"- **F1 (mean E2 ΔR²_color (non-collapsed) >= 0.30):** {'PASS' if f1_pass else 'FAIL'} (value={mean_E2_dr2_nc:.4f})\\n")
+    else:
+        mean_E2_dr2_nc = 0.0
+        lines.append("- **F1 (mean E2 ΔR²_color (non-collapsed) >= 0.30):** FAIL (ALL seeds collapsed)\\n")
+        f1_pass = False
+
+    # F2: lower 95% CI of E2 mean ΔR²_color >= 0.18
+    if len(df_E2_nc) > 1:
+        ci_lower_E2 = compute_ci_lower_t(df_E2_nc["delta_r2_color"].values)
+        f2_pass = ci_lower_E2 >= 0.18
+        lines.append(f"- **F2 (lower 95% CI of E2 mean ΔR²_color >= 0.18):** {'PASS' if f2_pass else 'FAIL'} (value={ci_lower_E2:.4f})\\n")
+    else:
+        ci_lower_E2 = 0.0
+        lines.append("- **F2 (lower 95% CI of E2 mean ΔR²_color >= 0.18):** FAIL (insufficient non-collapsed seeds)\\n")
+        f2_pass = False
+
+    # F3: collapse rate <= 0.10 across ALL arms
+    collapse_rates = {arm: df_all[df_all["arm"] == arm]["collapsed"].mean() for arm in arm_names if len(df_all[df_all["arm"] == arm]) > 0}
+    max_cr = max(collapse_rates.values()) if collapse_rates else 1.0
+    f3_pass = max_cr <= 0.10
+    lines.append(f"- **F3 (collapse rate <= 0.10 across ALL arms):** {'PASS' if f3_pass else 'FAIL'} (max_cr={max_cr:.2f})\\n")
+
+    # F4: E2 - E1 paired-seed mean ΔR² improvement >= 0.10
+    diff_F4 = []
+    for s in seeds_run:
+        r_E2 = df_E2[df_E2["seed"] == s]
+        r_E1 = df_E1[df_E1["seed"] == s]
+        if len(r_E2) > 0 and len(r_E1) > 0:
+            diff_F4.append(r_E2.iloc[0]["delta_r2_color"] - r_E1.iloc[0]["delta_r2_color"])
+    mean_diff_F4 = np.mean(diff_F4) if diff_F4 else 0.0
+    f4_pass = mean_diff_F4 >= 0.10
+    lines.append(f"- **F4 (E2 - E1 paired-seed mean ΔR² >= 0.10):** {'PASS' if f4_pass else 'FAIL'} (value={mean_diff_F4:.4f})\\n")
+
+    # F5: E2 - E1.5 paired-seed mean ΔR² improvement >= 0.10
+    diff_F5 = []
+    for s in seeds_run:
+        r_E2 = df_E2[df_E2["seed"] == s]
+        r_E15 = df_E15[df_E15["seed"] == s]
+        if len(r_E2) > 0 and len(r_E15) > 0:
+            diff_F5.append(r_E2.iloc[0]["delta_r2_color"] - r_E15.iloc[0]["delta_r2_color"])
+    mean_diff_F5 = np.mean(diff_F5) if diff_F5 else 0.0
+    f5_pass = mean_diff_F5 >= 0.10
+    lines.append(f"- **F5 (E2 - E1.5 paired-seed mean ΔR² >= 0.10):** {'PASS' if f5_pass else 'FAIL'} (value={mean_diff_F5:.4f})\\n")
+
+    # F6: E3 - E2 paired-seed mean ΔR² improvement
+    diff_F6 = []
+    for s in seeds_run:
+        r_E3 = df_E3[df_E3["seed"] == s]
+        r_E2 = df_E2[df_E2["seed"] == s]
+        if len(r_E3) > 0 and len(r_E2) > 0:
+            diff_F6.append(r_E3.iloc[0]["delta_r2_color"] - r_E2.iloc[0]["delta_r2_color"])
+    mean_diff_F6 = np.mean(diff_F6) if diff_F6 else 0.0
+    lines.append(f"- **F6 (E3 - E2 paired-seed mean ΔR² (informational only)):** (value={mean_diff_F6:.4f})\\n\\n")
+
+    # Binding Decision Rule outcome
+    lines.append("## Binding Decision Rule Outcome\\n\\n")
+    all_f_pass = f1_pass and f2_pass and f3_pass and f4_pass and f5_pass
+    if all_f_pass:
+        lines.append("**Outcome:** BRANCH (a) — Representation foundation clears the declared gate! Advance to Phase 2/3 motor/CLTS integration.\\n\\n")
+    else:
+        lines.append("**Outcome:** BRANCH (b) — Hard-pivot to behavioral evaluation (centroid tracking, collision selectivity, causal sensitivity) with the best available representation. No further representation-only iterations.\\n\\n")
+
+    lines.append("## Pre-Registered Outcome Classification\\n\\n")
+    if not f1_pass:
+        lines.append("- **Outcome classification:** F1 FAIL — the rich readout does not break through the identity-encoding threshold. HARD-PIVOT TRIGGERED.\\n")
+    else:
+        lines.append("- **Outcome classification:** PASS — the rich readout successfully broke through the identity-encoding threshold.\\n")
+
+    analysis_path = os.path.join(results_dir, "analysis.md")
+    with open(analysis_path, "w", encoding="utf-8") as f: f.write("".join(lines))
+    print(f"Saved analysis to {analysis_path}")
+
+def main():
+    cpu_count = os.cpu_count() or 2; default_workers = min(cpu_count - 1, 8)
+    parser = argparse.ArgumentParser(description="Iter_032 Rich Dyn Readout + Run 4-Arm Experiment")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--seeds", type=int, nargs="+", default=None)
+    parser.add_argument("--workers", type=int, default=default_workers)
+    parser.add_argument("--sequential", action="store_true")
+    parser.add_argument("--device", type=str, default=None)
+    args = parser.parse_args()
+    dry_run = args.dry_run; seeds = args.seeds if args.seeds is not None else SEEDS
+    max_workers = args.workers
+    if args.device is not None: device = torch.device(args.device)
+    else: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device_str = str(device)
+    print(f"Device: {device} | Dry-run: {dry_run} | Seeds: {seeds} | Workers: {max_workers if not args.sequential else 1}")
+    results_dir = "archive/iter_032/results"; runs_dir = os.path.join(results_dir, "runs")
+    checkpoints_dir = os.path.join(results_dir, "checkpoints")
+    os.makedirs(runs_dir, exist_ok=True); os.makedirs(checkpoints_dir, exist_ok=True)
+
+    # Log parameter counts BEFORE runs
+    print("\\n=== Parameter Counts ===")
+    for arm in ARMS:
+        m = NonParametricJEPASpatialSeparateDyn(
+            d_max=arm["d_max"], h=3, k=4, cooldown=300, stabilization_period=100,
+            pos_encoding=arm["pos_encoding"], primary_objective=arm["primary_objective"],
+            sfa_weight=arm["sfa_weight"], gdasr_log_only=True,
+            dyn_readout=arm["dyn_readout"], sub_features=arm["sub_features"], dyn_source="spatial",
+            mask_dyn_sim=arm["mask_dyn_sim"], coord_vicreg=arm["coord_vicreg"])
+        pc = count_parameters(m)
+        print(f"  {arm['name']}: {pc} parameters")
+    print()
+
+    tasks = [(arm, seed, device_str, dry_run, runs_dir, checkpoints_dir) for arm in ARMS for seed in seeds]
+    total_tasks = len(tasks); print(f"Total tasks: {total_tasks}")
+    all_results = []
+    if args.sequential:
+        for i, task in enumerate(tasks):
+            print(f"\\n{'='*70}\\nTASK [{i+1}/{total_tasks}]: {task[0]['name']} seed={task[1]}\\n{'='*70}")
+            res = _run_single_worker(task); all_results.append(res)
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_label = {executor.submit(_run_single_worker, task): f"{task[0]['name']} seed={task[1]}" for task in tasks}
+            for future in concurrent.futures.as_completed(future_to_label):
+                label = future_to_label[future]
+                try: res = future.result(); all_results.append(res); print(f"COMPLETED: {label}")
+                except Exception as exc: print(f"FAILED: {label} -> {exc}")
+    df_all = pd.DataFrame(all_results)
+    summary_path = os.path.join(results_dir, "summary.csv"); df_all.to_csv(summary_path, index=False)
+    print(f"\\nSaved summary to {summary_path}")
+    _generate_analysis(df_all, results_dir, seeds)
+    print("\\nDone.")
+
+if __name__ == "__main__":
+    main()
+]
+
+[Tool Call: list_dir({'path': 'src'})]
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_recon.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_arm1_integration_smoke_test.py
+      run_iter030_arm2.py
+      run_iter031_partA.py
+      run_iter031_partB.py
+      run_iter032.py
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_mask_dyn_sim_shared.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_multistep.py
+      run_phase0_sfa_recovery.py
+      run_phase0_sfa_separate_backbone.py
+      run_phase0_sfa_sweep.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+      train_thalamus.py]
+
+[Tool Call: bash({'command': 'python -c "import torch; print(\'CUDA available:\', torch.cuda.is_available()); print(\'CUDA devices:\', torch.cuda.device_count() if torch.cuda.is_available() else 0); print(\'CPU count:\', __import__(\'os\').cpu_count())"'})]
+[Tool Result: exit_code: 0
+stdout: CUDA available: False
+CUDA devices: 0
+CPU count: 12
+
+stderr: ]
+
+[Tool Call: list_dir({'path': 'archive'})]
+[Tool Result: [DIR] iter_001
+[DIR] iter_002
+[DIR] iter_003
+[DIR] iter_004
+[DIR] iter_005
+[DIR] iter_006
+[DIR] iter_007
+[DIR] iter_008
+[DIR] iter_009
+[DIR] iter_010
+[DIR] iter_011
+[DIR] iter_012
+[DIR] iter_013
+[DIR] iter_014
+[DIR] iter_015
+[DIR] iter_016
+[DIR] iter_017
+[DIR] iter_018
+[DIR] iter_019
+[DIR] iter_020
+[DIR] iter_021
+[DIR] iter_022
+[DIR] iter_023
+[DIR] iter_024
+[DIR] iter_025
+[DIR] iter_026
+[DIR] iter_027
+[DIR] iter_028
+[DIR] iter_029
+[DIR] iter_030
+[DIR] iter_031
+[DIR] iter_032
+[DIR] iter_14]
+
+[Tool Call: list_dir({'path': 'archive/iter_032'})]
+[Tool Result: [DIR] iter_002
+[DIR] results]
+
+[Tool Call: list_dir({'path': 'archive/iter_032/results'})]
+[Tool Result:       analysis.md
+[DIR] checkpoints
+[DIR] runs
+      summary.csv]
+
+[Tool Call: read_file({'path': 'archive/iter_032/results/summary.csv'})]
+[Tool Result: arm,seed,collapsed_eval,per_dim_std,vicreg_per_dim_std,vicreg_mean_abs_corr,centroid_mse_mean,centroid_r_mean,delta_r2_color,r2_dyn_color,r2_coord_color,r2_dyn_pos,r2_coord_pos,r2_dyn_identity,r2_coord_identity,delta_r2_identity,dim_to_obj,final_train_loss,final_sim_loss,final_var_loss,final_cov_loss,final_sfa_loss,param_count,collapsed_train,per_dim_std_train,collapsed,disqualified
+"E1 (VICReg-only, mean-pool)",7,True,"[0.0002827919088304043, 0.00016223639249801636, 0.0006343605928122997]","[0.0002827919088304043, 0.00016223639249801636, 0.0006343605928122997]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 2, 1: 0, 2: 1}",4555.66357421875,4521.4501953125,1.9734026193618774,4.8753829418046735e-08,7.326106583604997e-07,135608,False,,True,True
+"E1.5 (VICReg-only, centroid-gated scalar)",17,True,"[0.00019392743706703186, 0.00028004497289657593, 3.215670585632324e-05]","[0.00019392743706703186, 0.00028004497289657593, 3.215670585632324e-05]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 1, 1: 2, 2: 0}",3895.922607421875,3854.691650390625,1.9681259393692017,1.2016462846986542e-07,1.731354046796696e-07,135608,False,,True,True
+"E2 (VICReg-only, centroid-gated rich K=4)",17,True,"[0.00017160829156637192, 5.4076313972473145e-05, 3.882497549057007e-05]","[0.00017160829156637192, 5.4076313972473145e-05, 3.882497549057007e-05]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 1, 1: 2, 2: 0}",4004.560302734375,3956.31005859375,1.968087911605835,1.2212339584039e-07,1.751073739342246e-07,151016,False,,True,True
+"E3 (SFA+VICReg, centroid-gated rich K=4)",7,True,"[0.00016264128498733044, 8.501391857862473e-05, 8.859485387802124e-05]","[0.00016264128498733044, 8.501391857862473e-05, 8.859485387802124e-05]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 2, 1: 0, 2: 1}",4116.849609375,4069.476806640625,1.973371982574463,4.9342165908683455e-08,3.346309540575021e-07,151016,False,,True,True
+"E3 (SFA+VICReg, centroid-gated rich K=4)",17,True,"[0.00017042085528373718, 5.341880023479462e-05, 3.868807107210159e-05]","[0.00017042085528373718, 5.341880023479462e-05, 3.868807107210159e-05]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 1, 1: 2, 2: 0}",4004.558837890625,3956.30859375,1.968087911605835,1.221233816295353e-07,1.7507160521290643e-07,151016,False,,True,True
+"E1 (VICReg-only, mean-pool)",17,True,"[0.00019691698253154755, 0.0002835076302289963, 2.9880553483963013e-05]","[0.00019691698253154755, 0.0002835076302289963, 2.9880553483963013e-05]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 1, 1: 2, 2: 0}",3895.922119140625,3854.691162109375,1.9681262969970703,1.2020440465221327e-07,1.7290605569542095e-07,135608,False,,True,True
+"E1.5 (VICReg-only, centroid-gated scalar)",7,True,"[0.00028243602719157934, 0.00016267411410808563, 0.000639231875538826]","[0.00028243602719157934, 0.00016267411410808563, 0.000639231875538826]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 2, 1: 0, 2: 1}",4555.66357421875,4521.4501953125,1.973402738571167,4.8753829418046735e-08,7.304917630790442e-07,135608,False,,True,True
+"E2 (VICReg-only, centroid-gated rich K=4)",7,True,"[0.0001608976162970066, 8.527189493179321e-05, 8.783116936683655e-05]","[0.0001608976162970066, 8.527189493179321e-05, 8.783116936683655e-05]",0.9999999999999997,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 2, 1: 0, 2: 1}",4116.8486328125,4069.475830078125,1.973371982574463,4.9342162355969776e-08,3.344891581491538e-07,151016,False,,True,True
+]
+
+[Tool Call: list_dir({'path': 'archive/iter_032/results/runs'})]
+[Tool Result:       e1.5_vicreg-only_centroid-gated_scalar_seed17.csv
+      e1.5_vicreg-only_centroid-gated_scalar_seed17.json
+      e1.5_vicreg-only_centroid-gated_scalar_seed17_logs.csv
+      e1.5_vicreg-only_centroid-gated_scalar_seed7.csv
+      e1.5_vicreg-only_centroid-gated_scalar_seed7.json
+      e1.5_vicreg-only_centroid-gated_scalar_seed7_logs.csv
+      e1_vicreg-only_mean-pool_seed17.csv
+      e1_vicreg-only_mean-pool_seed17.json
+      e1_vicreg-only_mean-pool_seed17_logs.csv
+      e1_vicreg-only_mean-pool_seed7.csv
+      e1_vicreg-only_mean-pool_seed7.json
+      e1_vicreg-only_mean-pool_seed7_logs.csv
+      e2_vicreg-only_centroid-gated_rich_k_4_seed17.csv
+      e2_vicreg-only_centroid-gated_rich_k_4_seed17.json
+      e2_vicreg-only_centroid-gated_rich_k_4_seed17_logs.csv
+      e2_vicreg-only_centroid-gated_rich_k_4_seed7.csv
+      e2_vicreg-only_centroid-gated_rich_k_4_seed7.json
+      e2_vicreg-only_centroid-gated_rich_k_4_seed7_logs.csv
+      e3_sfavicreg_centroid-gated_rich_k_4_seed17.csv
+      e3_sfavicreg_centroid-gated_rich_k_4_seed17.json
+      e3_sfavicreg_centroid-gated_rich_k_4_seed17_logs.csv
+      e3_sfavicreg_centroid-gated_rich_k_4_seed7.csv
+      e3_sfavicreg_centroid-gated_rich_k_4_seed7.json
+      e3_sfavicreg_centroid-gated_rich_k_4_seed7_logs.csv]
+I see there's already a partial run with only 8 results (2 seeds). I need to run the **full 80-run experiment** (4 arms × 20 seeds). Let me first back up the existing partial results, then launch the full experiment
+
+[Tool Call: bash({'command': 'cd archive\\iter_032 && rename results results_partial_backup && mkdir results'})]
+[Tool Result: exit_code: 0
+stdout: 
+stderr: ]
+
+[Tool Call: bash({'command': 'python src/run_iter032.py --workers 6', 'timeout_sec': 14400})]
+[Tool Result: exit_code: 0
+stdout: [E1 (VICReg-only, mean-pool)] seed=31 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=31 step= 1000/8000  loss=6.5745  sim=4.1273  var=0.1317  cov=0.1285  sfa=0.1762
+  [E1 (VICReg-only, mean-pool)] seed=31 step= 2000/8000  loss=6.3016  sim=4.6633  var=0.0926  cov=0.1570  sfa=0.1469
+  [E1 (VICReg-only, mean-pool)] seed=31 step= 3000/8000  loss=5.5656  sim=7.3646  var=0.0926  cov=0.1281  sfa=0.2144
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 7.8185 (baseline mean=6.5127, std=0.3223)
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 9.7140 (baseline mean=7.8173, std=0.4667)
+  [E1 (VICReg-only, mean-pool)] seed=31 step= 4000/8000  loss=10.5374  sim=9.6368  var=0.0739  cov=0.3448  sfa=0.2702
+  [E1 (VICReg-only, mean-pool)] seed=31 step= 5000/8000  loss=3.3753  sim=8.3321  var=0.0328  cov=0.1005  sfa=0.2099
+  [E1 (VICReg-only, mean-pool)] seed=31 step= 6000/8000  loss=2.9174  sim=7.8943  var=0.0508  cov=0.0638  sfa=0.2710
+  [E1 (VICReg-only, mean-pool)] seed=31 step= 7000/8000  loss=3.0539  sim=6.9456  var=0.0402  cov=0.0795  sfa=0.2278
+  [E1 (VICReg-only, mean-pool)] seed=31 step= 8000/8000  loss=4.0397  sim=7.6533  var=0.0467  cov=0.1130  sfa=0.2916
+[E1 (VICReg-only, mean-pool)] seed=97 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=97 step= 1000/8000  loss=5.3962  sim=4.8522  var=0.1410  cov=0.0703  sfa=0.1172
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 5.9388 (baseline mean=4.9776, std=0.2308)
+  [E1 (VICReg-only, mean-pool)] seed=97 step= 2000/8000  loss=6.3823  sim=5.6617  var=0.1480  cov=0.1038  sfa=0.1593
+  [E1 (VICReg-only, mean-pool)] seed=97 step= 3000/8000  loss=3.9535  sim=6.1496  var=0.0686  cov=0.0862  sfa=0.1413
+  [E1 (VICReg-only, mean-pool)] seed=97 step= 4000/8000  loss=9.1882  sim=5.6498  var=0.0828  cov=0.2827  sfa=0.2243
+  [E1 (VICReg-only, mean-pool)] seed=97 step= 5000/8000  loss=6.7000  sim=5.1778  var=0.2368  cov=0.0291  sfa=0.1352
+  [E1 (VICReg-only, mean-pool)] seed=97 step= 6000/8000  loss=8.5494  sim=6.7599  var=0.0000  cov=0.3379  sfa=0.1779
+  [E1 (VICReg-only, mean-pool)] seed=97 step= 7000/8000  loss=3.4265  sim=8.7204  var=0.0046  cov=0.1299  sfa=0.1445
+  [E1 (VICReg-only, mean-pool)] seed=97 step= 8000/8000  loss=3.7749  sim=6.0163  var=0.0444  cov=0.1017  sfa=0.1352
+[E1 (VICReg-only, mean-pool)] seed=127 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=127 step= 1000/8000  loss=12.8326  sim=4.5061  var=0.3609  cov=0.1505  sfa=0.2361
+  [E1 (VICReg-only, mean-pool)] seed=127 step= 2000/8000  loss=2.8813  sim=6.5715  var=0.0027  cov=0.1059  sfa=0.2256
+  [E1 (VICReg-only, mean-pool)] seed=127 step= 3000/8000  loss=4.1972  sim=4.1292  var=0.0000  cov=0.1663  sfa=0.2278
+  [E1 (VICReg-only, mean-pool)] seed=127 step= 4000/8000  loss=8.1105  sim=4.2850  var=0.0398  cov=0.2837  sfa=0.2478
+  [E1 (VICReg-only, mean-pool)] seed=127 step= 5000/8000  loss=5.3521  sim=3.9770  var=0.0469  cov=0.1625  sfa=0.2424
+  [E1 (VICReg-only, mean-pool)] seed=127 step= 6000/8000  loss=5.1797  sim=2.9206  var=0.0534  cov=0.1522  sfa=0.3437
+  [E1 (VICReg-only, mean-pool)] seed=127 step= 7000/8000  loss=0.4101  sim=2.8723  var=0.0000  cov=0.0154  sfa=0.3272
+  [E1 (VICReg-only, mean-pool)] seed=127 step= 8000/8000  loss=14.2606  sim=1.6026  var=0.0233  cov=0.5458  sfa=0.3263
+[E1 (VICReg-only, mean-pool)] seed=163 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=163 step= 1000/8000  loss=8.5843  sim=1.4907  var=0.2862  cov=0.0504  sfa=0.1222
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 2.5209 (baseline mean=1.6677, std=0.2089)
+  [E1 (VICReg-only, mean-pool)] seed=163 step= 2000/8000  loss=4.7470  sim=27.0532  var=0.0292  cov=0.1521  sfa=0.1159
+  [E1 (VICReg-only, mean-pool)] seed=163 step= 3000/8000  loss=3.4026  sim=31.5625  var=0.0319  cov=0.0993  sfa=0.1575
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 39.5151 (baseline mean=34.2699, std=1.3028)
+  [E1 (VICReg-only, mean-pool)] seed=163 step= 4000/8000  loss=5.0330  sim=38.1180  var=0.0867  cov=0.1131  sfa=0.0973
+  [E1 (VICReg-only, mean-pool)] seed=163 step= 5000/8000  loss=3.2466  sim=36.4955  var=0.0382  cov=0.0899  sfa=0.1018
+  [E1 (VICReg-only, mean-pool)] seed=163 step= 6000/8000  loss=4.0617  sim=36.5910  var=0.0267  cov=0.1319  sfa=0.0832
+  [E1 (VICReg-only, mean-pool)] seed=163 step= 7000/8000  loss=7.6230  sim=40.5716  var=0.1444  cov=0.1576  sfa=0.1062
+  [E1 (VICReg-only, mean-pool)] seed=163 step= 8000/8000  loss=8.3950  sim=35.5416  var=0.0261  cov=0.3040  sfa=0.0970
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=71 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=71 step= 1000/8000  loss=6.8267  sim=21.3838  var=0.0828  cov=0.1739  sfa=0.1466
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=71 step= 2000/8000  loss=9.0996  sim=24.6301  var=0.0000  cov=0.3506  sfa=0.2011
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=71 step= 3000/8000  loss=4.0856  sim=20.7315  var=0.0000  cov=0.1527  sfa=0.1660
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=71 step= 4000/8000  loss=8.1583  sim=20.0966  var=0.1468  cov=0.1718  sfa=0.1832
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=71 step= 5000/8000  loss=2.8142  sim=21.0908  var=0.0037  cov=0.1014  sfa=0.1517
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=71 step= 6000/8000  loss=3.9132  sim=21.1943  var=0.0642  cov=0.0827  sfa=0.2218
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=71 step= 7000/8000  loss=5.3309  sim=18.2156  var=0.0920  cov=0.1125  sfa=0.2012
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=71 step= 8000/8000  loss=3.5770  sim=19.0526  var=0.0754  cov=0.0567  sfa=0.2677
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=113 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=113 step= 1000/8000  loss=5.6712  sim=1.9170  var=0.1694  cov=0.0553  sfa=0.0412
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=113 step= 2000/8000  loss=2.8183  sim=2.4246  var=0.0525  cov=0.0585  sfa=0.0685
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=113 step= 3000/8000  loss=3.6688  sim=2.0592  var=0.0000  cov=0.1441  sfa=0.0540
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=113 step= 4000/8000  loss=1.6851  sim=2.5411  var=0.0426  cov=0.0234  sfa=0.0464
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=113 step= 5000/8000  loss=2.9067  sim=2.7511  var=0.0075  cov=0.1081  sfa=0.1016
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=113 step= 6000/8000  loss=4.3544  sim=2.2682  var=0.1006  cov=0.0712  sfa=0.1288
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.0028 (baseline mean=2.5847, std=0.0968)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=113 step= 7000/8000  loss=0.8267  sim=2.5572  var=0.0000  cov=0.0293  sfa=0.1352
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=113 step= 8000/8000  loss=1.2274  sim=2.7002  var=0.0058  cov=0.0423  sfa=0.0235
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=149 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=149 step= 1000/8000  loss=3.3926  sim=4.6922  var=0.0134  cov=0.1189  sfa=0.0647
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=149 step= 2000/8000  loss=8.4364  sim=4.6580  var=0.1434  cov=0.1925  sfa=0.0401
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=149 step= 3000/8000  loss=4.5632  sim=4.7329  var=0.0030  cov=0.1777  sfa=0.1473
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 5.0789 (baseline mean=4.1493, std=0.2260)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=149 step= 4000/8000  loss=1.1665  sim=3.3435  var=0.0285  cov=0.0172  sfa=0.0598
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=149 step= 5000/8000  loss=2.4513  sim=3.2420  var=0.0460  cov=0.0499  sfa=0.2515
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=149 step= 6000/8000  loss=0.6203  sim=2.5575  var=0.0000  cov=0.0224  sfa=0.3084
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=149 step= 7000/8000  loss=4.0895  sim=2.7893  var=0.0577  cov=0.1054  sfa=0.3349
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=149 step= 8000/8000  loss=0.6285  sim=2.8068  var=0.0000  cov=0.0227  sfa=0.1603[E1 (VICReg-only, mean-pool)] seed=7 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=7 step= 1000/8000  loss=6.2466  sim=110.5182  var=0.0698  cov=0.1716  sfa=0.0819
+  [E1 (VICReg-only, mean-pool)] seed=7 step= 2000/8000  loss=1.1372  sim=90.0317  var=0.0000  cov=0.0406  sfa=0.1103
+  [E1 (VICReg-only, mean-pool)] seed=7 step= 3000/8000  loss=2.4794  sim=92.1869  var=0.0150  cov=0.0763  sfa=0.0732
+  [E1 (VICReg-only, mean-pool)] seed=7 step= 4000/8000  loss=6.0614  sim=76.0281  var=0.0000  cov=0.2359  sfa=0.0873
+  [E1 (VICReg-only, mean-pool)] seed=7 step= 5000/8000  loss=2.9760  sim=60.0017  var=0.0730  cov=0.0447  sfa=0.1107
+  [E1 (VICReg-only, mean-pool)] seed=7 step= 6000/8000  loss=1.7626  sim=60.2953  var=0.0110  cov=0.0507  sfa=0.0747
+  [E1 (VICReg-only, mean-pool)] seed=7 step= 7000/8000  loss=1.0215  sim=63.0140  var=0.0000  cov=0.0319  sfa=0.0879
+  [E1 (VICReg-only, mean-pool)] seed=7 step= 8000/8000  loss=1.6511  sim=48.7480  var=0.0205  cov=0.0392  sfa=0.0785
+[E1 (VICReg-only, mean-pool)] seed=113 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=113 step= 1000/8000  loss=8.7950  sim=2.5701  var=0.2547  cov=0.0944  sfa=0.0960
+  [E1 (VICReg-only, mean-pool)] seed=113 step= 2000/8000  loss=4.6635  sim=2.5720  var=0.0706  cov=0.1135  sfa=0.1719
+  [E1 (VICReg-only, mean-pool)] seed=113 step= 3000/8000  loss=1.4707  sim=3.4874  var=0.0000  cov=0.0569  sfa=0.1753
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.9590 (baseline mean=3.5137, std=0.1080)
+  [E1 (VICReg-only, mean-pool)] seed=113 step= 4000/8000  loss=9.1335  sim=4.8387  var=0.0625  cov=0.3001  sfa=0.0943
+  [E1 (VICReg-only, mean-pool)] seed=113 step= 5000/8000  loss=3.5149  sim=3.3688  var=0.0647  cov=0.0744  sfa=0.1125
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 4.7000 (baseline mean=4.1349, std=0.1410)
+  [E1 (VICReg-only, mean-pool)] seed=113 step= 6000/8000  loss=7.1091  sim=4.7782  var=0.1510  cov=0.1315  sfa=0.1197
+  [E1 (VICReg-only, mean-pool)] seed=113 step= 7000/8000  loss=2.3649  sim=5.3145  var=0.0462  cov=0.0444  sfa=0.1771
+  [E1 (VICReg-only, mean-pool)] seed=113 step= 8000/8000  loss=1.6578  sim=5.2477  var=0.0123  cov=0.0526  sfa=0.1429
+[E1 (VICReg-only, mean-pool)] seed=137 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=137 step= 1000/8000  loss=8.8968  sim=1.9019  var=0.2808  cov=0.0705  sfa=0.1208
+  [E1 (VICReg-only, mean-pool)] seed=137 step= 2000/8000  loss=4.0597  sim=1.9553  var=0.0235  cov=0.1362  sfa=0.3481
+  [E1 (VICReg-only, mean-pool)] seed=137 step= 3000/8000  loss=3.2887  sim=2.7197  var=0.0831  cov=0.0470  sfa=0.2999
+  [E1 (VICReg-only, mean-pool)] seed=137 step= 4000/8000  loss=7.5480  sim=2.3984  var=0.0276  cov=0.2709  sfa=0.2798
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.0256 (baseline mean=2.6298, std=0.0975)
+  [E1 (VICReg-only, mean-pool)] seed=137 step= 5000/8000  loss=5.5184  sim=3.1303  var=0.0092  cov=0.2068  sfa=0.4307
+  [E1 (VICReg-only, mean-pool)] seed=137 step= 6000/8000  loss=5.3411  sim=2.9121  var=0.0657  cov=0.1429  sfa=0.3610
+  [E1 (VICReg-only, mean-pool)] seed=137 step= 7000/8000  loss=1.5071  sim=3.3063  var=0.0026  cov=0.0533  sfa=0.2923
+  [E1 (VICReg-only, mean-pool)] seed=137 step= 8000/8000  loss=3.0790  sim=3.4522  var=0.0179  cov=0.0982  sfa=0.1651
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=7 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=7 step= 1000/8000  loss=2.6525  sim=9.9614  var=0.0132  cov=0.0862  sfa=0.0852
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=7 step= 2000/8000  loss=0.8596  sim=13.6896  var=0.0026  cov=0.0291  sfa=0.1389
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=7 step= 3000/8000  loss=2.7621  sim=13.9604  var=0.0000  cov=0.1023  sfa=0.1261
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=7 step= 4000/8000  loss=3.3947  sim=9.6720  var=0.0058  cov=0.1250  sfa=0.1831
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=7 step= 5000/8000  loss=2.1968  sim=12.3252  var=0.0589  cov=0.0264  sfa=0.0959
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=7 step= 6000/8000  loss=0.6202  sim=12.3969  var=0.0000  cov=0.0159  sfa=0.2881
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 13.8329 (baseline mean=12.7109, std=0.2778)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=7 step= 7000/8000  loss=0.6149  sim=15.0234  var=0.0000  cov=0.0173  sfa=0.2580
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=7 step= 8000/8000  loss=0.8634  sim=14.6319  var=0.0000  cov=0.0305  sfa=0.2029
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=97 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=97 step= 1000/8000  loss=3.5717  sim=17.3124  var=0.0776  cov=0.0576  sfa=0.0495
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 19.9244 (baseline mean=16.7307, std=0.7888)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=97 step= 2000/8000  loss=7.8419  sim=21.4603  var=0.1789  cov=0.1330  sfa=0.0563
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=97 step= 3000/8000  loss=1.6088  sim=20.0390  var=0.0246  cov=0.0360  sfa=0.0472
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=97 step= 4000/8000  loss=2.5183  sim=28.0543  var=0.0584  cov=0.0403  sfa=0.0595
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=97 step= 5000/8000  loss=13.6420  sim=20.8417  var=0.4779  cov=0.0669  sfa=0.0599
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=97 step= 6000/8000  loss=1.6055  sim=20.2517  var=0.0460  cov=0.0163  sfa=0.0586
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=97 step= 7000/8000  loss=0.1058  sim=19.4816  var=0.0000  cov=0.0021  sfa=0.0817
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=97 step= 8000/8000  loss=3.3327  sim=19.4728  var=0.1023  cov=0.0282  sfa=0.0914
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=127 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=127 step= 1000/8000  loss=8.9663  sim=3.6236  var=0.2527  cov=0.1032  sfa=0.0917
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=127 step= 2000/8000  loss=2.9651  sim=2.9558  var=0.0241  cov=0.0913  sfa=0.1438
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=127 step= 3000/8000  loss=1.6698  sim=2.4936  var=0.0000  cov=0.0656  sfa=0.0732
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=127 step= 4000/8000  loss=4.1361  sim=2.9467  var=0.0400  cov=0.1248  sfa=0.0482
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=127 step= 5000/8000  loss=1.2847  sim=2.7922  var=0.0000  cov=0.0482  sfa=0.1576
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=127 step= 6000/8000  loss=3.4063  sim=2.7365  var=0.0723  cov=0.0624  sfa=0.1647
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=127 step= 7000/8000  loss=0.6384  sim=2.7843  var=0.0000  cov=0.0244  sfa=0.1481
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=127 step= 8000/8000  loss=16.2991  sim=2.6223  var=0.0000  cov=0.6498  sfa=0.1469
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=157 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=157 step= 1000/8000  loss=1.5602  sim=6.4577  var=0.0000  cov=0.0550  sfa=0.0596
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=157 step= 2000/8000  loss=6.9162  sim=8.4887  var=0.1437  cov=0.1307  sfa=0.0546
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=157 step= 3000/8000  loss=3.3795  sim=9.1570  var=0.0207  cov=0.1125  sfa=0.0863
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=157 step= 4000/8000  loss=1.5605  sim=8.9805  var=0.0541  cov=0.0063  sfa=0.0656
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=157 step= 5000/8000  loss=1.1621  sim=9.0923  var=0.0121  cov=0.0333  sfa=0.0644
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=157 step= 6000/8000  loss=2.5226  sim=12.0346  var=0.0468  cov=0.0523  sfa=0.0888
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=157 step= 7000/8000  loss=12.9888  sim=11.0388  var=0.0000  cov=0.5177  sfa=0.1145
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=157 step= 8000/8000  loss=5.2097  sim=12.1472  var=0.0715  cov=0.1347  sfa=0.0852
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=71 -> starting on cpu (dry_run=False)[E1 (VICReg-only, mean-pool)] seed=53 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=53 step= 1000/8000  loss=7.4157  sim=32.9317  var=0.1828  cov=0.0746  sfa=0.4005
+  [E1 (VICReg-only, mean-pool)] seed=53 step= 2000/8000  loss=6.7549  sim=29.9581  var=0.0000  cov=0.2556  sfa=0.1819
+  [E1 (VICReg-only, mean-pool)] seed=53 step= 3000/8000  loss=3.0167  sim=28.9180  var=0.0049  cov=0.1087  sfa=0.3037
+  [E1 (VICReg-only, mean-pool)] seed=53 step= 4000/8000  loss=5.4806  sim=28.1849  var=0.0309  cov=0.1782  sfa=0.1555
+  [E1 (VICReg-only, mean-pool)] seed=53 step= 5000/8000  loss=3.7659  sim=24.4459  var=0.0000  cov=0.1378  sfa=0.3682
+  [E1 (VICReg-only, mean-pool)] seed=53 step= 6000/8000  loss=4.4638  sim=21.4467  var=0.0000  cov=0.1717  sfa=0.3549
+  [E1 (VICReg-only, mean-pool)] seed=53 step= 7000/8000  loss=6.9674  sim=20.5417  var=0.0575  cov=0.2119  sfa=0.3639
+  [E1 (VICReg-only, mean-pool)] seed=53 step= 8000/8000  loss=2.8436  sim=22.3428  var=0.0604  cov=0.0457  sfa=0.3116
+[E1 (VICReg-only, mean-pool)] seed=101 -> starting on cpu (dry_run=False)
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 25.4369 (baseline mean=4.9576, std=4.8934)
+  [E1 (VICReg-only, mean-pool)] seed=101 step= 1000/8000  loss=5.0020  sim=74.2729  var=0.0263  cov=0.1709  sfa=0.0925
+  [E1 (VICReg-only, mean-pool)] seed=101 step= 2000/8000  loss=4.8160  sim=81.9861  var=0.1661  cov=0.0239  sfa=0.0880
+  [E1 (VICReg-only, mean-pool)] seed=101 step= 3000/8000  loss=1.5577  sim=62.4486  var=0.0179  cov=0.0434  sfa=0.0713
+  [E1 (VICReg-only, mean-pool)] seed=101 step= 4000/8000  loss=3.2971  sim=64.0639  var=0.0804  cov=0.0504  sfa=0.0666
+  [E1 (VICReg-only, mean-pool)] seed=101 step= 5000/8000  loss=5.4837  sim=66.8641  var=0.0185  cov=0.1985  sfa=0.0739
+  [E1 (VICReg-only, mean-pool)] seed=101 step= 6000/8000  loss=1.5709  sim=65.7894  var=0.0331  cov=0.0282  sfa=0.0882
+  [E1 (VICReg-only, mean-pool)] seed=101 step= 7000/8000  loss=1.1331  sim=65.1462  var=0.0317  cov=0.0107  sfa=0.0825
+  [E1 (VICReg-only, mean-pool)] seed=101 step= 8000/8000  loss=1.7705  sim=59.8552  var=0.0000  cov=0.0687  sfa=0.0842
+[E1 (VICReg-only, mean-pool)] seed=139 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=139 step= 1000/8000  loss=7.7390  sim=33.1406  var=0.0953  cov=0.1972  sfa=0.3430
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 48.2567 (baseline mean=37.0382, std=2.7934)
+  [E1 (VICReg-only, mean-pool)] seed=139 step= 2000/8000  loss=11.7887  sim=43.0840  var=0.0000  cov=0.4661  sfa=0.3894
+  [E1 (VICReg-only, mean-pool)] seed=139 step= 3000/8000  loss=6.9500  sim=38.2033  var=0.0459  cov=0.2256  sfa=0.2333
+  [E1 (VICReg-only, mean-pool)] seed=139 step= 4000/8000  loss=7.2768  sim=46.9647  var=0.0687  cov=0.2193  sfa=0.3499
+  [E1 (VICReg-only, mean-pool)] seed=139 step= 5000/8000  loss=6.5009  sim=50.3515  var=0.0411  cov=0.2144  sfa=0.4413
+  [E1 (VICReg-only, mean-pool)] seed=139 step= 6000/8000  loss=3.8524  sim=62.3593  var=0.0572  cov=0.0915  sfa=0.4677
+  [E1 (VICReg-only, mean-pool)] seed=139 step= 7000/8000  loss=6.0456  sim=59.4537  var=0.0672  cov=0.1691  sfa=0.3771
+  [E1 (VICReg-only, mean-pool)] seed=139 step= 8000/8000  loss=5.5370  sim=75.0553  var=0.0885  cov=0.1284  sfa=0.4215
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=17 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=17 step= 1000/8000  loss=2.1295  sim=8.4256  var=0.0000  cov=0.0801  sfa=0.0750
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=17 step= 2000/8000  loss=7.3043  sim=11.7598  var=0.0000  cov=0.2874  sfa=0.0340
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=17 step= 3000/8000  loss=2.1866  sim=11.2934  var=0.0469  cov=0.0390  sfa=0.0155
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=17 step= 4000/8000  loss=0.2470  sim=12.2508  var=0.0000  cov=0.0072  sfa=0.0220
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 12.8622 (baseline mean=11.1645, std=0.3916)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=17 step= 5000/8000  loss=1.5028  sim=15.7288  var=0.0371  cov=0.0200  sfa=0.0635
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=17 step= 6000/8000  loss=0.4088  sim=14.1792  var=0.0000  cov=0.0132  sfa=0.0394
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=17 step= 7000/8000  loss=0.2742  sim=12.0416  var=0.0057  cov=0.0027  sfa=0.0627
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=17 step= 8000/8000  loss=0.1892  sim=13.5206  var=0.0000  cov=0.0050  sfa=0.0958
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=101 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=101 step= 1000/8000  loss=6.5025  sim=12.1755  var=0.0164  cov=0.2401  sfa=0.0419
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=101 step= 2000/8000  loss=6.2463  sim=5.7524  var=0.1419  cov=0.1051  sfa=0.0786
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=101 step= 3000/8000  loss=4.3049  sim=5.5306  var=0.0182  cov=0.1527  sfa=0.0574
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=101 step= 4000/8000  loss=1.5804  sim=4.1695  var=0.0114  cov=0.0507  sfa=0.0479
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=101 step= 5000/8000  loss=6.6792  sim=4.1329  var=0.0000  cov=0.2652  sfa=0.0439
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=101 step= 6000/8000  loss=2.2194  sim=3.3697  var=0.0335  cov=0.0536  sfa=0.0609
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=101 step= 7000/8000  loss=1.7459  sim=3.8414  var=0.0589  cov=0.0082  sfa=0.1483
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=101 step= 8000/8000  loss=0.8305  sim=2.9951  var=0.0000  cov=0.0309  sfa=0.1229
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=131 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=131 step= 1000/8000  loss=4.9739  sim=45.1220  var=0.0581  cov=0.1242  sfa=0.1599
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=131 step= 2000/8000  loss=4.2659  sim=21.0338  var=0.0249  cov=0.1384  sfa=0.1569
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=131 step= 3000/8000  loss=1.8466  sim=17.7592  var=0.0000  cov=0.0661  sfa=0.1266
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 24.0348 (baseline mean=20.0996, std=0.9324)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=131 step= 4000/8000  loss=1.2995  sim=20.2223  var=0.0000  cov=0.0460  sfa=0.0909
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=131 step= 5000/8000  loss=1.8149  sim=18.9245  var=0.0492  cov=0.0185  sfa=0.0926
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=131 step= 6000/8000  loss=5.9645  sim=21.1446  var=0.0010  cov=0.2293  sfa=0.1452
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 23.3479 (baseline mean=19.8682, std=0.8048)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=131 step= 7000/8000  loss=2.9750  sim=20.7807  var=0.0341  cov=0.0773  sfa=0.3141
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=131 step= 8000/8000  loss=2.8235  sim=17.3339  var=0.0301  cov=0.0789  sfa=0.0860
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=163 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=163 step= 1000/8000  loss=3.7894  sim=2.8081  var=0.0000  cov=0.1447  sfa=0.1780
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=163 step= 2000/8000  loss=4.5778  sim=3.1683  var=0.0292  cov=0.1494  sfa=0.2366
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=163 step= 3000/8000  loss=4.4114  sim=3.6272  var=0.0002  cov=0.1735  sfa=0.2369
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=163 step= 4000/8000  loss=2.6377  sim=3.0102  var=0.0596  cov=0.0449  sfa=0.2011
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.7235 (baseline mean=3.3424, std=0.0925)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=163 step= 5000/8000  loss=0.3302  sim=3.9255  var=0.0000  cov=0.0108  sfa=0.3944
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=163 step= 6000/8000  loss=2.7639  sim=4.1372  var=0.0000  cov=0.1087  sfa=0.5535
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=163 step= 7000/8000  loss=3.5095  sim=4.0610  var=0.0966  cov=0.0418  sfa=0.8930
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=163 step= 8000/8000  loss=4.0504  sim=4.7210  var=0.0000  cov=0.1592  sfa=0.6449[E1 (VICReg-only, mean-pool)] seed=71 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=71 step= 1000/8000  loss=8.8805  sim=18.9854  var=0.0590  cov=0.2749  sfa=0.2134
+  [E1 (VICReg-only, mean-pool)] seed=71 step= 2000/8000  loss=3.1136  sim=20.8270  var=0.0000  cov=0.1104  sfa=0.1267
+  [E1 (VICReg-only, mean-pool)] seed=71 step= 3000/8000  loss=1.2182  sim=18.1302  var=0.0000  cov=0.0411  sfa=0.3103
+  [E1 (VICReg-only, mean-pool)] seed=71 step= 4000/8000  loss=7.3410  sim=16.1099  var=0.1117  cov=0.1715  sfa=0.1497
+  [E1 (VICReg-only, mean-pool)] seed=71 step= 5000/8000  loss=4.6331  sim=13.9732  var=0.0133  cov=0.1630  sfa=0.1987
+  [E1 (VICReg-only, mean-pool)] seed=71 step= 6000/8000  loss=3.7582  sim=14.0663  var=0.0823  cov=0.0584  sfa=0.3091
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 15.2984 (baseline mean=14.3734, std=0.2311)
+  [E1 (VICReg-only, mean-pool)] seed=71 step= 7000/8000  loss=5.3165  sim=12.2286  var=0.0369  cov=0.1667  sfa=0.3426
+  [E1 (VICReg-only, mean-pool)] seed=71 step= 8000/8000  loss=1.7235  sim=13.5103  var=0.0000  cov=0.0574  sfa=0.2730
+[E1 (VICReg-only, mean-pool)] seed=107 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=107 step= 1000/8000  loss=7.5410  sim=106.6852  var=0.0346  cov=0.2414  sfa=0.1241
+  [E1 (VICReg-only, mean-pool)] seed=107 step= 2000/8000  loss=6.2269  sim=121.3380  var=0.0702  cov=0.1652  sfa=0.1532
+  [E1 (VICReg-only, mean-pool)] seed=107 step= 3000/8000  loss=6.1049  sim=129.3219  var=0.0604  cov=0.1750  sfa=0.1279
+  [E1 (VICReg-only, mean-pool)] seed=107 step= 4000/8000  loss=2.8736  sim=120.7328  var=0.0138  cov=0.0958  sfa=0.1630
+  [E1 (VICReg-only, mean-pool)] seed=107 step= 5000/8000  loss=3.7126  sim=133.1357  var=0.0147  cov=0.1261  sfa=0.1592
+  [E1 (VICReg-only, mean-pool)] seed=107 step= 6000/8000  loss=4.2427  sim=129.1644  var=0.0087  cov=0.1522  sfa=0.1776
+  [E1 (VICReg-only, mean-pool)] seed=107 step= 7000/8000  loss=2.8498  sim=134.8262  var=0.0097  cov=0.0950  sfa=0.1382
+  [E1 (VICReg-only, mean-pool)] seed=107 step= 8000/8000  loss=2.2531  sim=130.7841  var=0.0222  cov=0.0624  sfa=0.0979
+[E1 (VICReg-only, mean-pool)] seed=131 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=131 step= 1000/8000  loss=5.6409  sim=39.0960  var=0.0646  cov=0.1374  sfa=0.2143
+  [E1 (VICReg-only, mean-pool)] seed=131 step= 2000/8000  loss=3.5624  sim=16.5623  var=0.0674  cov=0.0643  sfa=0.3043
+  [E1 (VICReg-only, mean-pool)] seed=131 step= 3000/8000  loss=3.7053  sim=14.7019  var=0.0013  cov=0.1396  sfa=0.4016
+  [E1 (VICReg-only, mean-pool)] seed=131 step= 4000/8000  loss=6.5227  sim=14.0266  var=0.0000  cov=0.2541  sfa=0.2521
+  [E1 (VICReg-only, mean-pool)] seed=131 step= 5000/8000  loss=1.7318  sim=10.5686  var=0.0200  cov=0.0400  sfa=0.4019
+  [E1 (VICReg-only, mean-pool)] seed=131 step= 6000/8000  loss=3.3777  sim=10.7426  var=0.0086  cov=0.1205  sfa=0.2223
+  [E1 (VICReg-only, mean-pool)] seed=131 step= 7000/8000  loss=3.2917  sim=10.4904  var=0.0513  cov=0.0727  sfa=0.2326
+  [E1 (VICReg-only, mean-pool)] seed=131 step= 8000/8000  loss=2.0515  sim=11.0704  var=0.0000  cov=0.0774  sfa=0.2598
+[E1 (VICReg-only, mean-pool)] seed=157 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=157 step= 1000/8000  loss=3.5413  sim=30.3756  var=0.0598  cov=0.0773  sfa=0.1213
+  [E1 (VICReg-only, mean-pool)] seed=157 step= 2000/8000  loss=11.0640  sim=29.8247  var=0.1782  cov=0.2623  sfa=0.1105
+  [E1 (VICReg-only, mean-pool)] seed=157 step= 3000/8000  loss=3.1376  sim=31.8443  var=0.0000  cov=0.1226  sfa=0.1037
+  [E1 (VICReg-only, mean-pool)] seed=157 step= 4000/8000  loss=1.6350  sim=29.2379  var=0.0095  cov=0.0542  sfa=0.0987
+  [E1 (VICReg-only, mean-pool)] seed=157 step= 5000/8000  loss=2.5953  sim=21.8298  var=0.0549  cov=0.0476  sfa=0.0941
+  [E1 (VICReg-only, mean-pool)] seed=157 step= 6000/8000  loss=5.4906  sim=21.5106  var=0.0230  cov=0.1949  sfa=0.1161
+  [E1 (VICReg-only, mean-pool)] seed=157 step= 7000/8000  loss=7.4637  sim=15.2363  var=0.0082  cov=0.2887  sfa=0.1443
+  [E1 (VICReg-only, mean-pool)] seed=157 step= 8000/8000  loss=10.5432  sim=19.0617  var=0.1299  cov=0.2901  sfa=0.1132
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=83 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=83 step= 1000/8000  loss=9.3022  sim=7.4600  var=0.0642  cov=0.2994  sfa=0.0784
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=83 step= 2000/8000  loss=6.6481  sim=7.0792  var=0.0000  cov=0.2630  sfa=0.1858
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=83 step= 3000/8000  loss=9.0907  sim=6.5297  var=0.0535  cov=0.3085  sfa=0.2430
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=83 step= 4000/8000  loss=3.2569  sim=7.9808  var=0.0000  cov=0.1271  sfa=0.1470
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 7.7299 (baseline mean=6.9372, std=0.1943)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=83 step= 5000/8000  loss=0.7713  sim=7.1462  var=0.0000  cov=0.0284  sfa=0.1556
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=83 step= 6000/8000  loss=5.3046  sim=7.1995  var=0.0149  cov=0.1948  sfa=0.1546
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=83 step= 7000/8000  loss=1.4808  sim=6.7562  var=0.0000  cov=0.0556  sfa=0.1553
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=83 step= 8000/8000  loss=1.8064  sim=5.5772  var=0.0359  cov=0.0338  sfa=0.3217
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=109 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=109 step= 1000/8000  loss=8.4872  sim=7.2710  var=0.2378  cov=0.0952  sfa=0.2459
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=109 step= 2000/8000  loss=10.0340  sim=6.6571  var=0.0326  cov=0.3646  sfa=0.2885
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=109 step= 3000/8000  loss=3.2525  sim=5.0055  var=0.0000  cov=0.1271  sfa=0.5760
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=109 step= 4000/8000  loss=0.3502  sim=4.6865  var=0.0000  cov=0.0106  sfa=0.6113
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=109 step= 5000/8000  loss=4.9088  sim=3.1767  var=0.1061  cov=0.0884  sfa=0.8200
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=109 step= 6000/8000  loss=0.4175  sim=4.9506  var=0.0000  cov=0.0138  sfa=1.3047
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=109 step= 7000/8000  loss=1.4446  sim=4.2387  var=0.0000  cov=0.0527  sfa=0.9519
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=109 step= 8000/8000  loss=3.6950  sim=3.4914  var=0.1088  cov=0.0381  sfa=0.3475
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=151 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=151 step= 1000/8000  loss=6.7858  sim=434.4321  var=0.0921  cov=0.1485  sfa=0.2592
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=151 step= 2000/8000  loss=2.3076  sim=401.8743  var=0.0149  cov=0.0576  sfa=0.1137
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=151 step= 3000/8000  loss=3.1200  sim=398.1529  var=0.0000  cov=0.1047  sfa=0.1386
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=151 step= 4000/8000  loss=2.6474  sim=384.2135  var=0.0176  cov=0.0598  sfa=0.1775
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=151 step= 5000/8000  loss=4.8302  sim=361.9695  var=0.0661  cov=0.1022  sfa=0.0999
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=151 step= 6000/8000  loss=3.6980  sim=327.7508  var=0.0000  cov=0.1188  sfa=0.1582
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=151 step= 7000/8000  loss=1.6692  sim=312.6536  var=0.0203  cov=0.0343  sfa=0.1949
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=151 step= 8000/8000  loss=6.4947  sim=300.7228  var=0.0974  cov=0.1316  sfa=0.1802
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=53 -> starting on cpu (dry_run=False)
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.0658 (baseline mean=2.6357, std=0.1007)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=53 step= 1000/8000  loss=21.5229  sim=3.7223  var=0.5720  cov=0.2622  sfa=0.0215
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=53 step= 2000/8000  loss=12.5445  sim=3.3919  var=0.3608  cov=0.1355  sfa=0.0762[E1 (VICReg-only, mean-pool)] seed=17 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=17 step= 1000/8000  loss=3.8699  sim=8.6623  var=0.0690  cov=0.0806  sfa=0.1396
+  [E1 (VICReg-only, mean-pool)] seed=17 step= 2000/8000  loss=5.7180  sim=11.4801  var=0.0587  cov=0.1650  sfa=0.1906
+  [E1 (VICReg-only, mean-pool)] seed=17 step= 3000/8000  loss=2.4246  sim=9.2345  var=0.0641  cov=0.0308  sfa=0.1311
+  [E1 (VICReg-only, mean-pool)] seed=17 step= 4000/8000  loss=4.2002  sim=9.6005  var=0.0201  cov=0.1453  sfa=0.1403
+  [E1 (VICReg-only, mean-pool)] seed=17 step= 5000/8000  loss=3.1025  sim=12.3372  var=0.0638  cov=0.0578  sfa=0.2047
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 12.3948 (baseline mean=10.4726, std=0.4671)
+  [E1 (VICReg-only, mean-pool)] seed=17 step= 6000/8000  loss=1.4312  sim=11.9208  var=0.0000  cov=0.0548  sfa=0.2212
+  [E1 (VICReg-only, mean-pool)] seed=17 step= 7000/8000  loss=1.9203  sim=9.6506  var=0.0294  cov=0.0457  sfa=0.1975
+  [E1 (VICReg-only, mean-pool)] seed=17 step= 8000/8000  loss=3.4419  sim=9.7659  var=0.0299  cov=0.1052  sfa=0.2022
+[E1 (VICReg-only, mean-pool)] seed=103 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=103 step= 1000/8000  loss=6.7137  sim=71.6159  var=0.1335  cov=0.1139  sfa=0.1147
+  [E1 (VICReg-only, mean-pool)] seed=103 step= 2000/8000  loss=4.2516  sim=66.5224  var=0.0269  cov=0.1296  sfa=0.1424
+  [E1 (VICReg-only, mean-pool)] seed=103 step= 3000/8000  loss=4.4166  sim=66.0435  var=0.0437  cov=0.1226  sfa=0.1952
+  [E1 (VICReg-only, mean-pool)] seed=103 step= 4000/8000  loss=5.3206  sim=55.7828  var=0.0881  cov=0.1187  sfa=0.2779
+  [E1 (VICReg-only, mean-pool)] seed=103 step= 5000/8000  loss=2.4616  sim=58.3724  var=0.0332  cov=0.0589  sfa=0.2233
+  [E1 (VICReg-only, mean-pool)] seed=103 step= 6000/8000  loss=2.9480  sim=54.6383  var=0.0301  cov=0.0794  sfa=0.1503
+  [E1 (VICReg-only, mean-pool)] seed=103 step= 7000/8000  loss=3.4275  sim=52.2496  var=0.0395  cov=0.0911  sfa=0.2453
+  [E1 (VICReg-only, mean-pool)] seed=103 step= 8000/8000  loss=3.0439  sim=48.9000  var=0.0443  cov=0.0704  sfa=0.2295
+[E1 (VICReg-only, mean-pool)] seed=149 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=149 step= 1000/8000  loss=4.8433  sim=7.8305  var=0.0590  cov=0.1316  sfa=0.2002
+  [E1 (VICReg-only, mean-pool)] seed=149 step= 2000/8000  loss=6.4836  sim=8.7735  var=0.1463  cov=0.1108  sfa=0.1603
+  [E1 (VICReg-only, mean-pool)] seed=149 step= 3000/8000  loss=3.5595  sim=8.5823  var=0.0368  cov=0.1022  sfa=0.2864
+  [E1 (VICReg-only, mean-pool)] seed=149 step= 4000/8000  loss=5.5490  sim=7.5488  var=0.0104  cov=0.2081  sfa=0.2274
+  [E1 (VICReg-only, mean-pool)] seed=149 step= 5000/8000  loss=3.2384  sim=6.5155  var=0.0088  cov=0.1159  sfa=0.2681
+  [E1 (VICReg-only, mean-pool)] seed=149 step= 6000/8000  loss=2.7916  sim=6.8767  var=0.0954  cov=0.0115  sfa=0.2071
+  [E1 (VICReg-only, mean-pool)] seed=149 step= 7000/8000  loss=8.1165  sim=6.8351  var=0.0788  cov=0.2397  sfa=0.2513
+  [E1 (VICReg-only, mean-pool)] seed=149 step= 8000/8000  loss=2.1437  sim=4.5369  var=0.0675  cov=0.0159  sfa=0.1741
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=31 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=31 step= 1000/8000  loss=8.3655  sim=10.6272  var=0.2071  cov=0.1243  sfa=0.0934
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=31 step= 2000/8000  loss=7.6742  sim=12.2997  var=0.0080  cov=0.2955  sfa=0.0797
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=31 step= 3000/8000  loss=4.0808  sim=19.1760  var=0.0788  cov=0.0817  sfa=0.1106
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 21.7499 (baseline mean=18.3045, std=0.8404)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=31 step= 4000/8000  loss=9.4765  sim=25.1620  var=0.0387  cov=0.3378  sfa=0.3024
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=31 step= 5000/8000  loss=5.0665  sim=18.5893  var=0.0257  cov=0.1755  sfa=0.2555
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=31 step= 6000/8000  loss=1.5033  sim=18.3121  var=0.0386  cov=0.0193  sfa=0.4833
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=31 step= 7000/8000  loss=2.3584  sim=15.5394  var=0.0027  cov=0.0897  sfa=0.5357
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=31 step= 8000/8000  loss=2.0864  sim=17.7063  var=0.0620  cov=0.0187  sfa=0.5499
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=103 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=103 step= 1000/8000  loss=5.9300  sim=78.3920  var=0.1177  cov=0.0977  sfa=0.1106
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=103 step= 2000/8000  loss=5.1941  sim=74.2151  var=0.0244  cov=0.1717  sfa=0.1362
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=103 step= 3000/8000  loss=5.7363  sim=75.8785  var=0.0511  cov=0.1693  sfa=0.1599
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=103 step= 4000/8000  loss=5.4144  sim=68.4541  var=0.1014  cov=0.1097  sfa=0.1787
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=103 step= 5000/8000  loss=5.7902  sim=70.1580  var=0.0564  cov=0.1702  sfa=0.2065
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=103 step= 6000/8000  loss=4.3220  sim=65.8549  var=0.0555  cov=0.1114  sfa=0.1250
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=103 step= 7000/8000  loss=3.6392  sim=65.0901  var=0.0275  cov=0.1107  sfa=0.1337
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=103 step= 8000/8000  loss=4.2522  sim=59.2099  var=0.0448  cov=0.1186  sfa=0.1777
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=137 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=137 step= 1000/8000  loss=3.2413  sim=4.1416  var=0.0000  cov=0.1246  sfa=0.0683
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=137 step= 2000/8000  loss=10.6160  sim=2.3942  var=0.0335  cov=0.3888  sfa=0.0597
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=137 step= 3000/8000  loss=0.8255  sim=2.7704  var=0.0143  cov=0.0170  sfa=0.0652
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=137 step= 4000/8000  loss=1.9890  sim=2.5215  var=0.0125  cov=0.0607  sfa=0.1943
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=137 step= 5000/8000  loss=4.1014  sim=2.4052  var=0.1012  cov=0.0583  sfa=0.0949
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=137 step= 6000/8000  loss=5.1020  sim=2.9164  var=0.0000  cov=0.1982  sfa=0.3159
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=137 step= 7000/8000  loss=2.0479  sim=3.1207  var=0.0084  cov=0.0679  sfa=0.3008
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=137 step= 8000/8000  loss=3.1327  sim=3.4585  var=0.0000  cov=0.1148  sfa=0.3536
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=7 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=7 step= 1000/8000  loss=17.4203  sim=3.8518  var=0.5876  cov=0.1021  sfa=0.0154
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=7 step= 2000/8000  loss=17.5653  sim=4.6086  var=0.4811  cov=0.2177  sfa=0.0370
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 6.4899 (baseline mean=5.4364, std=0.2588)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=7 step= 3000/8000  loss=13.9539  sim=6.1882  var=0.3584  cov=0.1967  sfa=0.1048
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=7 step= 4000/8000  loss=12.6147  sim=10.4051  var=0.2666  cov=0.2339  sfa=0.1653
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=7 step= 5000/8000  loss=10.7046  sim=9.2816  var=0.2388  cov=0.1848  sfa=0.1261
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=7 step= 6000/8000  loss=11.5515  sim=12.5594  var=0.1670  cov=0.2928  sfa=0.3875
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=7 step= 7000/8000  loss=12.1254  sim=11.5856  var=0.1256  cov=0.3570  sfa=0.4134
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=7 step= 8000/8000  loss=8.8527  sim=12.6830  var=0.1688  cov=0.1834  sfa=0.2693
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=97 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=97 step= 1000/8000  loss=19.9677  sim=4.3081  var=0.5127  cov=0.2803  sfa=0.0355[E1 (VICReg-only, mean-pool)] seed=83 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=83 step= 1000/8000  loss=5.6717  sim=4.7989  var=0.0238  cov=0.1957  sfa=0.2609
+  [E1 (VICReg-only, mean-pool)] seed=83 step= 2000/8000  loss=9.6893  sim=7.2100  var=0.0000  cov=0.3849  sfa=0.3022
+  [E1 (VICReg-only, mean-pool)] seed=83 step= 3000/8000  loss=13.2606  sim=8.9419  var=0.0758  cov=0.4525  sfa=0.3573
+  [E1 (VICReg-only, mean-pool)] seed=83 step= 4000/8000  loss=7.7561  sim=7.3091  var=0.0055  cov=0.3016  sfa=0.1805
+  [E1 (VICReg-only, mean-pool)] seed=83 step= 5000/8000  loss=5.7045  sim=8.1930  var=0.0000  cov=0.2248  sfa=0.3210
+  [E1 (VICReg-only, mean-pool)] seed=83 step= 6000/8000  loss=4.4694  sim=6.9779  var=0.0409  cov=0.1358  sfa=0.2688
+  [E1 (VICReg-only, mean-pool)] seed=83 step= 7000/8000  loss=2.7263  sim=7.6866  var=0.0285  cov=0.0767  sfa=0.2874
+  [E1 (VICReg-only, mean-pool)] seed=83 step= 8000/8000  loss=6.0291  sim=9.6635  var=0.0037  cov=0.2325  sfa=0.3654
+[E1 (VICReg-only, mean-pool)] seed=109 -> starting on cpu (dry_run=False)
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 12.0871 (baseline mean=7.9753, std=1.0155)
+  [E1 (VICReg-only, mean-pool)] seed=109 step= 1000/8000  loss=7.4971  sim=96.9410  var=0.1119  cov=0.1807  sfa=0.2213
+  [E1 (VICReg-only, mean-pool)] seed=109 step= 2000/8000  loss=9.0641  sim=67.3544  var=0.0000  cov=0.3563  sfa=0.1906
+  [E1 (VICReg-only, mean-pool)] seed=109 step= 3000/8000  loss=5.9358  sim=50.2880  var=0.0979  cov=0.1327  sfa=0.1601
+  [E1 (VICReg-only, mean-pool)] seed=109 step= 4000/8000  loss=1.9530  sim=45.2868  var=0.0003  cov=0.0708  sfa=0.1354
+  [E1 (VICReg-only, mean-pool)] seed=109 step= 5000/8000  loss=8.7357  sim=38.2745  var=0.1005  cov=0.2467  sfa=0.1558
+  [E1 (VICReg-only, mean-pool)] seed=109 step= 6000/8000  loss=1.6992  sim=27.1820  var=0.0000  cov=0.0636  sfa=0.1670
+  [E1 (VICReg-only, mean-pool)] seed=109 step= 7000/8000  loss=2.2813  sim=23.9927  var=0.0413  cov=0.0439  sfa=0.1473
+  [E1 (VICReg-only, mean-pool)] seed=109 step= 8000/8000  loss=6.3422  sim=26.5496  var=0.1551  cov=0.0973  sfa=0.1302
+[E1 (VICReg-only, mean-pool)] seed=151 -> starting on cpu (dry_run=False)
+  [E1 (VICReg-only, mean-pool)] seed=151 step= 1000/8000  loss=5.8854  sim=407.4822  var=0.0939  cov=0.1103  sfa=0.4748
+  [E1 (VICReg-only, mean-pool)] seed=151 step= 2000/8000  loss=2.1156  sim=395.9658  var=0.0201  cov=0.0348  sfa=0.2500
+  [E1 (VICReg-only, mean-pool)] seed=151 step= 3000/8000  loss=5.7619  sim=374.8615  var=0.0000  cov=0.2064  sfa=0.3199
+  [E1 (VICReg-only, mean-pool)] seed=151 step= 4000/8000  loss=5.4103  sim=347.9445  var=0.0025  cov=0.1841  sfa=0.3264
+  [E1 (VICReg-only, mean-pool)] seed=151 step= 5000/8000  loss=5.0781  sim=340.6027  var=0.1209  cov=0.0600  sfa=0.2754
+  [E1 (VICReg-only, mean-pool)] seed=151 step= 6000/8000  loss=2.5510  sim=319.8893  var=0.0493  cov=0.0237  sfa=0.4859
+  [E1 (VICReg-only, mean-pool)] seed=151 step= 7000/8000  loss=5.7190  sim=308.8540  var=0.0142  cov=0.2016  sfa=0.5008
+  [E1 (VICReg-only, mean-pool)] seed=151 step= 8000/8000  loss=4.0967  sim=299.3570  var=0.1020  cov=0.0313  sfa=0.3722
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=53 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=53 step= 1000/8000  loss=6.9403  sim=31.3593  var=0.1683  cov=0.0805  sfa=0.1685
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=53 step= 2000/8000  loss=2.5248  sim=17.2005  var=0.0000  cov=0.0916  sfa=0.0966
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=53 step= 3000/8000  loss=6.8779  sim=14.1429  var=0.0040  cov=0.2642  sfa=0.1344
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=53 step= 4000/8000  loss=2.7793  sim=14.8458  var=0.0318  cov=0.0710  sfa=0.0893
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=53 step= 5000/8000  loss=2.3087  sim=10.8858  var=0.0017  cov=0.0810  sfa=0.1339
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=53 step= 6000/8000  loss=2.7498  sim=11.4519  var=0.0000  cov=0.1049  sfa=0.1654
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=53 step= 7000/8000  loss=4.5933  sim=8.0137  var=0.0584  cov=0.1178  sfa=0.1189
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=53 step= 8000/8000  loss=3.1667  sim=9.6535  var=0.0552  cov=0.0647  sfa=0.1633
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=107 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=107 step= 1000/8000  loss=11.1315  sim=64.6941  var=0.0193  cov=0.3903  sfa=0.3070
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=107 step= 2000/8000  loss=5.7636  sim=65.9169  var=0.0622  cov=0.1536  sfa=0.2723
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=107 step= 3000/8000  loss=4.4990  sim=69.9747  var=0.0468  cov=0.1209  sfa=0.2685
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=107 step= 4000/8000  loss=2.9704  sim=61.6429  var=0.0000  cov=0.1133  sfa=0.5198
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=107 step= 5000/8000  loss=4.3853  sim=64.1220  var=0.0270  cov=0.1415  sfa=0.3153
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=107 step= 6000/8000  loss=5.1900  sim=65.6375  var=0.0578  cov=0.1431  sfa=0.3531
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=107 step= 7000/8000  loss=1.5433  sim=68.5271  var=0.0000  cov=0.0521  sfa=0.4695
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=107 step= 8000/8000  loss=1.5202  sim=66.7765  var=0.0319  cov=0.0234  sfa=0.4182
+[E1.5 (VICReg-only, centroid-gated scalar)] seed=139 -> starting on cpu (dry_run=False)
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=139 step= 1000/8000  loss=4.1342  sim=38.8050  var=0.0809  cov=0.0736  sfa=0.1378
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=139 step= 2000/8000  loss=5.0621  sim=49.0262  var=0.0000  cov=0.1971  sfa=0.0869
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=139 step= 3000/8000  loss=1.0399  sim=40.5988  var=0.0000  cov=0.0335  sfa=0.1038
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=139 step= 4000/8000  loss=7.5213  sim=48.1096  var=0.1209  cov=0.1770  sfa=0.0841
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=139 step= 5000/8000  loss=8.2511  sim=52.7055  var=0.0090  cov=0.3162  sfa=0.1199
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=139 step= 6000/8000  loss=3.3031  sim=64.9926  var=0.0249  cov=0.1041  sfa=0.1664
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=139 step= 7000/8000  loss=4.7494  sim=65.2422  var=0.1644  cov=0.0217  sfa=0.2675
+  [E1.5 (VICReg-only, centroid-gated scalar)] seed=139 step= 8000/8000  loss=3.9249  sim=75.4308  var=0.1063  cov=0.0451  sfa=0.2653
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=17 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=17 step= 1000/8000  loss=15.6440  sim=1.6802  var=0.4892  cov=0.1254  sfa=0.0378
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=17 step= 2000/8000  loss=13.8300  sim=1.8689  var=0.3895  cov=0.1610  sfa=0.0676
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=17 step= 3000/8000  loss=10.8586  sim=2.0262  var=0.2387  cov=0.1942  sfa=0.0611
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=17 step= 4000/8000  loss=8.3625  sim=2.4058  var=0.1798  cov=0.1533  sfa=0.1258
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=17 step= 5000/8000  loss=9.1884  sim=2.7170  var=0.2201  cov=0.1459  sfa=0.1005
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=17 step= 6000/8000  loss=10.9266  sim=2.2382  var=0.3277  cov=0.1082  sfa=0.0998
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=17 step= 7000/8000  loss=5.0234  sim=3.0332  var=0.1390  cov=0.0606  sfa=0.1051
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=17 step= 8000/8000  loss=9.2311  sim=2.8072  var=0.2573  cov=0.1099  sfa=0.1751
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=101 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=101 step= 1000/8000  loss=16.5598  sim=7.5234  var=0.5031  cov=0.1543  sfa=0.0106
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=101 step= 2000/8000  loss=18.9420  sim=33.3084  var=0.6548  cov=0.1005  sfa=0.0214
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=101 step= 3000/8000  loss=16.0002  sim=22.3400  var=0.4333  cov=0.2026  sfa=0.0331
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=71 step= 1000/8000  loss=15.0627  sim=7.5648  var=0.4696  cov=0.1259  sfa=0.0293
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 9.8536 (baseline mean=8.3360, std=0.3724)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=71 step= 2000/8000  loss=9.7278  sim=13.5741  var=0.2011  cov=0.1793  sfa=0.0905
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=71 step= 3000/8000  loss=7.8205  sim=13.9880  var=0.1589  cov=0.1503  sfa=0.0863
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=71 step= 4000/8000  loss=13.1433  sim=12.7218  var=0.2950  cov=0.2284  sfa=0.0928
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=71 step= 5000/8000  loss=7.2007  sim=12.0348  var=0.1713  cov=0.1121  sfa=0.1529
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=71 step= 6000/8000  loss=10.3357  sim=12.0947  var=0.2560  cov=0.1530  sfa=0.1355
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=71 step= 7000/8000  loss=7.0590  sim=11.5878  var=0.1462  cov=0.1313  sfa=0.1551
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=71 step= 8000/8000  loss=5.1972  sim=12.9370  var=0.0995  cov=0.1029  sfa=0.1701
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=109 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=109 step= 1000/8000  loss=24.7095  sim=1.7063  var=0.6129  cov=0.3694  sfa=0.0855
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=109 step= 2000/8000  loss=11.9295  sim=2.5924  var=0.2912  cov=0.1839  sfa=0.2152
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 2.8969 (baseline mean=2.5716, std=0.0802)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=109 step= 3000/8000  loss=10.1508  sim=3.0070  var=0.1735  cov=0.2307  sfa=0.3778
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=109 step= 4000/8000  loss=7.5227  sim=2.9468  var=0.1038  cov=0.1951  sfa=0.3352
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=109 step= 5000/8000  loss=11.6017  sim=2.4513  var=0.2590  cov=0.2039  sfa=0.2617
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=109 step= 6000/8000  loss=7.4874  sim=2.9496  var=0.1158  cov=0.1822  sfa=0.4391
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=109 step= 7000/8000  loss=9.0829  sim=3.3066  var=0.1243  cov=0.2349  sfa=0.2926
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=109 step= 8000/8000  loss=8.0848  sim=3.1222  var=0.1738  cov=0.1485  sfa=0.3495
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=149 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=149 step= 1000/8000  loss=20.6416  sim=4.1724  var=0.5744  cov=0.2469  sfa=0.0291
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=149 step= 2000/8000  loss=16.2852  sim=6.2546  var=0.4766  cov=0.1722  sfa=0.0520
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=149 step= 3000/8000  loss=12.5220  sim=5.4541  var=0.2891  cov=0.2093  sfa=0.0996
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=149 step= 4000/8000  loss=13.0888  sim=5.4530  var=0.2746  cov=0.2460  sfa=0.0907
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=149 step= 5000/8000  loss=8.0843  sim=5.6826  var=0.1820  cov=0.1387  sfa=0.2823
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=149 step= 6000/8000  loss=7.4044  sim=5.5553  var=0.1913  cov=0.1015  sfa=0.2550
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=149 step= 7000/8000  loss=7.0537  sim=7.2460  var=0.1684  cov=0.1110  sfa=0.3785
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=149 step= 8000/8000  loss=4.9384  sim=7.3755  var=0.1097  cov=0.0854  sfa=0.4054
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=31 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=31 step= 1000/8000  loss=24.5640  sim=2.2057  var=0.7621  cov=0.2084  sfa=0.0430
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 2.5806 (baseline mean=2.1107, std=0.1155)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=31 step= 2000/8000  loss=16.6423  sim=2.6914  var=0.3915  cov=0.2563  sfa=0.0752
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=31 step= 3000/8000  loss=14.8824  sim=2.2892  var=0.3974  cov=0.1795  sfa=0.0848
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=31 step= 4000/8000  loss=10.3533  sim=2.5572  var=0.1927  cov=0.1888  sfa=0.1582
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=31 step= 5000/8000  loss=12.0718  sim=2.0652  var=0.2320  cov=0.2288  sfa=0.1025
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=31 step= 6000/8000  loss=9.9256  sim=2.2701  var=0.2296  cov=0.1266  sfa=0.1965
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=31 step= 7000/8000  loss=8.4503  sim=2.2802  var=0.1903  cov=0.1233  sfa=0.1097
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=31 step= 8000/8000  loss=9.4711  sim=2.2129  var=0.2178  cov=0.1396  sfa=0.1028
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=103 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=103 step= 1000/8000  loss=15.5800  sim=7.5140  var=0.4162  cov=0.1971  sfa=0.0210
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=103 step= 2000/8000  loss=10.8061  sim=6.8995  var=0.2873  cov=0.1277  sfa=0.0615
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=103 step= 3000/8000  loss=9.5917  sim=9.4568  var=0.1728  cov=0.1905  sfa=0.0811
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=103 step= 4000/8000  loss=11.5547  sim=9.6040  var=0.2743  cov=0.1696  sfa=0.0777
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=103 step= 5000/8000  loss=8.2465  sim=10.9120  var=0.1356  cov=0.1757  sfa=0.0725
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=103 step= 6000/8000  loss=9.2365  sim=10.3415  var=0.2111  cov=0.1449  sfa=0.0488
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=103 step= 7000/8000  loss=9.6223  sim=9.6355  var=0.1867  cov=0.1815  sfa=0.0695
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=103 step= 8000/8000  loss=10.6024  sim=13.1975  var=0.1690  cov=0.2374  sfa=0.0758
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=137 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=137 step= 1000/8000  loss=15.2190  sim=2.9055  var=0.4226  cov=0.1706  sfa=0.0440
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=137 step= 2000/8000  loss=16.7134  sim=3.9800  var=0.3161  cov=0.3357  sfa=0.0691
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=137 step= 3000/8000  loss=8.8999  sim=3.9797  var=0.2410  cov=0.0897  sfa=0.1177
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 4.4287 (baseline mean=4.1190, std=0.0760)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=137 step= 4000/8000  loss=11.0219  sim=4.6379  var=0.2197  cov=0.1786  sfa=0.1898
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=137 step= 5000/8000  loss=10.1741  sim=5.5492  var=0.2264  cov=0.1376  sfa=0.2024
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=137 step= 6000/8000  loss=9.2250  sim=5.1064  var=0.1499  cov=0.1729  sfa=0.2151
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=137 step= 7000/8000  loss=11.4339  sim=4.9748  var=0.2223  cov=0.1697  sfa=0.3081
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=137 step= 8000/8000  loss=11.3523  sim=4.4396  var=0.1835  cov=0.2002  sfa=0.3275
+
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=83 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=83 step= 1000/8000  loss=18.6002  sim=6.6817  var=0.4364  cov=0.2907  sfa=0.0500
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=83 step= 2000/8000  loss=11.0871  sim=7.0180  var=0.2409  cov=0.1978  sfa=0.1450
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=83 step= 3000/8000  loss=14.3268  sim=7.6092  var=0.2423  cov=0.3272  sfa=0.2428
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=83 step= 4000/8000  loss=8.0541  sim=6.1510  var=0.1372  cov=0.1816  sfa=0.1662
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=83 step= 5000/8000  loss=9.7135  sim=5.3101  var=0.2159  cov=0.1685  sfa=0.2745
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=83 step= 6000/8000  loss=10.4558  sim=5.2952  var=0.1896  cov=0.2252  sfa=0.1476
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=83 step= 7000/8000  loss=7.3774  sim=4.7424  var=0.1407  cov=0.1497  sfa=0.3020
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=83 step= 8000/8000  loss=7.5731  sim=6.9199  var=0.1637  cov=0.1347  sfa=0.2547
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=113 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=113 step= 1000/8000  loss=21.1224  sim=7.1802  var=0.6502  cov=0.1875  sfa=0.0159
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=113 step= 2000/8000  loss=17.2579  sim=19.4483  var=0.3849  cov=0.3028  sfa=0.0618
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=113 step= 3000/8000  loss=6.7487  sim=24.0160  var=0.1302  cov=0.1362  sfa=0.0684
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=113 step= 4000/8000  loss=12.1399  sim=26.3144  var=0.1426  cov=0.3401  sfa=0.0567
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=113 step= 5000/8000  loss=9.3106  sim=24.8471  var=0.2261  cov=0.1397  sfa=0.0523
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=113 step= 6000/8000  loss=11.8900  sim=23.5289  var=0.2432  cov=0.2283  sfa=0.0967
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=113 step= 7000/8000  loss=7.9577  sim=25.2210  var=0.1543  cov=0.1606  sfa=0.1861
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=113 step= 8000/8000  loss=13.0721  sim=28.0429  var=0.1801  cov=0.3388  sfa=0.1972
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=151 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=151 step= 1000/8000  loss=21.1928  sim=1.8314  var=0.5680  cov=0.2701  sfa=0.0889
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=151 step= 2000/8000  loss=15.9349  sim=2.6341  var=0.4074  cov=0.2262  sfa=0.1692
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=151 step= 3000/8000  loss=8.4154  sim=3.4966  var=0.2157  cov=0.1156  sfa=0.4069
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=151 step= 4000/8000  loss=10.4756  sim=2.6279  var=0.2442  cov=0.1686  sfa=0.5135
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=151 step= 5000/8000  loss=12.2146  sim=3.0287  var=0.2580  cov=0.2271  sfa=0.5249
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 2.9305 (baseline mean=2.6609, std=0.0667)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=151 step= 6000/8000  loss=8.6554  sim=3.0582  var=0.1527  cov=0.1902  sfa=0.7691
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=151 step= 7000/8000  loss=7.4512  sim=2.8695  var=0.1542  cov=0.1405  sfa=0.4781
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.2663 (baseline mean=2.8486, std=0.1023)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=151 step= 8000/8000  loss=9.4704  sim=3.6432  var=0.1565  cov=0.2165  sfa=0.5509
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=53 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=53 step= 1000/8000  loss=19.4545  sim=4.3942  var=0.5420  cov=0.2139  sfa=0.0266
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=53 step= 2000/8000  loss=12.0906  sim=3.8420  var=0.3474  cov=0.1150  sfa=0.0836
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=53 step= 3000/8000  loss=12.3349  sim=3.7268  var=0.3340  cov=0.1329  sfa=0.1162
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=53 step= 4000/8000  loss=22.4029  sim=3.7699  var=0.2768  cov=0.5877  sfa=0.1476
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=53 step= 5000/8000  loss=11.5766  sim=3.5486  var=0.2668  cov=0.1304  sfa=0.3189
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=53 step= 6000/8000  loss=10.7449  sim=3.5066  var=0.1809  cov=0.2089  sfa=0.1872
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=53 step= 7000/8000  loss=12.6417  sim=2.8654  var=0.2737  cov=0.1776  sfa=0.2639
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=53 step= 8000/8000  loss=8.3263  sim=2.7809  var=0.1780  cov=0.1075  sfa=0.2176
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=107 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=107 step= 1000/8000  loss=18.5038  sim=2.6498  var=0.6293  cov=0.0922  sfa=0.0365
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=107 step= 2000/8000  loss=15.1280  sim=2.2973  var=0.3941  cov=0.1951  sfa=0.0724
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=107 step= 3000/8000  loss=12.0494  sim=3.7574  var=0.1570  cov=0.2834  sfa=0.1971
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=107 step= 4000/8000  loss=11.3629  sim=3.9133  var=0.2497  cov=0.1618  sfa=0.1939
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=107 step= 5000/8000  loss=8.9561  sim=3.5098  var=0.2072  cov=0.1271  sfa=0.1129
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=107 step= 6000/8000  loss=8.2252  sim=3.5949  var=0.1294  cov=0.1623  sfa=0.1794
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=107 step= 7000/8000  loss=10.6272  sim=3.3604  var=0.2278  cov=0.1426  sfa=0.2671
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=107 step= 8000/8000  loss=9.1872  sim=2.8729  var=0.2173  cov=0.1027  sfa=0.2290
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=139 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=139 step= 1000/8000  loss=18.1236  sim=52.3100  var=0.4739  cov=0.2144  sfa=0.0382
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=139 step= 2000/8000  loss=13.8875  sim=41.9149  var=0.3143  cov=0.2165  sfa=0.0473
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=139 step= 3000/8000  loss=9.3704  sim=37.0396  var=0.2031  cov=0.1469  sfa=0.0763
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=139 step= 4000/8000  loss=11.7101  sim=37.9569  var=0.1947  cov=0.2528  sfa=0.0719
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=139 step= 5000/8000  loss=20.5075  sim=30.3592  var=0.1579  cov=0.6390  sfa=0.0797
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=139 step= 6000/8000  loss=9.8280  sim=35.6879  var=0.1612  cov=0.2088  sfa=0.0906
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=139 step= 7000/8000  loss=12.5717  sim=32.3653  var=0.2426  cov=0.2380  sfa=0.0817
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=139 step= 8000/8000  loss=9.9858  sim=27.2934  var=0.1598  cov=0.2127  sfa=0.0967
+
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=97 step= 2000/8000  loss=15.5262  sim=5.9744  var=0.4920  cov=0.1259  sfa=0.0551
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=97 step= 3000/8000  loss=10.7747  sim=4.6355  var=0.3070  cov=0.1205  sfa=0.0554
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=97 step= 4000/8000  loss=11.2716  sim=5.2913  var=0.3273  cov=0.1221  sfa=0.1009
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=97 step= 5000/8000  loss=16.7382  sim=5.4489  var=0.5073  cov=0.1608  sfa=0.1547
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=97 step= 6000/8000  loss=8.6361  sim=5.7658  var=0.2126  cov=0.1313  sfa=0.1940
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=97 step= 7000/8000  loss=6.6896  sim=5.4802  var=0.1527  cov=0.1131  sfa=0.1116
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=97 step= 8000/8000  loss=10.7573  sim=4.7035  var=0.3062  cov=0.1226  sfa=0.1982
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=131 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=131 step= 1000/8000  loss=24.5215  sim=2.2748  var=0.6076  cov=0.3650  sfa=0.0280
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=131 step= 2000/8000  loss=12.3997  sim=3.7513  var=0.2878  cov=0.2061  sfa=0.0755
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=131 step= 3000/8000  loss=11.0742  sim=8.9472  var=0.1958  cov=0.2449  sfa=0.1138
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 14.4913 (baseline mean=12.6865, std=0.4480)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=131 step= 4000/8000  loss=9.8846  sim=16.5140  var=0.2122  cov=0.1791  sfa=0.1107
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=131 step= 5000/8000  loss=7.3152  sim=26.6999  var=0.1660  cov=0.1245  sfa=0.1146
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=131 step= 6000/8000  loss=9.7767  sim=24.3285  var=0.2177  cov=0.1711  sfa=0.1518
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=131 step= 7000/8000  loss=11.8680  sim=29.1591  var=0.2415  cov=0.2308  sfa=0.2505
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=131 step= 8000/8000  loss=10.4461  sim=23.5872  var=0.2398  cov=0.1761  sfa=0.1039
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=163 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=163 step= 1000/8000  loss=18.1354  sim=3.5294  var=0.5522  cov=0.1644  sfa=0.0399
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=163 step= 2000/8000  loss=21.5226  sim=7.5079  var=0.4692  cov=0.3883  sfa=0.0600
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=163 step= 3000/8000  loss=12.0605  sim=16.2522  var=0.3201  cov=0.1561  sfa=0.1358
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=163 step= 4000/8000  loss=10.8497  sim=19.2741  var=0.2774  cov=0.1535  sfa=0.1071
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=163 step= 5000/8000  loss=9.2070  sim=17.1247  var=0.1445  cov=0.2211  sfa=0.1852
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=163 step= 6000/8000  loss=8.7847  sim=22.1614  var=0.1376  cov=0.2118  sfa=0.2080
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=163 step= 7000/8000  loss=9.6989  sim=23.3806  var=0.1863  cov=0.1980  sfa=0.1934
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=163 step= 8000/8000  loss=11.5106  sim=22.8350  var=0.2020  cov=0.2556  sfa=0.2657
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=83 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=83 step= 1000/8000  loss=20.5611  sim=7.3564  var=0.4386  cov=0.3595  sfa=0.0422
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=83 step= 2000/8000  loss=11.8940  sim=8.1902  var=0.2495  cov=0.2000  sfa=0.1032
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=83 step= 3000/8000  loss=17.8197  sim=8.4599  var=0.2182  cov=0.4450  sfa=0.2175
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=83 step= 4000/8000  loss=10.1710  sim=6.9031  var=0.1598  cov=0.2121  sfa=0.1565
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=83 step= 5000/8000  loss=11.0676  sim=5.4059  var=0.2659  cov=0.1270  sfa=0.2346
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=83 step= 6000/8000  loss=11.6541  sim=6.5833  var=0.2092  cov=0.2180  sfa=0.1792
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=83 step= 7000/8000  loss=7.9454  sim=4.9632  var=0.1604  cov=0.1079  sfa=0.2328
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=83 step= 8000/8000  loss=9.3671  sim=6.3601  var=0.2119  cov=0.1119  sfa=0.2334
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=113 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=113 step= 1000/8000  loss=18.8339  sim=7.6323  var=0.5715  cov=0.1710  sfa=0.0147
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=113 step= 2000/8000  loss=17.0000  sim=19.8267  var=0.3699  cov=0.2969  sfa=0.0508
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=113 step= 3000/8000  loss=6.9870  sim=22.6315  var=0.1454  cov=0.1201  sfa=0.0544
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=113 step= 4000/8000  loss=12.1181  sim=21.6144  var=0.1843  cov=0.2899  sfa=0.0438
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=113 step= 5000/8000  loss=10.2353  sim=19.7435  var=0.2109  cov=0.1875  sfa=0.0439
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=113 step= 6000/8000  loss=11.9517  sim=20.0616  var=0.2069  cov=0.2528  sfa=0.0752
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=113 step= 7000/8000  loss=8.4822  sim=19.3589  var=0.1342  cov=0.1621  sfa=0.1966
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=113 step= 8000/8000  loss=14.1272  sim=18.1051  var=0.1713  cov=0.3620  sfa=0.1348
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=151 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=151 step= 1000/8000  loss=17.3800  sim=2.3433  var=0.5220  cov=0.1502  sfa=0.0735
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 2.5059 (baseline mean=2.2048, std=0.0751)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=151 step= 2000/8000  loss=15.3550  sim=2.9981  var=0.4262  cov=0.1482  sfa=0.1794
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=151 step= 3000/8000  loss=11.2879  sim=3.5189  var=0.2637  cov=0.1202  sfa=0.3044
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=151 step= 4000/8000  loss=12.3103  sim=3.0799  var=0.2201  cov=0.1850  sfa=0.4169
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=151 step= 5000/8000  loss=11.5853  sim=2.8489  var=0.2248  cov=0.1681  sfa=0.3336
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=151 step= 6000/8000  loss=11.7354  sim=2.8277  var=0.1858  cov=0.1910  sfa=0.4356
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=151 step= 7000/8000  loss=9.4318  sim=2.9175  var=0.1621  cov=0.1380  sfa=0.3753
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=151 step= 8000/8000  loss=13.4287  sim=2.7506  var=0.3312  cov=0.1166  sfa=0.4153
+
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=101 step= 4000/8000  loss=12.9185  sim=22.1016  var=0.3511  cov=0.1640  sfa=0.0392
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=101 step= 5000/8000  loss=13.6875  sim=14.9609  var=0.3054  cov=0.2390  sfa=0.0764
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=101 step= 6000/8000  loss=11.0959  sim=9.4314  var=0.3264  cov=0.1160  sfa=0.0657
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=101 step= 7000/8000  loss=9.3176  sim=8.3871  var=0.2182  cov=0.1510  sfa=0.1389
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=101 step= 8000/8000  loss=9.0020  sim=8.0235  var=0.1527  cov=0.2061  sfa=0.1021
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=127 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=127 step= 1000/8000  loss=23.9261  sim=2.6468  var=0.7377  cov=0.2162  sfa=0.0180
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 2.9282 (baseline mean=2.6317, std=0.0694)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=127 step= 2000/8000  loss=15.0309  sim=2.9670  var=0.4536  cov=0.1451  sfa=0.0737
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=127 step= 3000/8000  loss=13.4773  sim=3.0649  var=0.3512  cov=0.1867  sfa=0.0941
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=127 step= 4000/8000  loss=12.9158  sim=3.1255  var=0.3355  cov=0.1806  sfa=0.1137
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.3754 (baseline mean=3.1022, std=0.0657)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=127 step= 5000/8000  loss=11.3731  sim=3.4487  var=0.2290  cov=0.2217  sfa=0.2225
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=127 step= 6000/8000  loss=10.1528  sim=3.3120  var=0.2592  cov=0.1458  sfa=0.2347
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=127 step= 7000/8000  loss=6.6940  sim=3.6457  var=0.1628  cov=0.1040  sfa=0.2418
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=127 step= 8000/8000  loss=24.5720  sim=4.3609  var=0.1293  cov=0.8524  sfa=0.4060
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=157 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=157 step= 1000/8000  loss=13.4941  sim=3.8888  var=0.4068  cov=0.1248  sfa=0.0573
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=157 step= 2000/8000  loss=18.8556  sim=3.5328  var=0.4413  cov=0.3090  sfa=0.0851
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=157 step= 3000/8000  loss=11.1651  sim=6.6676  var=0.2796  cov=0.1644  sfa=0.1377
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=157 step= 4000/8000  loss=9.6069  sim=8.2705  var=0.2530  cov=0.1294  sfa=0.2136
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=157 step= 5000/8000  loss=9.9724  sim=8.6689  var=0.1962  cov=0.2013  sfa=0.1430
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=157 step= 6000/8000  loss=8.8135  sim=13.8359  var=0.1790  cov=0.1720  sfa=0.1862
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=157 step= 7000/8000  loss=17.0147  sim=11.9778  var=0.1899  cov=0.4899  sfa=0.2945
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=157 step= 8000/8000  loss=11.9844  sim=13.6641  var=0.2642  cov=0.2135  sfa=0.2802
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=71 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=71 step= 1000/8000  loss=15.3426  sim=6.4349  var=0.4987  cov=0.0993  sfa=0.0310
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=71 step= 2000/8000  loss=11.0884  sim=9.8062  var=0.2545  cov=0.1685  sfa=0.0695
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=71 step= 3000/8000  loss=7.4453  sim=9.1832  var=0.1284  cov=0.1473  sfa=0.0893
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=71 step= 4000/8000  loss=12.5380  sim=9.6054  var=0.2833  cov=0.2005  sfa=0.0768
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=71 step= 5000/8000  loss=10.1911  sim=10.5096  var=0.1931  cov=0.1863  sfa=0.1230
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=71 step= 6000/8000  loss=9.5336  sim=13.0642  var=0.2066  cov=0.1521  sfa=0.0990
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=71 step= 7000/8000  loss=9.2203  sim=11.3866  var=0.1452  cov=0.2013  sfa=0.0927
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=71 step= 8000/8000  loss=6.0625  sim=11.3220  var=0.1328  cov=0.0785  sfa=0.1342
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=109 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=109 step= 1000/8000  loss=22.9004  sim=1.8600  var=0.6521  cov=0.2455  sfa=0.0597
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=109 step= 2000/8000  loss=13.3363  sim=2.1327  var=0.2998  cov=0.1871  sfa=0.2116
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=109 step= 3000/8000  loss=12.4926  sim=1.9388  var=0.1877  cov=0.2427  sfa=0.3330
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=109 step= 4000/8000  loss=9.2788  sim=1.7552  var=0.1857  cov=0.1317  sfa=0.2575
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=109 step= 5000/8000  loss=13.9868  sim=1.4387  var=0.2964  cov=0.2166  sfa=0.2268
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=109 step= 6000/8000  loss=7.8477  sim=1.6233  var=0.1552  cov=0.1062  sfa=0.2554
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=109 step= 7000/8000  loss=10.9551  sim=1.6737  var=0.1878  cov=0.1985  sfa=0.2451
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=109 step= 8000/8000  loss=12.9598  sim=1.6272  var=0.2921  cov=0.1857  sfa=0.1993
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=149 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=149 step= 1000/8000  loss=20.7456  sim=4.2585  var=0.5919  cov=0.2288  sfa=0.0256
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=149 step= 2000/8000  loss=17.3506  sim=7.3463  var=0.4748  cov=0.2058  sfa=0.0573
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=149 step= 3000/8000  loss=11.7085  sim=6.3873  var=0.2730  cov=0.1783  sfa=0.0703
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=149 step= 4000/8000  loss=14.5067  sim=4.7411  var=0.2917  cov=0.2678  sfa=0.0906
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=149 step= 5000/8000  loss=8.4336  sim=5.4850  var=0.1757  cov=0.1135  sfa=0.2323
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=149 step= 6000/8000  loss=8.5565  sim=6.2814  var=0.1791  cov=0.1314  sfa=0.1434
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=149 step= 7000/8000  loss=9.3075  sim=8.2484  var=0.2183  cov=0.1098  sfa=0.2041
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=149 step= 8000/8000  loss=5.7493  sim=7.6069  var=0.1285  cov=0.0688  sfa=0.1524
+
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=53 step= 3000/8000  loss=12.3808  sim=3.0265  var=0.2954  cov=0.1965  sfa=0.1501
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=53 step= 4000/8000  loss=20.0619  sim=2.6179  var=0.2515  cov=0.5497  sfa=0.1834
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.0362 (baseline mean=2.8355, std=0.0495)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=53 step= 5000/8000  loss=10.9366  sim=2.8507  var=0.3082  cov=0.1273  sfa=0.3183
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=53 step= 6000/8000  loss=11.4074  sim=3.1790  var=0.1833  cov=0.2710  sfa=0.1803
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=53 step= 7000/8000  loss=7.5398  sim=2.7031  var=0.2004  cov=0.0987  sfa=0.2323
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=53 step= 8000/8000  loss=9.2600  sim=2.6140  var=0.2511  cov=0.1161  sfa=0.2681
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=107 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=107 step= 1000/8000  loss=18.5510  sim=2.4968  var=0.6283  cov=0.1013  sfa=0.0421
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=107 step= 2000/8000  loss=13.2788  sim=2.7000  var=0.3681  cov=0.1614  sfa=0.0787
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=107 step= 3000/8000  loss=10.3485  sim=3.1736  var=0.1524  cov=0.2595  sfa=0.2447
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=107 step= 4000/8000  loss=14.1081  sim=2.7557  var=0.2954  cov=0.2653  sfa=0.2081
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=107 step= 5000/8000  loss=8.8155  sim=2.8249  var=0.2049  cov=0.1463  sfa=0.1766
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=107 step= 6000/8000  loss=7.8584  sim=2.6942  var=0.1651  cov=0.1481  sfa=0.1650
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=107 step= 7000/8000  loss=6.0322  sim=2.5047  var=0.1457  cov=0.0942  sfa=0.3121
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.0002 (baseline mean=2.7209, std=0.0676)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=107 step= 8000/8000  loss=7.7480  sim=2.5658  var=0.1695  cov=0.1392  sfa=0.3031
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=139 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=139 step= 1000/8000  loss=19.8805  sim=63.4342  var=0.4130  cov=0.3528  sfa=0.0491
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=139 step= 2000/8000  loss=14.0920  sim=53.5701  var=0.3366  cov=0.2135  sfa=0.0486
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=139 step= 3000/8000  loss=10.2101  sim=35.5968  var=0.2336  cov=0.1594  sfa=0.0861
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=139 step= 4000/8000  loss=10.0471  sim=27.1063  var=0.1839  cov=0.2115  sfa=0.0927
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=139 step= 5000/8000  loss=20.4539  sim=27.9962  var=0.1764  cov=0.6337  sfa=0.1138
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=139 step= 6000/8000  loss=9.6302  sim=28.2577  var=0.1711  cov=0.2086  sfa=0.1147
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=139 step= 7000/8000  loss=15.0696  sim=25.6326  var=0.1643  cov=0.4342  sfa=0.1020
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=139 step= 8000/8000  loss=10.5639  sim=23.7859  var=0.2072  cov=0.2086  sfa=0.1348
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=7 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=7 step= 1000/8000  loss=17.5203  sim=4.3066  var=0.5543  cov=0.1341  sfa=0.0161
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=7 step= 2000/8000  loss=17.1000  sim=4.9503  var=0.4444  cov=0.2256  sfa=0.0550
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=7 step= 3000/8000  loss=12.2722  sim=7.6220  var=0.3626  cov=0.1008  sfa=0.1186
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=7 step= 4000/8000  loss=14.6281  sim=10.3534  var=0.3398  cov=0.2143  sfa=0.1325
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=7 step= 5000/8000  loss=10.3984  sim=10.6154  var=0.1879  cov=0.2010  sfa=0.1265
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=7 step= 6000/8000  loss=9.2889  sim=10.7931  var=0.1549  cov=0.1629  sfa=0.2509
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=7 step= 7000/8000  loss=9.3776  sim=11.7209  var=0.1453  cov=0.1741  sfa=0.2686
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=7 step= 8000/8000  loss=8.4200  sim=11.2335  var=0.1517  cov=0.1442  sfa=0.1950
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=101 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=101 step= 1000/8000  loss=17.1580  sim=5.7486  var=0.5132  cov=0.1663  sfa=0.0095
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=101 step= 2000/8000  loss=17.7163  sim=20.8007  var=0.5898  cov=0.1111  sfa=0.0246
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=101 step= 3000/8000  loss=15.2710  sim=18.9432  var=0.4158  cov=0.1815  sfa=0.0470
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=101 step= 4000/8000  loss=11.0977  sim=13.2910  var=0.2844  cov=0.1485  sfa=0.0463
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=101 step= 5000/8000  loss=11.9815  sim=8.4730  var=0.2539  cov=0.2047  sfa=0.0944
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=101 step= 6000/8000  loss=8.3512  sim=5.5648  var=0.1803  cov=0.1360  sfa=0.0784
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=101 step= 7000/8000  loss=8.5973  sim=3.9788  var=0.1820  cov=0.1400  sfa=0.1008
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=101 step= 8000/8000  loss=8.7573  sim=4.1535  var=0.1661  cov=0.1662  sfa=0.0827
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=131 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=131 step= 1000/8000  loss=23.4764  sim=1.9853  var=0.6783  cov=0.2482  sfa=0.0301
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=131 step= 2000/8000  loss=13.3788  sim=3.7842  var=0.3863  cov=0.1304  sfa=0.0750
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=131 step= 3000/8000  loss=12.2277  sim=5.5633  var=0.2423  cov=0.2225  sfa=0.1067
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=131 step= 4000/8000  loss=10.9076  sim=7.9879  var=0.2532  cov=0.1613  sfa=0.0962
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=131 step= 5000/8000  loss=8.6310  sim=13.7400  var=0.1923  cov=0.1249  sfa=0.1217
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=131 step= 6000/8000  loss=10.8865  sim=11.5939  var=0.2055  cov=0.1957  sfa=0.1628
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=131 step= 7000/8000  loss=13.5050  sim=17.2922  var=0.2194  cov=0.2760  sfa=0.2122
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=131 step= 8000/8000  loss=10.1923  sim=12.6262  var=0.2382  cov=0.1412  sfa=0.1359
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=163 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=163 step= 1000/8000  loss=18.2256  sim=3.9514  var=0.5240  cov=0.1853  sfa=0.0361
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=163 step= 2000/8000  loss=16.5205  sim=5.9407  var=0.4830  cov=0.1614  sfa=0.0561
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=163 step= 3000/8000  loss=15.0912  sim=4.7105  var=0.3359  cov=0.2407  sfa=0.1046
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=163 step= 4000/8000  loss=10.7892  sim=3.6484  var=0.2635  cov=0.1503  sfa=0.0810
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=163 step= 5000/8000  loss=8.8043  sim=4.0459  var=0.2033  cov=0.1099  sfa=0.1853
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=163 step= 6000/8000  loss=9.7034  sim=3.9345  var=0.1196  cov=0.2294  sfa=0.1865
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=163 step= 7000/8000  loss=10.8424  sim=4.8037  var=0.2578  cov=0.1325  sfa=0.2042
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=163 step= 8000/8000  loss=13.6348  sim=5.1090  var=0.1653  cov=0.3278  sfa=0.2466
+
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=31 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=31 step= 1000/8000  loss=24.3021  sim=2.1694  var=0.7523  cov=0.2168  sfa=0.0447
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=31 step= 2000/8000  loss=16.3161  sim=2.2205  var=0.3655  cov=0.2836  sfa=0.1006
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=31 step= 3000/8000  loss=13.1761  sim=1.8673  var=0.4095  cov=0.1159  sfa=0.1065
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=31 step= 4000/8000  loss=9.3715  sim=2.3727  var=0.1920  cov=0.1812  sfa=0.2047
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=31 step= 5000/8000  loss=10.0617  sim=2.3750  var=0.2295  cov=0.1713  sfa=0.1141
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=31 step= 6000/8000  loss=8.2573  sim=2.3697  var=0.1699  cov=0.1590  sfa=0.2428
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=31 step= 7000/8000  loss=7.4045  sim=2.1913  var=0.1524  cov=0.1410  sfa=0.1552
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=31 step= 8000/8000  loss=7.2874  sim=2.4397  var=0.1626  cov=0.1281  sfa=0.1142
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=103 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=103 step= 1000/8000  loss=15.1304  sim=7.3932  var=0.4556  cov=0.1422  sfa=0.0236
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=103 step= 2000/8000  loss=11.6486  sim=6.9000  var=0.2964  cov=0.1652  sfa=0.0658
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=103 step= 3000/8000  loss=9.2028  sim=10.8337  var=0.1858  cov=0.1783  sfa=0.0931
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=103 step= 4000/8000  loss=11.8156  sim=10.5816  var=0.2360  cov=0.2340  sfa=0.0865
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=103 step= 5000/8000  loss=8.4137  sim=14.8685  var=0.1191  cov=0.2135  sfa=0.1011
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=103 step= 6000/8000  loss=8.2742  sim=15.0177  var=0.1753  cov=0.1515  sfa=0.1197
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=103 step= 7000/8000  loss=8.2715  sim=14.4994  var=0.1663  cov=0.1611  sfa=0.1633
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=103 step= 8000/8000  loss=8.8618  sim=16.6664  var=0.1275  cov=0.2241  sfa=0.1997
+[E2 (VICReg-only, centroid-gated rich K=4)] seed=137 -> starting on cpu (dry_run=False)
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=137 step= 1000/8000  loss=14.6085  sim=3.1919  var=0.4058  cov=0.1718  sfa=0.0453
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=137 step= 2000/8000  loss=16.7193  sim=3.8013  var=0.3332  cov=0.3325  sfa=0.0673
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=137 step= 3000/8000  loss=8.0565  sim=4.2090  var=0.2128  cov=0.1075  sfa=0.1160
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=137 step= 4000/8000  loss=9.8606  sim=5.3805  var=0.1630  cov=0.2271  sfa=0.1943
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=137 step= 5000/8000  loss=10.2692  sim=6.0979  var=0.2072  cov=0.1997  sfa=0.2162
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=137 step= 6000/8000  loss=8.0609  sim=5.1463  var=0.1278  cov=0.1912  sfa=0.3278
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=137 step= 7000/8000  loss=10.8536  sim=6.0240  var=0.1463  cov=0.2834  sfa=0.4468
+  [E2 (VICReg-only, centroid-gated rich K=4)] seed=137 step= 8000/8000  loss=9.2382  sim=6.5303  var=0.1907  cov=0.1725  sfa=0.4128
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=17 -> starting on cpu (dry_run=False)
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 0.8975 (baseline mean=0.7374, std=0.0396)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=17 step= 1000/8000  loss=16.5893  sim=0.9930  var=0.5028  cov=0.1431  sfa=0.0356
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=17 step= 2000/8000  loss=13.8202  sim=1.9735  var=0.3528  cov=0.1854  sfa=0.0586
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=17 step= 3000/8000  loss=12.6195  sim=2.0546  var=0.2198  cov=0.2701  sfa=0.0685
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=17 step= 4000/8000  loss=7.7536  sim=2.4412  var=0.1781  cov=0.1117  sfa=0.0968
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=17 step= 5000/8000  loss=8.6894  sim=2.7680  var=0.1818  cov=0.1449  sfa=0.0968
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=17 step= 6000/8000  loss=10.6584  sim=2.4895  var=0.2959  cov=0.1174  sfa=0.0607
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=17 step= 7000/8000  loss=6.9682  sim=2.8931  var=0.1994  cov=0.0619  sfa=0.0825
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=17 step= 8000/8000  loss=13.4934  sim=2.9909  var=0.2394  cov=0.2579  sfa=0.2046
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=97 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=97 step= 1000/8000  loss=18.8678  sim=4.8457  var=0.5259  cov=0.2176  sfa=0.0269
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=97 step= 2000/8000  loss=15.9826  sim=7.4787  var=0.4789  cov=0.1445  sfa=0.0633
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=97 step= 3000/8000  loss=11.2087  sim=7.6528  var=0.2987  cov=0.1361  sfa=0.0558
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=97 step= 4000/8000  loss=12.8144  sim=6.5804  var=0.3456  cov=0.1467  sfa=0.0931
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=97 step= 5000/8000  loss=18.0336  sim=5.4964  var=0.5666  cov=0.1291  sfa=0.1219
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=97 step= 6000/8000  loss=12.1021  sim=5.7855  var=0.2586  cov=0.1852  sfa=0.1902
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=97 step= 7000/8000  loss=8.4026  sim=5.9383  var=0.1777  cov=0.1363  sfa=0.1004
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=97 step= 8000/8000  loss=12.8421  sim=4.1000  var=0.3500  cov=0.1321  sfa=0.1510
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=127 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=127 step= 1000/8000  loss=23.6882  sim=3.3777  var=0.7488  cov=0.1925  sfa=0.0177
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=127 step= 2000/8000  loss=16.1276  sim=5.3476  var=0.4280  cov=0.1957  sfa=0.0885
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=127 step= 3000/8000  loss=13.4977  sim=6.4689  var=0.3794  cov=0.1394  sfa=0.1013
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=127 step= 4000/8000  loss=15.4325  sim=3.9535  var=0.3482  cov=0.2556  sfa=0.0643
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=127 step= 5000/8000  loss=16.2106  sim=5.2132  var=0.2249  cov=0.3797  sfa=0.1983
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=127 step= 6000/8000  loss=10.2903  sim=4.9807  var=0.2473  cov=0.1227  sfa=0.2039
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=127 step= 7000/8000  loss=7.9518  sim=5.3611  var=0.1599  cov=0.1091  sfa=0.2409
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=127 step= 8000/8000  loss=25.7220  sim=5.5894  var=0.2030  cov=0.7819  sfa=0.2099
+[E3 (SFA+VICReg, centroid-gated rich K=4)] seed=157 -> starting on cpu (dry_run=False)
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=157 step= 1000/8000  loss=14.1697  sim=3.6829  var=0.4364  cov=0.1126  sfa=0.0429
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=157 step= 2000/8000  loss=17.0830  sim=3.1323  var=0.3931  cov=0.2697  sfa=0.0795
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=157 step= 3000/8000  loss=10.8368  sim=6.3188  var=0.2477  cov=0.1584  sfa=0.1235
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=157 step= 4000/8000  loss=9.0516  sim=6.8120  var=0.2166  cov=0.1097  sfa=0.1697
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=157 step= 5000/8000  loss=9.4466  sim=7.7706  var=0.2358  cov=0.1144  sfa=0.1332
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=157 step= 6000/8000  loss=9.4791  sim=12.2430  var=0.2311  cov=0.1209  sfa=0.1258
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=157 step= 7000/8000  loss=19.4715  sim=11.2328  var=0.1697  cov=0.5846  sfa=0.1185
+  [E3 (SFA+VICReg, centroid-gated rich K=4)] seed=157 step= 8000/8000  loss=13.8693  sim=12.6120  var=0.2775  cov=0.2246  sfa=0.2555
+Device: cpu | Dry-run: False | Seeds: [7, 17, 31, 53, 71, 83, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163] | Workers: 6
+\n=== Parameter Counts ===
+  E1 (VICReg-only, mean-pool): 135608 parameters
+  E1.5 (VICReg-only, centroid-gated scalar): 135608 parameters
+  E2 (VICReg-only, centroid-gated rich K=4): 151016 parameters
+  E3 (SFA+VICReg, centroid-gated rich K=4): 151016 parameters
+
+Total tasks: 80
+COMPLETED: E1 (VICReg-only, mean-pool) seed=31
+COMPLETED: E1 (VICReg-only, mean-pool) seed=53
+COMPLETED: E1 (VICReg-only, mean-pool) seed=17
+COMPLETED: E1 (VICReg-only, mean-pool) seed=71
+COMPLETED: E1 (VICReg-only, mean-pool) seed=83
+COMPLETED: E1 (VICReg-only, mean-pool) seed=7
+COMPLETED: E1 (VICReg-only, mean-pool) seed=97
+COMPLETED: E1 (VICReg-only, mean-pool) seed=107
+COMPLETED: E1 (VICReg-only, mean-pool) seed=113
+COMPLETED: E1 (VICReg-only, mean-pool) seed=101
+COMPLETED: E1 (VICReg-only, mean-pool) seed=103
+COMPLETED: E1 (VICReg-only, mean-pool) seed=109
+COMPLETED: E1 (VICReg-only, mean-pool) seed=131
+COMPLETED: E1 (VICReg-only, mean-pool) seed=127
+COMPLETED: E1 (VICReg-only, mean-pool) seed=137
+COMPLETED: E1 (VICReg-only, mean-pool) seed=139
+COMPLETED: E1 (VICReg-only, mean-pool) seed=149
+COMPLETED: E1 (VICReg-only, mean-pool) seed=151
+COMPLETED: E1 (VICReg-only, mean-pool) seed=163
+COMPLETED: E1 (VICReg-only, mean-pool) seed=157
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=7
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=17
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=31
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=53
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=83
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=71
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=97
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=101
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=103
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=107
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=113
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=109
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=127
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=131
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=137
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=139
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=149
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=151
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=157
+COMPLETED: E1.5 (VICReg-only, centroid-gated scalar) seed=163
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=7
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=17
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=31
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=53
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=71
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=83
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=101
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=97
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=103
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=107
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=109
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=113
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=127
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=131
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=139
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=137
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=149
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=151
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=157
+COMPLETED: E2 (VICReg-only, centroid-gated rich K=4) seed=163
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=17
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=7
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=31
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=53
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=71
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=83
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=97
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=101
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=103
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=107
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=109
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=113
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=127
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=131
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=137
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=139
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=149
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=151
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=157
+COMPLETED: E3 (SFA+VICReg, centroid-gated rich K=4) seed=163
+\nSaved summary to archive/iter_032/results\summary.csv
+Saved analysis to archive/iter_032/results\analysis.md
+\nDone.
+
+stderr: ]
+All 80 runs completed successfully! Now let me read and print the summary and analysis files:
+
+[Tool Call: read_file({'path': 'archive/iter_032/results/summary.csv'})]
+[Tool Result: arm,seed,collapsed_eval,per_dim_std,vicreg_per_dim_std,vicreg_mean_abs_corr,centroid_mse_mean,centroid_r_mean,delta_r2_color,r2_dyn_color,r2_coord_color,r2_dyn_pos,r2_coord_pos,r2_dyn_identity,r2_coord_identity,delta_r2_identity,dim_to_obj,final_train_loss,final_sim_loss,final_var_loss,final_cov_loss,final_sfa_loss,param_count,collapsed_train,per_dim_std_train,collapsed,disqualified
+"E1 (VICReg-only, mean-pool)",31,False,"[1.5251035690307617, 1.3807156085968018, 0.9581038951873779]","[1.5251035690307617, 1.3807156085968018, 0.9581038951873779]",0.07421122558154337,210.23723868787624,0.5075495911757232,-0.3124452406433424,-0.3424120176168444,-0.02996677697350202,-0.06742857099222237,0.0013918710977717612,0.012715554543052213,0.024947375139639034,-0.01223182059658682,"{0: 0, 1: 2, 2: 1}",4.039722919464111,7.653343200683594,0.046713072806596756,0.11303606629371643,0.2915843427181244,135608,False,"[1.2377126216888428, 1.310644507408142, 1.138606309890747]",False,False
+"E1 (VICReg-only, mean-pool)",53,False,"[1.140588402748108, 1.1331857442855835, 1.1105185747146606]","[1.140588402748108, 1.1331857442855835, 1.1105185747146606]",0.14464302833611425,136.21694461442914,0.4723973852838415,0.02993492485122784,-0.08196305586112,-0.11189798071234784,0.03763064708321343,-0.060715888647349114,0.02310336374115433,0.08985166939499467,-0.06674830565384034,"{0: 1, 1: 0, 2: 2}",2.843578338623047,22.342838287353516,0.060352545231580734,0.04572174698114395,0.31162431836128235,135608,False,"[1.0730984210968018, 0.9395238757133484, 0.9926212430000305]",False,False
+"E1 (VICReg-only, mean-pool)",17,False,"[1.0779434442520142, 1.1160553693771362, 1.059983253479004]","[1.0779434442520142, 1.1160553693771362, 1.059983253479004]",0.050539195059622566,90.16999814801773,0.26070273898065166,0.005467417730373396,-0.04645239052488138,-0.051919808255254773,-0.154780245455016,-0.20743673497859952,0.027745657370929155,0.0317163752926907,-0.003970717921761548,"{0: 1, 1: 2, 2: 0}",3.4419498443603516,9.76593017578125,0.029925325885415077,0.10516826063394547,0.20223760604858398,135608,False,"[1.1673964262008667, 1.2491042613983154, 0.9247327446937561]",False,False
+"E1 (VICReg-only, mean-pool)",71,False,"[1.3568520545959473, 1.2306110858917236, 1.196319818496704]","[1.3568520545959473, 1.2306110858917236, 1.196319818496704]",0.05211215373825498,67.06474290582982,0.19613717987641074,-0.13752598432917956,-0.0985145887159042,0.03901139561327538,-0.04226984353908395,0.021935439751656054,0.02289458183369127,0.07143065208287806,-0.0485360702491868,"{0: 2, 1: 1, 2: 0}",1.7235422134399414,13.51032829284668,0.0,0.0574059821665287,0.27303963899612427,135608,False,"[1.1137577295303345, 1.1086660623550415, 1.5786395072937012]",False,False
+"E1 (VICReg-only, mean-pool)",83,False,"[1.26365327835083, 1.224734902381897, 1.1160612106323242]","[1.26365327835083, 1.224734902381897, 1.1160612106323242]",0.043976878144977305,196.69208352331407,0.25982318869934357,-0.009611215157081153,-0.037523058731354246,-0.027911843574273093,0.02900851378027351,0.1764656365658792,0.03406232886532031,0.06922264781595848,-0.03516031895063817,"{0: 2, 1: 1, 2: 0}",6.029109001159668,9.66353988647461,0.003669917583465576,0.2324686050415039,0.365418940782547,135608,False,"[1.3609318733215332, 1.0132735967636108, 1.1059623956680298]",False,False
+"E1 (VICReg-only, mean-pool)",7,False,"[1.0634114742279053, 1.1710920333862305, 1.2440283298492432]","[1.0634114742279053, 1.1710920333862305, 1.2440283298492432]",0.4028690986749588,70.61464651793388,0.1481839265475525,-0.29069653266791434,-0.44127918872216076,-0.15058265605424642,0.01248679038360534,-0.23882542344749957,0.041058684779955744,0.03458457321883986,0.006474111561115881,"{0: 1, 1: 2, 2: 0}",1.6510734558105469,48.748008728027344,0.020513972267508507,0.03920533508062363,0.0785108134150505,135608,False,"[1.0991345643997192, 1.213685154914856, 0.9534202218055725]",False,False
+"E1 (VICReg-only, mean-pool)",97,False,"[0.953373372554779, 0.8975675702095032, 0.7828549146652222]","[0.953373372554779, 0.8975675702095032, 0.7828549146652222]",0.07763043793683634,264.6361744115825,0.27118801546995885,0.41207910996089503,-0.042678264008419474,-0.4547573739693145,-0.0148694473699544,-0.17548027005185682,0.04466014741122085,0.03040077233366641,0.014259375077554443,"{0: 2, 1: 0, 2: 1}",3.7748937606811523,6.016305446624756,0.04438527300953865,0.10172685980796814,0.1352265328168869,135608,False,"[1.0930813550949097, 1.1820274591445923, 1.0966107845306396]",False,False
+"E1 (VICReg-only, mean-pool)",107,False,"[1.570644497871399, 1.0425938367843628, 1.3391315937042236]","[1.570644497871399, 1.0425938367843628, 1.3391315937042236]",0.26706241705639194,133.1555008020558,0.345934772698274,0.3313666980449909,-0.0102043518959508,-0.34157104994094173,-0.0442532419510138,-0.07856166523810178,0.04642256702527366,0.046149923109354986,0.0002726439159186772,"{0: 1, 1: 2, 2: 0}",2.25311279296875,130.7841339111328,0.022225499153137207,0.062422677874565125,0.09794294834136963,135608,False,"[1.4326281547546387, 0.9646434187889099, 1.1390354633331299]",False,False
+"E1 (VICReg-only, mean-pool)",113,False,"[1.1955666542053223, 0.9189609289169312, 1.1256860494613647]","[1.1955666542053223, 0.9189609289169312, 1.1256860494613647]",0.06429909207090743,95.85030558959527,0.2395515446235823,0.016790293046451514,-0.0468588340383271,-0.06364912708477861,-0.06460794744600529,0.06753705075743988,0.06026404330282561,0.033562599293148455,0.026701444009677153,"{0: 1, 1: 2, 2: 0}",1.657813549041748,5.24767541885376,0.012311200611293316,0.05256824195384979,0.14292632043361664,135608,False,"[1.1026333570480347, 1.1969187259674072, 1.0404810905456543]",False,False
+"E1 (VICReg-only, mean-pool)",101,False,"[1.3063359260559082, 1.0708973407745361, 0.9380160570144653]","[1.3063359260559082, 1.0708973407745361, 0.9380160570144653]",0.13871133888881934,243.00002667581148,0.28718038898054427,0.32873313588382663,-0.03259079407882275,-0.3613239299626494,-0.014191523233426059,-0.0786168600992142,0.031129870528790866,0.024826920301312394,0.006302950227478472,"{0: 2, 1: 0, 2: 1}",1.7704696655273438,59.855167388916016,0.0,0.06870970129966736,0.08418267965316772,135608,False,"[1.0735583305358887, 1.0801708698272705, 1.1312229633331299]",False,False
+"E1 (VICReg-only, mean-pool)",103,False,"[1.2723573446273804, 0.8340831995010376, 1.3612887859344482]","[1.2723573446273804, 0.8340831995010376, 1.3612887859344482]",0.09337003915237868,187.69423356232332,0.2983066324891329,0.1371915081946623,-0.005078078523800255,-0.14226958671846257,0.004019931524931963,-0.3274649801779262,0.015192478172546875,0.04968870386277983,-0.03449622569023295,"{0: 0, 1: 1, 2: 2}",3.0438690185546875,48.90004348754883,0.04434327408671379,0.07042114436626434,0.22954095900058746,135608,False,"[1.2971436977386475, 1.110438585281372, 0.8807839751243591]",False,False
+"E1 (VICReg-only, mean-pool)",109,False,"[0.8830586075782776, 1.1234309673309326, 1.1274666786193848]","[0.8830586075782776, 1.1234309673309326, 1.1274666786193848]",0.1322150354020159,70.16733253676034,0.4791230095426033,-0.12525970331264744,-0.040744576241025766,0.08451512707162166,0.015403771490614337,0.027688122739750447,0.051031664443301615,0.10276696884043539,-0.05173530439713377,"{0: 2, 1: 1, 2: 0}",6.342203140258789,26.5495548248291,0.1550602912902832,0.0972515344619751,0.1301516890525818,135608,False,"[1.2489640712738037, 1.2424901723861694, 0.8089441657066345]",False,False
+"E1 (VICReg-only, mean-pool)",131,False,"[1.1071444749832153, 1.0234042406082153, 1.0000697374343872]","[1.1071444749832153, 1.0234042406082153, 1.0000697374343872]",0.11208845560659347,64.75922019414655,0.29693830276376726,0.11686302323015334,-0.02131978850236048,-0.13818281173251382,-0.07154293428454472,-0.017314113120765768,0.01302907304984069,0.12124810735840856,-0.10821903430856787,"{0: 2, 1: 0, 2: 1}",2.0515193939208984,11.070385932922363,0.0,0.07737904042005539,0.2597593069076538,135608,False,"[1.0418518781661987, 1.038886547088623, 1.210383415222168]",False,False
+"E1 (VICReg-only, mean-pool)",127,False,"[1.2807841300964355, 1.188704013824463, 1.2611615657806396]","[1.2807841300964355, 1.188704013824463, 1.2611615657806396]",0.047737913329049,305.6238087751653,0.3859135839826775,0.023295841635832055,0.007391884846678384,-0.01590395678915367,-0.09187008714778104,-0.048744087586323946,0.032483051933314466,0.03063942989930213,0.0018436220340123377,"{0: 1, 1: 0, 2: 2}",14.26055908203125,1.602599859237671,0.023330727592110634,0.545780599117279,0.3263000547885895,135608,False,"[0.9448341727256775, 1.27739679813385, 1.137308955192566]",False,False
+"E1 (VICReg-only, mean-pool)",137,False,"[1.3684697151184082, 1.290123701095581, 1.3696181774139404]","[1.3684697151184082, 1.290123701095581, 1.3696181774139404]",0.12316764720521445,135.98111084824612,0.22509450462871028,0.9527954091471225,0.012394881010774461,-0.940400528136348,-0.053278423947174934,-1.1476491458893407,0.024662239667278724,0.07318981573271037,-0.04852757606543165,"{0: 2, 1: 0, 2: 1}",3.079014539718628,3.4521656036376953,0.01794876717031002,0.09817266464233398,0.16512440145015717,135608,False,"[1.136684775352478, 0.9612394571304321, 1.2525321245193481]",False,False
+"E1 (VICReg-only, mean-pool)",139,False,"[1.0401318073272705, 1.0774431228637695, 0.9491780996322632]","[1.0401318073272705, 1.0774431228637695, 0.9491780996322632]",0.051580434803419915,252.07495261590495,0.41396429166496795,0.15189819994330164,-0.013883420610571741,-0.16578162055387338,-0.01365357690899538,0.07494718369363003,0.038891611088234135,0.04045811489283557,-0.001566503804601438,"{0: 0, 1: 1, 2: 2}",5.5370025634765625,75.05531311035156,0.08850795030593872,0.12844611704349518,0.42150387167930603,135608,False,"[0.8163740038871765, 1.2313387393951416, 1.2045177221298218]",False,False
+"E1 (VICReg-only, mean-pool)",149,False,"[1.6057816743850708, 1.0621081590652466, 1.1010547876358032]","[1.6057816743850708, 1.0621081590652466, 1.1010547876358032]",0.04829580468008701,255.3278783713181,0.29656152960681276,0.4942284415342365,-0.020256569994830966,-0.5144850115290674,-0.06299074922413099,-0.46013952074403625,0.05407564855891123,0.08850404700491828,-0.03442839844600705,"{0: 2, 1: 1, 2: 0}",2.1436572074890137,4.536903381347656,0.06745979934930801,0.0158548541367054,0.17407311499118805,135608,False,"[1.287892460823059, 0.9400092959403992, 0.8862618803977966]",False,False
+"E1 (VICReg-only, mean-pool)",151,False,"[1.0074453353881836, 1.107871651649475, 1.0097730159759521]","[1.0074453353881836, 1.107871651649475, 1.0097730159759521]",0.0816819292905971,128.39939498676833,0.39791651518898563,-0.023529339369293287,-0.009807419438315175,0.013721919930978113,-0.08225869543538063,-0.4895925469634777,0.05460039470823911,0.11490640490245112,-0.06030601019421201,"{0: 1, 1: 0, 2: 2}",4.096710205078125,299.35699462890625,0.10195998102426529,0.031323160976171494,0.37221387028694153,135608,False,"[1.149611234664917, 1.0499956607818604, 1.1582030057907104]",False,False
+"E1 (VICReg-only, mean-pool)",163,False,"[1.134513258934021, 1.1428242921829224, 1.2914167642593384]","[1.134513258934021, 1.1428242921829224, 1.2914167642593384]",0.12448069364004816,290.35215314981986,0.34412826179620665,0.08607125286218426,-0.05914623548268518,-0.14521748834486944,-0.5094418832722141,-0.22107747814556736,0.03226289494046852,0.05189821743189926,-0.01963532249143074,"{0: 0, 1: 2, 2: 1}",8.395011901855469,35.541568756103516,0.026087641716003418,0.3040468692779541,0.09695953875780106,135608,False,"[1.3097869157791138, 0.9640912413597107, 0.9882897138595581]",False,False
+"E1 (VICReg-only, mean-pool)",157,False,"[1.0407894849777222, 1.0536772012710571, 1.0679365396499634]","[1.0407894849777222, 1.0536772012710571, 1.0679365396499634]",0.16152307327642312,117.76265623956978,0.07284165171183396,0.43040949473511325,-0.0008220544554343838,-0.4312315491905476,0.010220381753927773,0.13793437325474622,0.025383188434810022,0.04934521100792936,-0.023962022573119336,"{0: 1, 1: 0, 2: 2}",10.543167114257812,19.061689376831055,0.12990440428256989,0.2900557219982147,0.11322007328271866,135608,False,"[0.9335218667984009, 1.222410798072815, 0.9340517520904541]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",7,False,"[1.1929265260696411, 1.3332747220993042, 1.0982685089111328]","[1.1929265260696411, 1.3332747220993042, 1.0982685089111328]",0.15497602127246243,71.45885261866489,0.10305684703941825,0.5730732036433891,-0.10502155538993622,-0.6780947590333253,-0.07891032488413045,-0.031152943321713627,0.02815293566586789,0.03282278226663804,-0.004669846600770151,"{0: 2, 1: 1, 2: 0}",0.8633737564086914,14.631915092468262,0.0,0.03047490492463112,0.20289331674575806,135608,False,"[1.1480958461761475, 1.3265857696533203, 1.3860113620758057]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",17,False,"[1.3167906999588013, 1.1713533401489258, 0.7727709412574768]","[1.3167906999588013, 1.1713533401489258, 0.7727709412574768]",0.056653240655090614,90.27470150889839,0.28433418393295695,0.005817169030686006,-0.051825333487981524,-0.05764250251866753,-0.1799666397392888,-0.19743501055582194,0.03620712718964081,0.02803457979942185,0.00817254739021896,"{0: 1, 1: 2, 2: 0}",0.18916797637939453,13.520607948303223,0.0,0.004977252800017595,0.09578511863946915,135608,False,"[1.2736488580703735, 1.264540195465088, 1.799311637878418]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",31,False,"[0.8553111553192139, 0.8352602124214172, 0.9652445316314697]","[0.8553111553192139, 0.8352602124214172, 0.9652445316314697]",0.04513046706164289,210.72256616665666,0.5043999697591594,-0.06086861447385996,-0.0720940087160558,-0.011225394242195841,-0.0999675097653339,0.0022751582446413434,0.021046161953153824,0.023607065949251365,-0.002560903996097541,"{0: 0, 1: 2, 2: 1}",2.086435317993164,17.70633316040039,0.06200653314590454,0.018678169697523117,0.5499399304389954,135608,False,"[1.5229344367980957, 1.4123095273971558, 1.4148151874542236]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",53,False,"[0.9790886044502258, 1.3586499691009521, 1.001102089881897]","[0.9790886044502258, 1.3586499691009521, 1.001102089881897]",0.16521343163788818,139.0405495183253,0.457272038999041,0.04400502496398198,-0.02730482116480167,-0.07130984612878365,-0.030644536771670932,-0.052320391903205955,0.028261562121429645,0.07065400190602107,-0.042392439784591424,"{0: 1, 1: 0, 2: 2}",3.1667051315307617,9.653489112854004,0.05516469478607178,0.06468548625707626,0.16330458223819733,135608,False,"[1.0474427938461304, 0.9074457287788391, 0.9581319689750671]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",83,False,"[1.205749750137329, 0.6883209943771362, 0.6437526941299438]","[1.205749750137329, 0.6883209943771362, 0.6437526941299438]",0.10891685278663571,190.6239730298622,0.29935364833035755,0.054071455419112305,0.029663363875328225,-0.024408091543784077,-0.14282183173686347,0.1844311632234453,0.061213533632122674,0.09212405707786923,-0.03091052344574656,"{0: 2, 1: 1, 2: 0}",1.8063640594482422,5.577166557312012,0.035912495106458664,0.03379593417048454,0.32165849208831787,135608,False,"[1.1081414222717285, 1.3203243017196655, 1.5686180591583252]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",71,False,"[1.1860512495040894, 0.9958553314208984, 1.0037201642990112]","[1.1860512495040894, 0.9958553314208984, 1.0037201642990112]",0.09234193020808863,67.84742372943055,0.19466491091554627,0.020998082960750876,-0.008208131907521834,-0.029206214868272712,-0.06502262267256143,0.08263072490336106,0.014066920178461895,0.06111822381609444,-0.04705130363763255,"{0: 1, 1: 0, 2: 2}",3.576953887939453,19.05256462097168,0.07541362196207047,0.05670645460486412,0.2677463889122009,135608,False,"[1.0990564823150635, 0.9539510607719421, 0.8480751514434814]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",97,False,"[1.3329017162322998, 1.4923807382583618, 0.9478471875190735]","[1.3329017162322998, 1.4923807382583618, 0.9478471875190735]",0.2063849899020702,264.41754771931204,0.2541854730701587,0.004434078024434296,-0.4411045054402905,-0.4455385834647248,-0.7760276799781819,0.06662537194469198,0.04141703215074888,0.02660084750052168,0.014816184650227198,"{0: 1, 1: 0, 2: 2}",3.332721710205078,19.472766876220703,0.10231121629476547,0.028201384469866753,0.0913681760430336,135608,False,"[0.929096519947052, 1.3088043928146362, 1.3851652145385742]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",101,False,"[0.8232311606407166, 1.4643511772155762, 1.5520718097686768]","[0.8232311606407166, 1.4643511772155762, 1.5520718097686768]",0.22473459924837025,252.7725781239767,0.251498470239317,-0.040024962313816984,-0.14606285776455766,-0.10603789545074067,0.017959580632428123,0.11413488338861122,0.019819125849981505,0.062288127632456315,-0.04246900178247481,"{0: 1, 1: 0, 2: 2}",0.830463171005249,2.995117425918579,0.0,0.03092786855995655,0.12291019409894943,135608,False,"[1.278174877166748, 1.088895559310913, 1.326486587524414]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",103,False,"[1.1192386150360107, 0.8364868760108948, 1.3678665161132812]","[1.1192386150360107, 0.8364868760108948, 1.3678665161132812]",0.03641455270717909,183.17740991586774,0.31016569029554597,0.18112323314373235,-0.0035735840493654014,-0.18469681719309775,0.006383426804522381,-0.338099716337632,0.01619722835018515,0.046425946234098715,-0.030228717883913566,"{0: 0, 1: 1, 2: 2}",4.252201080322266,59.209938049316406,0.044771213084459305,0.11860102415084839,0.17771942913532257,135608,False,"[1.170721411705017, 1.1229225397109985, 0.8794795274734497]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",107,False,"[1.5871819257736206, 1.3986016511917114, 1.8231072425842285]","[1.5871819257736206, 1.3986016511917114, 1.8231072425842285]",0.09914866945942229,134.9176064681786,0.32463634717921136,0.3133971433923435,-0.0359342227811589,-0.3493313661735024,-0.04010549782292864,-0.07275863995814687,0.0653511560166099,0.04341924442420464,0.021931911592405262,"{0: 1, 1: 2, 2: 0}",1.5202102661132812,66.77645111083984,0.0319465808570385,0.023414049297571182,0.4181889593601227,135608,False,"[1.1764928102493286, 1.1624795198440552, 1.3175688982009888]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",113,True,"[0.8222389221191406, 0.4810757040977478, 0.547583818435669]","[0.8222389221191406, 0.4810757040977478, 0.547583818435669]",0.21001818987699497,95.4900932172604,0.23006478038037412,-0.029529789923692235,-0.07908472159117322,-0.049554931667480984,0.11196580989717882,0.05830770362422603,0.053223449390088794,0.07631959031271389,-0.023096140922625095,"{0: 2, 1: 1, 2: 0}",1.2274212837219238,2.700162410736084,0.005828341003507376,0.04227445647120476,0.02354392223060131,135608,False,"[1.1580392122268677, 1.4814057350158691, 1.3657982349395752]",True,False
+"E1.5 (VICReg-only, centroid-gated scalar)",109,True,"[0.12028628587722778, 0.2337331771850586, 0.40253332257270813]","[0.12028628587722778, 0.2337331771850586, 0.40253332257270813]",0.27816368717483286,70.93625294685232,0.46727589533456665,0.152422001519188,-0.09984907356894879,-0.2522710750881368,-0.9945825045827666,-0.012469694396675038,0.06237260814327028,0.09359647903294539,-0.031223870889675112,"{0: 1, 1: 2, 2: 0}",3.6949710845947266,3.4913597106933594,0.10878497362136841,0.03813619911670685,0.34746208786964417,135608,False,"[1.2855019569396973, 1.2889302968978882, 1.4803547859191895]",True,False
+"E1.5 (VICReg-only, centroid-gated scalar)",127,False,"[1.3547656536102295, 1.5090526342391968, 1.7307332754135132]","[1.3547656536102295, 1.5090526342391968, 1.7307332754135132]",0.1703472536121907,304.79878903571904,0.3936079283042666,-0.08343740607258406,-0.0823068314091751,0.0011305746634089585,-0.017864497668539814,-0.05398926902304191,0.023249440952173222,0.031010765311927996,-0.007761324359754775,"{0: 1, 1: 0, 2: 2}",16.29905128479004,2.6222527027130127,0.0,0.6498153209686279,0.14686310291290283,135608,False,"[1.5575083494186401, 1.3175394535064697, 1.2486329078674316]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",131,False,"[1.223882794380188, 1.5533007383346558, 0.8282870650291443]","[1.223882794380188, 1.5533007383346558, 0.8282870650291443]",0.15446284569197957,59.53891480391619,0.31820586568662235,0.03892509242294216,-0.08976392326250741,-0.12868901568544958,0.03886487805137976,-0.07615628072162217,0.02795557740783705,0.10889660053925936,-0.0809410231314223,"{0: 2, 1: 1, 2: 0}",2.8235015869140625,17.333892822265625,0.03011210821568966,0.07892356812953949,0.08600250631570816,135608,False,"[0.9246601462364197, 1.323434591293335, 1.4298876523971558]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",137,False,"[1.2418720722198486, 0.9480695724487305, 1.3998409509658813]","[1.2418720722198486, 0.9480695724487305, 1.3998409509658813]",0.3882224264097887,130.09061016025808,0.18102135677495634,-0.05052705696395189,-0.13799758602873158,-0.08747052906477969,0.03784818848316459,-0.26747378821178414,0.050627432608872,0.07432404950667075,-0.02369661689779875,"{0: 1, 1: 0, 2: 2}",3.1327333450317383,3.458545207977295,0.0,0.11477677524089813,0.35356470942497253,135608,False,"[1.2617714405059814, 1.4273475408554077, 1.4974465370178223]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",139,False,"[1.0852866172790527, 1.5883069038391113, 1.065988540649414]","[1.0852866172790527, 1.5883069038391113, 1.065988540649414]",0.07623280662900395,245.1519639647845,0.4544515812487435,0.025815788957759402,-0.02363560850461197,-0.04945139746237137,0.035257842765347304,-0.24543617457014646,0.02321843343114634,0.06753633521665996,-0.04431790178551362,"{0: 2, 1: 0, 2: 1}",3.9248504638671875,75.43084716796875,0.10634730011224747,0.04510323330760002,0.2653025686740875,135608,False,"[1.2511482238769531, 0.6917794942855835, 1.4672127962112427]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",149,False,"[0.7231481671333313, 0.7213541269302368, 0.7870085835456848]","[0.7231481671333313, 0.7213541269302368, 0.7870085835456848]",0.05049924675653386,274.1118638645939,0.31616074042895387,0.1561262889556097,-0.04440426501751176,-0.20053055397312147,-0.09785616912497352,-0.31857126438609046,0.024123472173804655,0.029092328436416404,-0.004968856262611749,"{0: 1, 1: 0, 2: 2}",0.6285269260406494,2.8068180084228516,0.0,0.02265436016023159,0.16032132506370544,135608,False,"[1.4476191997528076, 1.4334551095962524, 1.2543606758117676]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",151,False,"[1.0572091341018677, 1.067814588546753, 0.9490142464637756]","[1.0572091341018677, 1.067814588546753, 0.9490142464637756]",0.3013236521067096,131.19929932055456,0.4195265934528733,-0.05734585105033366,-0.18448033835492686,-0.1271344873045932,-0.1198250241020733,-0.5264463876504729,0.11751746622898174,0.05991065467038,0.057606811558601735,"{0: 1, 1: 0, 2: 2}",6.49468994140625,300.7227783203125,0.09743227809667587,0.13161461055278778,0.1801508516073227,135608,False,"[1.133754849433899, 1.0166141986846924, 1.2439552545547485]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",157,False,"[0.9698609709739685, 1.0351749658584595, 0.9947319626808167]","[0.9698609709739685, 1.0351749658584595, 0.9947319626808167]",0.1874020433688162,116.56771841706649,0.09290819621598594,0.35345289979096217,-0.07402571572766811,-0.4274786155186303,0.024091944148434335,0.1279358571594658,0.0322675220858332,0.054042708122815385,-0.021775186036982183,"{0: 1, 1: 0, 2: 2}",5.209716796875,12.147197723388672,0.07151490449905396,0.13474124670028687,0.08520065993070602,135608,False,"[1.2117657661437988, 1.0578186511993408, 1.364415168762207]",False,False
+"E1.5 (VICReg-only, centroid-gated scalar)",163,False,"[1.0016725063323975, 0.9422056674957275, 1.2971073389053345]","[1.0016725063323975, 0.9422056674957275, 1.2971073389053345]",0.07818282947725655,297.7727212811609,0.3410845751078276,-0.034411131829496726,-0.04314933683339082,-0.008738205003894094,-0.05479644552106555,0.0528719252156041,0.021987525575284345,0.026489227961503287,-0.004501702386218942,"{0: 0, 1: 1, 2: 2}",4.0504021644592285,4.721014022827148,0.0,0.15917539596557617,0.6449214220046997,135608,False,"[1.399517297744751, 1.814327359199524, 1.2655014991760254]",False,False
+"E2 (VICReg-only, centroid-gated rich K=4)",7,True,"[0.46819305419921875, 0.45067471265792847, 0.43322083353996277]","[0.46819305419921875, 0.45067471265792847, 0.43322083353996277]",0.0658142412266217,53.85223093956685,0.4335546375369186,-0.2280403288871292,-0.4201441268158818,-0.19210379792875262,0.012932222070903906,-0.0946209978141237,0.00945571882669094,0.1680966243287123,-0.15864090550202137,"{0: 0, 1: 2, 2: 1}",8.8526611328125,12.68301773071289,0.16881850361824036,0.18338468670845032,0.2692805230617523,151016,True,"[0.4817051291465759, 0.48294275999069214, 0.5089367032051086]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",17,True,"[0.36124855279922485, 0.27040985226631165, 0.34021881222724915]","[0.36124855279922485, 0.27040985226631165, 0.34021881222724915]",0.06417709892834,78.73838805143221,0.34124215381943196,0.14893368017887954,-0.008254345233768248,-0.15718802541264779,0.08218222409478308,-0.2532949495334708,0.03148619093734517,0.035762204971140875,-0.004276014033795704,"{0: 0, 1: 1, 2: 2}",9.231085777282715,2.807211399078369,0.2572970986366272,0.10989433526992798,0.17507244646549225,151016,True,"[0.45486438274383545, 0.5908461809158325, 0.48088279366493225]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",31,True,"[0.2055586278438568, 0.3387915790081024, 0.24257412552833557]","[0.2055586278438568, 0.3387915790081024, 0.24257412552833557]",0.08783494232575147,235.7440125503158,0.3831871539388884,-0.33458621055151927,-0.34724721654972995,-0.012661005998210703,0.024912453555800924,0.16387843985777892,0.03655181920041047,0.0966985536069838,-0.06014673440657333,"{0: 0, 1: 1, 2: 2}",7.287363052368164,2.439720869064331,0.16256213188171387,0.12808844447135925,0.11417758464813232,151016,True,"[0.5493518114089966, 0.603376567363739, 0.3744763135910034]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",53,True,"[0.5797026753425598, 0.49349144101142883, 0.4764639437198639]","[0.5797026753425598, 0.49349144101142883, 0.4764639437198639]",0.04950064614096652,207.2584874103945,0.4240821231325733,0.05603578021692965,0.0047447937440829495,-0.051290986472846696,-0.016260586689790617,0.20584474030789246,0.028705710307890337,0.1479701799110457,-0.11926446960315536,"{0: 1, 1: 0, 2: 2}",9.259955406188965,2.6140334606170654,0.25113964080810547,0.11613506823778152,0.2680909037590027,151016,True,"[0.45367181301116943, 0.47172966599464417, 0.3491613566875458]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",71,True,"[0.6991602778434753, 0.40857475996017456, 0.315553218126297]","[0.6991602778434753, 0.40857475996017456, 0.315553218126297]",0.23447098962828603,71.94448128558965,0.09319019388232842,-0.09169181679997412,-0.04963921890340511,0.04205259789656901,0.036901362671416416,0.0587779198614683,0.04053398539466043,0.12145460965700594,-0.0809206242623455,"{0: 1, 1: 2, 2: 0}",5.197201728820801,12.936985969543457,0.09953343868255615,0.10289198905229568,0.1701378971338272,151016,True,"[0.47930431365966797, 0.45910829305648804, 0.4283105731010437]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",83,True,"[0.41286176443099976, 0.46030327677726746, 0.1759403944015503]","[0.41286176443099976, 0.46030327677726746, 0.1759403944015503]",0.26181265071689935,93.5646158219775,0.5002860600268009,0.02188575365252649,0.0033839726866547403,-0.01850178096587175,-0.04668786806321412,0.15874236751777482,0.05763302187512694,0.15772673606531984,-0.10009371419019289,"{0: 0, 1: 1, 2: 2}",7.573141574859619,6.9198737144470215,0.16373991966247559,0.13469061255455017,0.2547168731689453,151016,True,"[0.4325782358646393, 0.42205265164375305, 0.6055005788803101]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",101,True,"[0.382840096950531, 0.47347745299339294, 0.54163658618927]","[0.382840096950531, 0.47347745299339294, 0.54163658618927]",0.15705284187967308,225.49967538772475,0.36149323159024527,0.06645114656805723,-0.012264954885720436,-0.07871610145377766,0.051673798920777725,0.16942837409858735,0.004155365151390515,0.018988601081400953,-0.014833235930010437,"{0: 1, 1: 2, 2: 0}",9.001960754394531,8.023484230041504,0.152682825922966,0.20611751079559326,0.10211043804883957,151016,True,"[0.46317800879478455, 0.32380685210227966, 0.3191283941268921]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",97,True,"[0.4428602159023285, 0.4693407118320465, 0.4093208909034729]","[0.4428602159023285, 0.4693407118320465, 0.4093208909034729]",0.11588518539262649,273.641141452166,0.28219454623160856,0.49702923292214796,-0.04960160590685778,-0.5466308388290058,0.01646796337535661,-0.5806445762520249,0.011194498683288664,0.0354214850904561,-0.02422698640716743,"{0: 1, 1: 2, 2: 0}",10.757302284240723,4.703524589538574,0.30618634819984436,0.12260603159666061,0.19819478690624237,151016,True,"[0.3615541160106659, 0.4728241562843323, 0.5029710531234741]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",103,True,"[0.47498050332069397, 0.4044416844844818, 0.3241594433784485]","[0.47498050332069397, 0.4044416844844818, 0.3241594433784485]",0.1628352901721098,191.22642373123418,0.38734456125382283,0.00533825309865915,0.0031311063746983295,-0.00220714672396082,0.11651132228453902,0.033441166314905936,0.07295489190445315,0.13017740580065704,-0.05722251389620389,"{0: 0, 1: 1, 2: 2}",8.861818313598633,16.666397094726562,0.12745694816112518,0.2241247296333313,0.199735626578331,151016,True,"[0.49879926443099976, 0.5159388780593872, 0.47764065861701965]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",107,True,"[0.5535405278205872, 0.5448580980300903, 0.4499947130680084]","[0.5535405278205872, 0.5448580980300903, 0.4499947130680084]",0.06192774840673062,116.16191163185347,0.47154618636533874,0.028343697668856152,-0.09910870358666578,-0.12745240125552193,0.019718181261073237,-0.07544261450829486,0.030672122313954258,0.04942899124262131,-0.018756868928667052,"{0: 0, 1: 1, 2: 2}",7.747967720031738,2.5658047199249268,0.16947205364704132,0.13918504118919373,0.3031473755836487,151016,True,"[0.4386388957500458, 0.4554663896560669, 0.5036217570304871]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",109,True,"[0.3664001524448395, 0.4093431532382965, 0.2527622878551483]","[0.3664001524448395, 0.4093431532382965, 0.2527622878551483]",0.07819978633029627,103.60608141870598,0.28067290413852947,0.010663639021586298,-0.054223639681031534,-0.06488727870261783,0.00830459846076618,-0.15384405200648366,0.030596086748910827,0.09560388509027425,-0.06500779834136342,"{0: 0, 1: 1, 2: 2}",8.084811210632324,3.1222386360168457,0.1738387942314148,0.14848384261131287,0.3495265543460846,151016,True,"[0.43403252959251404, 0.5488767623901367, 0.6206114292144775]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",113,True,"[0.2717750072479248, 0.19438667595386505, 0.19044587016105652]","[0.2717750072479248, 0.19438667595386505, 0.19044587016105652]",0.18327581521060154,86.33895747051088,0.38836296154595723,-0.03682411561390213,-0.12773481891364322,-0.09091070329974109,0.03890688605061291,-0.05017597411070233,0.05220399322918908,0.10879557127247082,-0.056591578043281736,"{0: 2, 1: 0, 2: 1}",13.072074890136719,28.042850494384766,0.18011625111103058,0.33875972032546997,0.19724209606647491,151016,True,"[0.5329180359840393, 0.4872589409351349, 0.4317108690738678]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",127,False,"[0.9600382447242737, 0.8604599237442017, 0.6363515257835388]","[0.9600382447242737, 0.8604599237442017, 0.6363515257835388]",0.30038537397237813,310.9348789681474,0.3833840692485179,-0.0008686255340571644,-0.03673464436999623,-0.03586601883593907,0.07042411288430443,-0.012633344895120283,0.013567735639645861,0.032593744817822956,-0.019026009178177095,"{0: 1, 1: 0, 2: 2}",24.571985244750977,4.3608503341674805,0.12934470176696777,0.8523769974708557,0.4060223400592804,151016,True,"[0.37704890966415405, 0.5204982757568359, 0.47594714164733887]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",131,True,"[0.3459829092025757, 0.3654833734035492, 0.36286330223083496]","[0.3459829092025757, 0.3654833734035492, 0.36286330223083496]",0.15720228872070366,84.21734681167273,0.3184944214877056,-0.021570753804995273,-0.051651635036446986,-0.030080881231451712,-0.05555758553744646,-0.38760918957676527,0.037687508070525046,0.13892062261177443,-0.10123311454124939,"{0: 2, 1: 0, 2: 1}",10.446088790893555,23.587173461914062,0.2398393452167511,0.1760832965373993,0.1038772463798523,151016,True,"[0.4171645939350128, 0.4227482080459595, 0.4754265248775482]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",139,True,"[0.38625815510749817, 0.2971801161766052, 0.5019713640213013]","[0.38625815510749817, 0.2971801161766052, 0.5019713640213013]",0.13275332993793817,241.65275931179144,0.29769655054832184,0.1056544103942165,-0.024036389804226375,-0.12969080019844287,-0.31871020245361686,0.010615328446178221,0.02461408054068274,0.038694480740602,-0.014080400199919258,"{0: 1, 1: 2, 2: 0}",10.563909530639648,23.785945892333984,0.2071538269519806,0.20859533548355103,0.13481725752353668,151016,True,"[0.534637451171875, 0.29761216044425964, 0.38572973012924194]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",137,True,"[0.6512289047241211, 0.3838116228580475, 0.4030386805534363]","[0.6512289047241211, 0.3838116228580475, 0.4030386805534363]",0.2364440712785718,132.77196446391716,0.18018211712807397,0.3100995098558062,-0.08091565562586821,-0.3910151654816744,-0.0014706817846594407,-0.11150458530477358,0.013598702263702115,0.037230731187050635,-0.023632028923348522,"{0: 1, 1: 2, 2: 0}",9.238225936889648,6.530275344848633,0.19071608781814575,0.1725427806377411,0.412754088640213,151016,True,"[0.5828366875648499, 0.42825764417648315, 0.5896814465522766]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",149,True,"[0.381972998380661, 0.3383718430995941, 0.41615086793899536]","[0.381972998380661, 0.3383718430995941, 0.41615086793899536]",0.104646171682909,260.10353904694927,0.2517363902585412,0.5389991909475814,-0.03291528410223178,-0.5719144750498132,-0.08131057942006403,-0.5528473499611135,0.008075883662190956,0.0989934249305842,-0.09091754126839324,"{0: 1, 1: 2, 2: 0}",4.9384446144104,7.37547492980957,0.1096663549542427,0.08536740392446518,0.40538108348846436,151016,True,"[0.5365794897079468, 0.5092334747314453, 0.4255683422088623]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",151,True,"[0.27960628271102905, 0.42787766456604004, 0.3154442012310028]","[0.27960628271102905, 0.42787766456604004, 0.3154442012310028]",0.2175455307122877,91.06136545255889,0.38351162642250686,0.019286743761786122,-0.0053851072063821155,-0.02467185096816824,0.1511016418961897,-0.2459630910728008,0.05591820838097028,0.09676665656600762,-0.04084844818503734,"{0: 1, 1: 0, 2: 2}",9.470396041870117,3.6431822776794434,0.1564817726612091,0.21645934879779816,0.5509249567985535,151016,True,"[0.468801885843277, 0.45132115483283997, 0.5299271941184998]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",157,True,"[0.3667885363101959, 0.3586660325527191, 0.3409268260002136]","[0.3667885363101959, 0.3586660325527191, 0.3409268260002136]",0.04972912430135298,112.61548659845452,0.1574375813937633,0.4442789820786999,-0.024565720244492373,-0.4688447023231923,-0.02504428954742714,0.14603601211177575,0.007473181020912249,0.05581077052988744,-0.048337589508975196,"{0: 1, 1: 0, 2: 2}",11.984423637390137,13.664095878601074,0.2641626298427582,0.21345630288124084,0.28018811345100403,151016,True,"[0.4915478527545929, 0.45239540934562683, 0.41706717014312744]",True,False
+"E2 (VICReg-only, centroid-gated rich K=4)",163,True,"[0.5308091044425964, 0.39495447278022766, 0.40687277913093567]","[0.5308091044425964, 0.39495447278022766, 0.40687277913093567]",0.06995082967099446,168.8170224021961,0.5276952167619765,0.7890749617872186,-0.04752110032582513,-0.8365960621130437,0.11259950018260052,-0.4973564282173821,0.018195383764935864,0.1432831822400373,-0.12508779847510143,"{0: 2, 1: 0, 2: 1}",11.510566711425781,22.835020065307617,0.20196740329265594,0.2556140422821045,0.26565298438072205,151016,True,"[0.47418639063835144, 0.4214434325695038, 0.4218377470970154]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",17,True,"[0.29921936988830566, 0.3932555615901947, 0.37750065326690674]","[0.29921936988830566, 0.3932555615901947, 0.37750065326690674]",0.014688638940480789,74.62029928281738,0.3531828093786287,-0.08469924881067722,-0.13569827915362043,-0.05099903034294321,-0.14099641272210092,-0.2062853782840849,0.006749065456758574,0.030369805710942648,-0.023620740254184074,"{0: 0, 1: 2, 2: 1}",13.493369102478027,2.9908528327941895,0.23937003314495087,0.25791916251182556,0.20463688671588898,151016,True,"[0.4084082841873169, 0.5167640447616577, 0.5320500731468201]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",7,True,"[0.5316508412361145, 0.755608856678009, 0.40280142426490784]","[0.5316508412361145, 0.755608856678009, 0.40280142426490784]",0.07816420157957905,66.9794536593898,0.2961815596434695,1.1506496526960095,-0.18634198415581119,-1.3369916368518207,-0.0737297326874291,-0.37858221561735617,0.036650779555111646,0.08011939022151378,-0.04346861066640213,"{0: 0, 1: 1, 2: 2}",8.420008659362793,11.233511924743652,0.15168526768684387,0.14415863156318665,0.19504331052303314,151016,True,"[0.4486088752746582, 0.39355459809303284, 0.41634613275527954]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",31,True,"[0.3116092383861542, 0.3574388921260834, 0.34628573060035706]","[0.3116092383861542, 0.3574388921260834, 0.34628573060035706]",0.22465675244300162,232.44224338244123,0.390628492355759,0.14939895481444082,-0.01045028096358664,-0.15984923577802745,-0.026084425616043665,-0.06514135738367222,0.035512091601150576,0.02400022740463829,0.011511864196512286,"{0: 1, 1: 0, 2: 2}",9.471092224121094,2.212895393371582,0.21778711676597595,0.13960811495780945,0.10279077291488647,151016,True,"[0.4895918369293213, 0.5531865954399109, 0.42778247594833374]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",53,True,"[0.6806530952453613, 0.5217984914779663, 0.4303074777126312]","[0.6806530952453613, 0.5217984914779663, 0.4303074777126312]",0.04604985695728794,214.56573160027554,0.35647327580836735,0.09919434856341694,-0.005230329960031995,-0.10442467852344893,0.0631043713507559,-0.0008484437919927071,0.020761562118907968,0.12719211569572217,-0.1064305535768142,"{0: 0, 1: 1, 2: 2}",8.326312065124512,2.7809295654296875,0.1779881864786148,0.10746201127767563,0.2176000028848648,151016,True,"[0.4468667805194855, 0.4272432327270508, 0.49200838804244995]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",71,True,"[0.4944400191307068, 0.44817885756492615, 0.4308173954486847]","[0.4944400191307068, 0.44817885756492615, 0.4308173954486847]",0.14367663173408365,66.1427162977673,0.22270318154530086,0.138814399770555,-0.04143488133512791,-0.18024928110568292,0.004692342126238073,0.06545963774244272,0.013421106705637306,0.013453792829215142,-3.2686123577835985e-05,"{0: 1, 1: 2, 2: 0}",6.062516212463379,11.322004318237305,0.13278202712535858,0.07853828370571136,0.13424503803253174,151016,True,"[0.4823894500732422, 0.42531517148017883, 0.41148513555526733]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",83,True,"[0.3551124334335327, 0.38999322056770325, 0.31139498949050903]","[0.3551124334335327, 0.38999322056770325, 0.31139498949050903]",0.08019907047799386,98.37247990000672,0.4769794534090106,0.03791455015527096,0.015655561611589566,-0.022258988543681395,0.025449169766556017,0.13117140322007212,0.033702092698642695,0.1558429334727887,-0.122140840774146,"{0: 0, 1: 1, 2: 2}",9.367076873779297,6.3600664138793945,0.21194642782211304,0.11191055178642273,0.233395516872406,151016,True,"[0.4271470904350281, 0.46548178791999817, 0.44616588950157166]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",97,True,"[0.31610432267189026, 0.4526796042919159, 0.36324235796928406]","[0.31610432267189026, 0.4526796042919159, 0.36324235796928406]",0.1719118167520822,274.31684200483926,0.27854019121737983,0.5205327631716999,-0.11817716511456312,-0.638709928286263,-0.1455040488042394,-0.6574813679470016,0.018381871307026065,0.04216344633608504,-0.023781575029058977,"{0: 1, 1: 2, 2: 0}",12.842056274414062,4.099956512451172,0.3499842584133148,0.13209772109985352,0.15099012851715088,151016,True,"[0.4231581389904022, 0.41787949204444885, 0.4888324737548828]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",101,True,"[0.4314456880092621, 0.6098386645317078, 0.4036816656589508]","[0.4314456880092621, 0.6098386645317078, 0.4036816656589508]",0.11290377518536411,261.5665995656201,0.20377956344505985,-0.007861758667873024,-0.060561867126558665,-0.05270010845868564,0.16150382963723353,0.27815507500965714,0.02012827076554824,0.06560479337207192,-0.045476522606523684,"{0: 2, 1: 1, 2: 0}",8.757320404052734,4.153522491455078,0.16614097356796265,0.1662035584449768,0.0826692208647728,151016,True,"[0.5425729751586914, 0.46479979157447815, 0.4465150237083435]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",103,True,"[0.4441494643688202, 0.2954958975315094, 0.3621601462364197]","[0.4441494643688202, 0.2954958975315094, 0.3621601462364197]",0.13583309019596387,194.20705160579868,0.37237897365862427,-0.02070474443915977,-0.0021746702530809486,0.018530074186078823,-0.12388364863745556,-0.25985620837449486,0.06521372881086329,0.12546672815623716,-0.06025299934537387,"{0: 0, 1: 2, 2: 1}",10.602364540100098,13.197539329528809,0.16903764009475708,0.23735512793064117,0.07580746710300446,151016,True,"[0.4429757595062256, 0.48897555470466614, 0.4505316913127899]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",107,True,"[0.43214356899261475, 0.5811450481414795, 0.5426706075668335]","[0.43214356899261475, 0.5811450481414795, 0.5426706075668335]",0.13463610033772042,116.22230936969025,0.47178957039254527,0.08854285180545848,-0.04322188432218859,-0.13176473612764708,-0.003062886737926133,-0.08054016710111493,0.009565057057550544,0.047890059387706886,-0.038325002330156344,"{0: 0, 1: 1, 2: 2}",9.187189102172852,2.872911214828491,0.21730707585811615,0.1027422845363617,0.22896605730056763,151016,True,"[0.4589463770389557, 0.48973554372787476, 0.4775177836418152]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",109,True,"[0.3436037600040436, 0.262028306722641, 0.3952869772911072]","[0.3436037600040436, 0.262028306722641, 0.3952869772911072]",0.16590388127701403,103.62795536461046,0.2788950536758465,-0.14307209297812795,-0.11209205732392397,0.03098003565420399,0.020356776670268768,0.010797116903619878,0.04115533622803513,0.06860861946110801,-0.027453283233072875,"{0: 0, 1: 2, 2: 1}",12.959776878356934,1.6272350549697876,0.29211437702178955,0.1856609582901001,0.19930873811244965,151016,True,"[0.3684373199939728, 0.42529964447021484, 0.5879910588264465]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",113,True,"[0.31135937571525574, 0.2484758496284485, 0.19616751372814178]","[0.31135937571525574, 0.2484758496284485, 0.19616751372814178]",0.2093985958873378,81.7030765964549,0.3725374124859273,0.01746809863105444,-0.04721043774541494,-0.06467853637646938,0.015226292582032638,-0.037646096233885484,0.028373453459147508,0.07661918899764493,-0.048245735538497425,"{0: 2, 1: 0, 2: 1}",14.127212524414062,18.105113983154297,0.17131133377552032,0.3620365262031555,0.13482975959777832,151016,True,"[0.4952777624130249, 0.46605879068374634, 0.5216508507728577]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",127,False,"[0.7916404604911804, 0.5247886180877686, 0.6159178614616394]","[0.7916404604911804, 0.5247886180877686, 0.6159178614616394]",0.13342845889444047,310.0196985353773,0.3829535551601893,0.009094492157889341,-0.014568195188257324,-0.023662687346146665,0.033526451478196106,-0.0215941734602747,0.008918695159498835,0.03284726519062601,-0.023928570031127173,"{0: 1, 1: 0, 2: 2}",25.721969604492188,5.58938455581665,0.2029828280210495,0.7818805575370789,0.20987968146800995,151016,True,"[0.4180026352405548, 0.4090268015861511, 0.5400294065475464]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",131,True,"[0.5200281143188477, 0.3824203908443451, 0.5231344103813171]","[0.5200281143188477, 0.3824203908443451, 0.5231344103813171]",0.09457952792749565,65.72661201847482,0.3122870264333883,0.13442850891388,-0.04745015986681229,-0.18187866878069228,0.10620850300218865,-0.31569533355666723,0.03482755663199647,0.18340143363499814,-0.14857387700300168,"{0: 2, 1: 0, 2: 1}",10.192327499389648,12.626198768615723,0.2381853461265564,0.1412200629711151,0.13590534031391144,151016,True,"[0.535538911819458, 0.38866156339645386, 0.4205092489719391]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",137,True,"[0.724757194519043, 0.49022817611694336, 0.44787195324897766]","[0.724757194519043, 0.49022817611694336, 0.44787195324897766]",0.41713171606540084,130.3034876513056,0.26826282638112603,0.08619711808057448,-0.12794932615327703,-0.2141464442338515,0.021376912226673928,0.23770638596075822,0.012592444321316195,0.0485734337569278,-0.0359809894356116,"{0: 0, 1: 1, 2: 2}",11.352252960205078,4.439608573913574,0.18346989154815674,0.20019248127937317,0.32746580243110657,151016,True,"[0.6021347045898438, 0.4084028899669647, 0.42467767000198364]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",139,True,"[0.44911426305770874, 0.3452744483947754, 0.3972574472427368]","[0.44911426305770874, 0.3452744483947754, 0.3972574472427368]",0.2129498883939517,244.16514920611658,0.2935796650713963,0.08931183869774516,-0.09656796882926756,-0.18587980752701272,0.03662230965113559,0.049115666358434305,0.01888258171224481,0.03226257139645694,-0.01337998968421213,"{0: 1, 1: 2, 2: 0}",9.985824584960938,27.29335594177246,0.15978644788265228,0.21265146136283875,0.09667759388685226,151016,True,"[0.3880256712436676, 0.46410679817199707, 0.42506876587867737]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",149,True,"[0.4629172682762146, 0.3578794002532959, 0.4043564200401306]","[0.4629172682762146, 0.3578794002532959, 0.4043564200401306]",0.21650052804304762,269.49295397814967,0.2016102439486164,0.5357528438710824,-0.010716126082134765,-0.5464689699532171,0.10922794837668152,-0.21050545133307186,0.024526609317416237,0.10213618624663501,-0.07760957692921877,"{0: 2, 1: 1, 2: 0}",5.749292373657227,7.606865882873535,0.12853097915649414,0.06883633881807327,0.15242747962474823,151016,True,"[0.5342190861701965, 0.4722106158733368, 0.41218826174736023]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",151,True,"[0.33526575565338135, 0.48365336656570435, 0.15856075286865234]","[0.33526575565338135, 0.48365336656570435, 0.15856075286865234]",0.27937879086960177,90.78166626953707,0.36113713165037536,-0.08772187087555938,-0.02855061171864881,0.059171259156910565,-0.0966452231744503,-0.5358272071218334,0.025859271500604037,0.13386336538745688,-0.10800409388685285,"{0: 1, 1: 0, 2: 2}",13.428706169128418,2.750602960586548,0.3311873972415924,0.11657226830720901,0.4153214693069458,151016,True,"[0.45234838128089905, 0.5061855912208557, 0.47752562165260315]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",157,True,"[0.44582900404930115, 0.4572345018386841, 0.3646399676799774]","[0.44582900404930115, 0.4572345018386841, 0.3646399676799774]",0.058115591781346156,109.38065011328779,0.26366982827791,0.14140831766538625,-0.09391753620050199,-0.23532585386588825,-0.053528275475510534,-0.11004990150838063,0.012103053942088807,0.08961771963600218,-0.07751466569391337,"{0: 2, 1: 0, 2: 1}",13.869290351867676,12.611969947814941,0.27752578258514404,0.22463659942150116,0.255498468875885,151016,True,"[0.44397974014282227, 0.524493932723999, 0.6241554021835327]",True,False
+"E3 (SFA+VICReg, centroid-gated rich K=4)",163,True,"[0.6238679885864258, 0.3512166738510132, 0.38332661986351013]","[0.6238679885864258, 0.3512166738510132, 0.38332661986351013]",0.10971974368365534,248.201026418317,0.2835287709685543,-0.09843466730150549,-0.1286449145954279,-0.030210247293922406,0.04192485248694492,0.08354438971044083,0.023725137798629652,0.024511729243436958,-0.0007865914448073053,"{0: 1, 1: 0, 2: 2}",13.634750366210938,5.109010219573975,0.16526921093463898,0.327836275100708,0.24661368131637573,151016,True,"[0.45909473299980164, 0.48688003420829773, 0.41756540536880493]",True,False
+]
+
+[Tool Call: read_file({'path': 'archive/iter_032/results/analysis.md'})]
+[Tool Result: # Iter_032: Rich Dyn Readout + Run 4-Arm Experiment — Analysis\n\n**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train\n\n**Arms:** E1, E1.5, E2, E3\n\n**Seed bank:** 20 seeds: [7, 17, 31, 53, 71, 83, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163]\n\n## Per-Arm Summary\n\n### E1 (VICReg-only, mean-pool)\n- N seeds: 20\n- Collapse rate: 0.00 (0/20)\n- Mean ΔR²_color: 0.1309 ± 0.2960\n- Mean centroid MSE: 165.79\n- Mean abs corr: 0.115\n- Parameter count: 135608\n\n### E1.5 (VICReg-only, centroid-gated scalar)\n- N seeds: 20\n- Collapse rate: 0.10 (2/20)\n- Mean ΔR²_color: 0.0784 ± 0.1681\n- Mean centroid MSE: 166.55\n- Mean abs corr: 0.154\n- Parameter count: 135608\n\n### E2 (VICReg-only, centroid-gated rich K=4)\n- N seeds: 20\n- Collapse rate: 1.00 (20/20)\n- Mean ΔR²_color: 0.1164 ± 0.2714\n- Mean centroid MSE: 156.99\n- Mean abs corr: 0.140\n- Parameter count: 151016\n\n### E3 (SFA+VICReg, centroid-gated rich K=4)\n- N seeds: 20\n- Collapse rate: 1.00 (20/20)\n- Mean ΔR²_color: 0.1378 ± 0.2958\n- Mean centroid MSE: 162.64\n- Mean abs corr: 0.152\n- Parameter count: 151016\n\n## Gate Evaluation (CRITICAL)\n\n- **F1 (mean E2 ΔR²_color (non-collapsed) >= 0.30):** FAIL (ALL seeds collapsed)\n- **F2 (lower 95% CI of E2 mean ΔR²_color >= 0.18):** FAIL (insufficient non-collapsed seeds)\n- **F3 (collapse rate <= 0.10 across ALL arms):** FAIL (max_cr=1.00)\n- **F4 (E2 - E1 paired-seed mean ΔR² >= 0.10):** FAIL (value=-0.0145)\n- **F5 (E2 - E1.5 paired-seed mean ΔR² >= 0.10):** FAIL (value=0.0380)\n- **F6 (E3 - E2 paired-seed mean ΔR² (informational only)):** (value=0.0214)\n\n## Binding Decision Rule Outcome\n\n**Outcome:** BRANCH (b) — Hard-pivot to behavioral evaluation (centroid tracking, collision selectivity, causal sensitivity) with the best available representation. No further representation-only iterations.\n\n## Pre-Registered Outcome Classification\n\n- **Outcome classification:** F1 FAIL — the rich readout does not break through the identity-encoding threshold. HARD-PIVOT TRIGGERED.\n]
+The full 80-run experiment completed successfully. Let me verify all outputs are present:
+
+[Tool Call: bash({'command': 'cd archive\\iter_032\\results && echo === RUN FILES === && dir runs /b | find /c ".csv" && echo === CHECKPOINT FILES === && dir checkpoints /b | find /c ".pt" && echo === SUMMARY === && python -c "import pandas as pd; df=pd.read_csv(\'summary.csv\'); print(\'Total rows:\', len(df)); print(df.groupby(\'arm\').size())"'})]
+[Tool Result: exit_code: 0
+stdout: === RUN FILES === 
+160
+=== CHECKPOINT FILES === 
+80
+=== SUMMARY === 
+Total rows: 80
+arm
+E1 (VICReg-only, mean-pool)                  20
+E1.5 (VICReg-only, centroid-gated scalar)    20
+E2 (VICReg-only, centroid-gated rich K=4)    20
+E3 (SFA+VICReg, centroid-gated rich K=4)     20
+dtype: int64
+
+stderr: ]
+## ✅ FULL 4-Arm × 20-Seed Experiment Complete (80 runs, 8000 steps each)
+
+**Execution Summary:**
+- **Device:** CPU (12 cores, 6 workers)
+- **Total tasks:** 80 (4 arms × 20 seeds)
+- **All 80 runs completed successfully** with no CUDA OOM errors or parallel execution issues
+- **Runtime:** Completed within the 4-hour timeout window
+- **Outputs generated:**
+  - `archive/iter_032/results/summary.csv` (80 rows)
+  - `archive/iter_032/results/analysis.md`
+  - 80 checkpoint files (`.pt`)
+  - 160 run detail files (`.csv` + `_logs.csv`)
+
+---
+
+## 📊 SUMMARY.CSV (Key Metrics by Arm)
+
+| Arm | N Seeds | Collapse Rate | Mean ΔR²_color | Mean Centroid MSE | Mean Abs Corr | Params |
+|-----|---------|--------------|----------------|-------------------|---------------|--------|
+| **E1** (VICReg-only, mean-pool) | 20 | **0.00** (0/20) | 0.1309 ± 0.296 | 165.79 | 0.115 | 135,608 |
+| **E1.5** (VICReg-only, centroid-gated scalar) | 20 | **0.10** (2/20) | 0.0784 ± 0.168 | 166.55 | 0.154 | 135,608 |
+| **E2** (VICReg-only, centroid-gated rich K=4) | 20 | **1.00** (20/20) | 0.1164 ± 0.271 | 156.99 | 0.140 | 151,016 |
+| **E3** (SFA+VICReg, centroid-gated rich K=4) | 20 | **1.00** (20/20) | 0.1378 ± 0.296 | 162.64 | 0.152 | 151,016 |
+
+---
+
+## 📋 ANALYSIS.MD (Full Contents)
+
+```markdown
+# Iter_032: Rich Dyn Readout + Run 4-Arm Experiment — Analysis
+
+**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train
+
+**Arms:** E1, E1.5, E2, E3
+
+**Seed bank:** 20 seeds: [7, 17, 31, 53, 71, 83, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163]
+
+## Per-Arm Summary
+
+### E1 (VICReg-only, mean-pool)
+- N seeds: 20
+- Collapse rate: 0.00 (0/20)
+- Mean ΔR²_color: 0.1309 ± 0.2960
+- Mean centroid MSE: 165.79
+- Mean abs corr: 0.115
+- Parameter count: 135608
+
+### E1.5 (VICReg-only, centroid-gated scalar)
+- N seeds: 20
+- Collapse rate: 0.10 (2/20)
+- Mean ΔR²_color: 0.0784 ± 0.1681
+- Mean centroid MSE: 166.55
+- Mean abs corr: 0.154
+- Parameter count: 135608
+
+### E2 (VICReg-only, centroid-gated rich K=4)
+- N seeds: 20
+- Collapse rate: 1.00 (20/20)
+- Mean ΔR²_color: 0.1164 ± 0.2714
+- Mean centroid MSE: 156.99
+- Mean abs corr: 0.140
+- Parameter count: 151016
+
+### E3 (SFA+VICReg, centroid-gated rich K=4)
+- N seeds: 20
+- Collapse rate: 1.00 (20/20)
+- Mean ΔR²_color: 0.1378 ± 0.2958
+- Mean centroid MSE: 162.64
+- Mean abs corr: 0.152
+- Parameter count: 151016
+
+## Gate Evaluation (CRITICAL)
+
+- **F1 (mean E2 ΔR²_color (non-collapsed) >= 0.30):** FAIL (ALL seeds collapsed)
+- **F2 (lower 95% CI of E2 mean ΔR²_color >= 0.18):** FAIL (insufficient non-collapsed seeds)
+- **F3 (collapse rate <= 0.10 across ALL arms):** FAIL (max_cr=1.00)
+- **F4 (E2 - E1 paired-seed mean ΔR² >= 0.10):** FAIL (value=-0.0145)
+- **F5 (E2 - E1.5 paired-seed mean ΔR² >= 0.10):** FAIL (value=0.0380)
+- **F6 (E3 - E2 paired-seed mean ΔR² (informational only)):** (value=0.0214)
+
+## Binding Decision Rule Outcome
+
+**Outcome:** BRANCH (b) — Hard-pivot to behavioral evaluation (centroid tracking, collision selectivity, causal sensitivity) with the best available representation. No further representation-only iterations.
+
+## Pre-Registered Outcome Classification
+
+- **Outcome classification:** F1 FAIL — the rich readout does not break through the identity-encoding threshold. HARD-PIVOT TRIGGERED.
+```
+
+---
+
+## 🔑 Key Findings
+
+1. **E1 (mean-pool baseline) is the most stable:** 0% collapse rate across all 20 seeds
+2. **E2 & E3 (rich readout with K=4) suffer 100% collapse:** All 20 seeds in both arms collapsed — the rich dyn readout with centroid-gated aggregation is **not** solving the collapse problem
+3. **E1.5 (scalar centroid-gated) is intermediate:** 10% collapse rate (2/20 seeds)
+4. **All gate criteria FAIL:** The rich readout architecture (E2/E3) does not achieve the required ΔR²_color ≥ 0.30 threshold
+5. **Decision:** **BRANCH (b) — HARD-PIVOT TRIGGERED** → Move to behavioral evaluation with the best available representation (E1 baseline) rather than continuing representation-only iterations
+
+
+[NUDGE RESPONSE]
+```yaml
+status: experiment_failed
+artifacts:
+  - archive/iter_032/results/summary.csv
+  - archive/iter_032/results/analysis.md
+  - archive/iter_032/results/runs/
+  - archive/iter_032/results/checkpoints/
+metrics:
+  total_runs: 80
+  seeds_per_arm: 20
+  steps_per_run: 8000
+  workers: 6
+  e1_collapse_rate: 0.0
+  e1_5_collapse_rate: 0.1
+  e2_collapse_rate: 1.0
+  e3_collapse_rate: 1.0
+  e1_mean_delta_r2_color: 0.1309
+  e1_5_mean_delta_r2_color: 0.0784
+  e2_mean_delta_r2_color: 0.1164
+  e3_mean_delta_r2_color: 0.1378
+  f1_pass: 0
+  f2_pass: 0
+  f3_pass: 0
+  f4_pass: 0
+  f5_pass: 0
+  e1_param_count: 135608
+  e2_param_count: 151016
+log_excerpt: |
+  Saved summary to archive/iter_032/results\summary.csv
+  Saved analysis to archive/iter_032/results\analysis.md
+  
+  # Gate Evaluation (CRITICAL)
+  - F1 (mean E2 ΔR²_color (non-collapsed) >= 0.30): FAIL (ALL seeds collapsed)
+  - F2 (lower 95% CI of E2 mean ΔR²_color >= 0.18): FAIL (insufficient non-collapsed seeds)
+  - F3 (collapse rate <= 0.10 across ALL arms): FAIL (max_cr=1.00)
+  - F4 (E2 - E1 paired-seed mean ΔR² >= 0.10): FAIL (value=-0.0145)
+  - F5 (E2 - E1.5 paired-seed mean ΔR² >= 0.10): FAIL (value=0.0380)
+  - F6 (E3 - E2 paired-seed mean ΔR² (informational only)): (value=0.0214)
+  
+  ## Binding Decision Rule Outcome
+  **Outcome:** BRANCH (b) — Hard-pivot to behavioral evaluation (centroid tracking, collision selectivity, causal sensitivity) with the best available representation. No further representation-only iterations.
+experimenter_view: |
+  The full 80-run experiment (4 arms × 20 seeds × 8000 steps) completed successfully,
+  but the scientific hypothesis was decisively rejected. The rich dyn readout with
+  centroid-gated aggregation (E2, K=4 sub-features) collapsed on 100% of seeds (20/20),
+  as did the SFA+VICReg variant (E3, 20/20). The baseline mean-pool (E1) remained
+  stable with 0% collapse. This indicates that adding rich sub-feature structure
+  to the dyn stream, gated by centroid proximity, does NOT solve the collapse
+  problem — in fact, it makes it worse. The per-dim std values in collapsed runs
+  were ~0.3–0.5, well below the 0.5 threshold. The scalar centroid-gated variant
+  (E1.5) was intermediate at 10% collapse. All pre-registered gate criteria (F1–F5)
+  failed. The binding decision rule correctly triggers BRANCH (b): hard-pivot to
+  behavioral evaluation using the best available representation (E1 baseline).
+notes: "Rich dyn readout fails to prevent collapse; hard-pivot to behavioral evaluation triggered."
+```
