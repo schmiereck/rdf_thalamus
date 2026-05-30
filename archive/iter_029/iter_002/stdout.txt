@@ -1,0 +1,2343 @@
+ 
+
+[Tool Call: list_dir({'path': '.'})]
+[Tool Result: [DIR] -p
+[DIR] .antigravitycli
+[DIR] .git
+      .gitignore
+[DIR] .pytest_cache
+[DIR] .venv
+[DIR] __pycache__
+      apply_fix.py
+[DIR] archive
+[DIR] cache
+      config.toml
+      crash.log
+      current_state.md
+      experiment.log
+      experiment_log.md
+      find_files.py
+      fix_theta.py
+      goal.md
+      hello.py
+      manager_log.md
+      patch_thalamus.py
+      patch_thalamus_sync.py
+[DIR] pictures
+      print_summary.py
+      README.md
+      RESEARCH-RESULT-002.md
+      RESEARCH-RESULT-003.md
+      RESEARCH-RESULT-004.md
+      RESEARCH-RESULT-005.md
+      RESEARCH-RESULT-006.md
+      RESEARCH-RESULT-007.md
+      RESEARCH-RESULT-008.md
+      RESEARCH-RESULT-009.md
+      RESEARCH-RESULT-010.md
+      RESEARCH-RESULT-011.md
+      RESEARCH-RESULT-012.md
+      RESEARCH-RESULT-013.md
+      RESEARCH-RESULT-014.md
+      RESEARCH-RESULT-015.md
+      RESEARCH-RESULT-016.md
+      RESEARCH-RESULT-017.md
+      RESEARCH-RESULT-018.md
+      RESEARCH-RESULT-020.md
+      RESEARCH-RESULT-023.md
+      RESEARCH-RESULT-024.md
+      RESEARCH-RESULT-025.md
+      RESEARCH-RESULT-026.md
+      RESEARCH-RESULT-027.md
+      RESEARCH-RESULT-028.md
+      research_journal.md
+[DIR] scripts
+[DIR] src
+      summary_output.txt
+      test_models_spatial.py
+      verify_results.py]
+ 
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 029
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+On the separate-backbone architecture (SeparateDynEncoder via NonParametricJEPASpatialSeparateDyn),
+adding an explicit SFA slowness term ||z_dyn(t) - z_dyn(t-1)||² to the VICReg-only z_dyn objective
+is consistent with M2's predicted mechanism for improving identity encoding as measured by ΔR²_color
+from a held-out linear probe, without introducing collapse on the union seed bank.
+
+Specifically: Arm B (SFA+VICReg, sfa_weight=5.0, mask_dyn_sim=True, coord_vicreg=True) will show
+ΔR²_color ≥ 0.30 (practical-significance threshold) when computed over non-collapsed seeds, AND will
+show collapse rate ≤ 10% on the union seed bank.
+
+NOTE: "0% collapse" under SFA+VICReg is expected (SFA + VICReg both encourage high std) and is NOT
+the headline metric. The headline is ΔR²_color improvement above the practical-significance threshold.
+
+## 2. Falsification Criterion
+The hypothesis is falsified if ANY of the following hold:
+(F1) Arm B shows mean ΔR²_color < 0.30 when computed over non-collapsed seeds — meaning SFA does not
+     provide a practically significant identity-encoding benefit above the VICReg-only baseline;
+(F2) Arm B shows collapse rate > 10% (>2 of 20 seeds) on the union seed bank — meaning SFA
+     destabilizes the previously stable VICReg-only regime;
+(F3) Arm B shows centroid_mse_mean exceeding the VICReg-only baseline (Arm A) by more than 1σ — meaning
+     SFA degrades the spatial readout while potentially improving identity encoding.
+
+The 0.30 threshold is derived from the Manager's instruction: max(0.1812 + 2σ, 0.30). The per-seed
+σ from iter_027 Arm C is ≈0.35 (dominated by one outlier), making 0.1812 + 2σ ≈ 0.88 impractical.
+The absolute floor of 0.30 is used as the practical-significance threshold. Results between 0.18 and
+0.30 are reported as "no detectable marginal benefit."
+
+Language constraint: positive results are reported as "consistent with M2's predicted mechanism,"
+not as "demonstrates SFA improves identity."
+
+## 3. Proposed Method
+Three-arm experiment on a UNION seed bank of 20 seeds:
+  Original seeds: [7, 17, 31, 53, 71, 83, 97, 113, 127, 149]
+  Fresh seeds:   [101, 103, 107, 109, 131, 137, 139, 151, 157, 163]
+
+Arm A (VICReg-only Control): Separate backbone, primary_objective="jepa",
+  mask_dyn_sim=True, var_weight=25, cov_weight=25, sim_weight=1.
+  This is VICReg-only on z_dyn (the iter_027 Arm C configuration).
+  20 NEW runs on the union seed bank.
+
+Arm B (SFA+VICReg, primary): Separate backbone, primary_objective="sfa", mask_dyn_sim=True,
+  sfa_weight=5.0, var_weight=25, cov_weight=25, sim_weight=1, coord_vicreg=True.
+  This adds the SFA slowness term to the VICReg-only z_dyn objective, with JEPA prediction
+  as a stop-gradient readout. Coord-stream VICReg is kept ON.
+  20 runs on the union seed bank.
+
+Arm C (SFA+VICReg, conservative): Same as Arm B but sfa_weight=1.0, coord_vicreg=True.
+  20 runs on the union seed bank.
+
+Total new runs: 60 (3 arms × 20 seeds).
+
+Training: 8000 steps, batch_size=32, lr=3e-4, d_t=3 (frozen), buffer=4000.
+Architecture: NonParametricJEPASpatialSeparateDyn (SeparateDynEncoder + DualStreamPredictor).
+
+Evaluation metrics per run:
+- Collapse check: per-dim std of z_dyn (threshold 0.5) on both eval and train batches
+- ΔR²_color: held-out linear probe predicting RGB color from z_dyn (identity encoding quality)
+- Centroid MSE: Arm F soft-argmax position decoding (spatial encoding quality)
+- mean_abs_corr: VICReg health metric on z_dyn
+- sfa_loss trajectory: verify slowness term is active and decreasing
+- Per-seed outcomes with per-dim std magnitudes for any collapses
+- Hard-seed table: explicit tabulation of seeds 53 and 71 outcomes across arms
+
+Key design decisions (Manager's structural fixes):
+1. Union seed bank includes both original hard seeds (53, 71) and fresh seeds to disambiguate
+   SFA's identity-encoding benefit from hard-seed stabilization.
+2. coord_vicreg=True: SFA mode now keeps coord-stream VICReg (var_loss_coord, cov_loss_coord)
+   active, fixing the confound where SFA-mode previously zeroed coord VICReg while JEPA-mode
+   kept it. This ensures the z_coord backbone receives consistent gradient signal.
+3. centroid_mse degradation floor (F3): prevents a "win" on ΔR²_color that silently destroys
+   the spatial readout.
+]
+
+[Tool Call: list_dir({'path': 'src'})]
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_mask_dyn_sim_shared.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_multistep.py
+      run_phase0_sfa_recovery.py
+      run_phase0_sfa_separate_backbone.py
+      run_phase0_sfa_sweep.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+      train_thalamus.py]
+ 
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa_separate_backbone.py'})]
+[Tool Result: #!/usr/bin/env python3
+"""
+Iter_029: SFA+VICReg on Separate Backbone with coord_vicreg.
+
+Three-arm experiment on a union seed bank (20 seeds) testing whether
+explicit SFA slowness on z_dyn improves identity encoding (ΔR²_color).
+
+Arms:
+  A — VICReg-only control (separate backbone, mask_dyn_sim=True)
+  B — SFA+VICReg, sfa_weight=5.0
+  C — SFA+VICReg, sfa_weight=1.0
+"""
+
+import os, sys, json, random, argparse, collections, warnings, concurrent.futures
+import numpy as np, pandas as pd, torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
+from scipy.optimize import linear_sum_assignment
+warnings.filterwarnings("ignore", category=UserWarning)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.environment import PhysicsSandbox
+from src.models_separate_dyn import NonParametricJEPASpatialSeparateDyn
+
+
+class ExtendedReplayBuffer:
+    def __init__(self, capacity=4000):
+        self.capacity = capacity; self.buffer = []; self.position = 0
+    def push(self, x_hist, x_target, positions, colors, radii):
+        if len(self.buffer) < self.capacity: self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target, positions, colors, radii)
+        self.position = (self.position + 1) % self.capacity
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        xh, xt, p, c, r = zip(*batch)
+        return np.stack(xh), np.stack(xt), np.stack(p), np.stack(c), np.stack(r)
+    def clear(self): self.buffer = []; self.position = 0
+    def __len__(self): return len(self.buffer)
+
+
+def set_seed(seed):
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True; torch.backends.cudnn.benchmark = False
+
+
+def check_collapse(z_dyn, d_t, std_threshold=0.5):
+    z_active = z_dyn[:, :d_t]; per_dim_std = np.std(z_active, axis=0)
+    return np.any(per_dim_std < std_threshold), per_dim_std
+
+
+def compute_vicreg_health(z_dyn, d_t):
+    z_active = z_dyn[:, :d_t]; per_dim_std = np.std(z_active, axis=0)
+    if d_t > 1:
+        corr = np.corrcoef(z_active.T); triu = np.triu_indices(d_t, k=1)
+        mean_abs_corr = float(np.mean(np.abs(corr[triu])))
+    else: mean_abs_corr = 0.0
+    return {"per_dim_std": per_dim_std.tolist(), "mean_abs_corr": mean_abs_corr}
+
+
+def fit_linear_probe(z, y):
+    Z = np.stack([z, np.ones_like(z)], axis=1)
+    theta = np.linalg.pinv(Z.T @ Z) @ Z.T @ y; return theta[0], theta[1]
+
+
+def fit_multivariate_probe_r2(z_feature, y_target):
+    z = z_feature.reshape(-1); y = y_target.reshape(len(z), -1); N = len(z)
+    if N < 5 or y.shape[1] < 1: return 0.0
+    Z_aug = np.stack([z, np.ones_like(z)], axis=1)
+    theta = np.linalg.pinv(Z_aug.T @ Z_aug) @ Z_aug.T @ y
+    y_pred = Z_aug @ theta; ss_res = np.sum((y - y_pred)**2); ss_tot = np.sum((y - np.mean(y, axis=0))**2)
+    if ss_tot < 1e-12: return 0.0
+    return float(1.0 - ss_res / (ss_tot + 1e-12))
+
+
+def compute_centroid_mse(model, test_env, test_history, num_samples=200, device="cpu"):
+    model.eval(); centroids_list = []; pos_list = []
+    obs = test_env.reset(); test_history.clear(); test_history.append(obs)
+    for _ in range(4): obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)
+    collected = 0
+    while collected < num_samples:
+        obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)
+        if len(test_history) == 4:
+            x_target_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad(): z_coord, _ = model.encoder(x_target_t)
+            centroids_list.append(z_coord[:, :model.d_t].cpu().numpy())
+            true_pos = np.array(info["positions"][:model.d_t])
+            if len(true_pos) < model.d_t: true_pos = np.pad(true_pos, (0, model.d_t - len(true_pos)), constant_values=np.nan)
+            pos_list.append(true_pos); collected += 1
+    centroids_arr = np.concatenate(centroids_list, axis=0); pos_arr = np.array(pos_list)
+    mse_per_object = []; r_per_object = []
+    for obj_idx in range(model.d_t):
+        mask = ~np.isnan(pos_arr[:, obj_idx])
+        if mask.sum() < 10: mse_per_object.append(float("nan")); r_per_object.append(0.0); continue
+        z_obj = centroids_arr[mask, obj_idx]; y_obj = pos_arr[mask, obj_idx]
+        w, b = fit_linear_probe(z_obj, y_obj); y_pred = z_obj * w + b
+        mse = float(np.mean((y_obj - y_pred)**2)); r = float(np.corrcoef(z_obj, y_obj)[0, 1]) if len(z_obj) > 2 else 0.0
+        if np.isnan(r): r = 0.0
+        mse_per_object.append(mse); r_per_object.append(abs(r))
+    return {"mse_per_object": mse_per_object, "mse_mean": float(np.nanmean(mse_per_object)), "r_per_object": r_per_object, "r_mean": float(np.nanmean(r_per_object))}
+
+
+def collect_multitraj_eval_data(model, num_samples=200, base_seed=30000, device="cpu"):
+    model.eval(); num_trajectories = max(1, num_samples // 20); samples_per_traj = max(1, num_samples // num_trajectories)
+    traj_z_dyn, traj_z_coord, traj_pos, traj_colors, traj_radii = [], [], [], [], []
+    with torch.no_grad():
+        for t_idx in range(num_trajectories):
+            env_seed = base_seed + t_idx * 100; env = PhysicsSandbox(N=3, seed=env_seed)
+            history = collections.deque(maxlen=4); obs = env.reset(); history.append(obs)
+            for _ in range(3): obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)
+            z_dyn_t, z_coord_t, pos_t, colors_t, radii_t = [], [], [], [], []
+            collected = 0
+            while collected < samples_per_traj:
+                obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)
+                if len(history) == 4:
+                    x_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)
+                    z_c, z_d = model.encoder(x_t)
+                    z_dyn_t.append(z_d[0].cpu().numpy()); z_coord_t.append(z_c[0].cpu().numpy())
+                    pos_t.append(info["positions"]); colors_t.append(info["colors"]); radii_t.append(info["radii"])
+                    collected += 1
+            traj_z_dyn.append(np.array(z_dyn_t)); traj_z_coord.append(np.array(z_coord_t))
+            traj_pos.append(np.array(pos_t)); traj_colors.append(np.array(colors_t)); traj_radii.append(np.array(radii_t))
+    return (traj_z_dyn, traj_z_coord, traj_pos, traj_colors, traj_radii,
+            np.concatenate(traj_z_dyn, axis=0), np.concatenate(traj_z_coord, axis=0),
+            np.concatenate(traj_pos, axis=0), np.concatenate(traj_colors, axis=0), np.concatenate(traj_radii, axis=0))
+
+
+def _compute_semantic_probes_core(z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr, d_t, sub_features, train_ratio=0.5):
+    N = pos_arr.shape[1]; num_samples = z_dyn_arr.shape[0]
+    if sub_features > 1: z_dyn_pooled = z_dyn_arr[:, :d_t * sub_features].reshape(num_samples, d_t, sub_features).mean(axis=2)
+    else: z_dyn_pooled = z_dyn_arr[:, :d_t]
+    cost = np.zeros((d_t, N))
+    for d in range(d_t):
+        for o in range(N): cost[d, o] = np.mean(np.abs(z_coord_arr[:, d] - pos_arr[:, o]))
+    row_ind, col_ind = linear_sum_assignment(cost)
+    dim_to_obj = {int(r): int(c) for r, c in zip(row_ind, col_ind)}
+    n_train = int(num_samples * train_ratio)
+    def fit_probe_r2(z_feature, y_target):
+        z_train, y_train = z_feature[:n_train], y_target[:n_train]; z_test, y_test = z_feature[n_train:], y_target[n_train:]
+        if z_train.size < 5 or y_train.size < 5: return 0.0
+        w, b = fit_linear_probe(z_train, y_train); y_pred = z_test * w + b
+        ss_res = np.sum((y_test - y_pred)**2); ss_tot = np.sum((y_test - np.mean(y_train))**2)
+        if ss_tot < 1e-12: return 0.0
+        return float(1.0 - ss_res / ss_tot)
+    r2_per_dim = []
+    for d in range(d_t):
+        if d not in dim_to_obj:
+            r2_per_dim.append({"dyn_color": 0.0, "coord_color": 0.0, "dyn_pos": 0.0, "coord_pos": 0.0, "dyn_identity": 0.0, "coord_identity": 0.0}); continue
+        obj = dim_to_obj[d]; z_d = z_dyn_pooled[:, d]; z_c = z_coord_arr[:, d]
+        r2_dyn_pos = fit_probe_r2(z_d, pos_arr[:, obj]); r2_coord_pos = fit_probe_r2(z_c, pos_arr[:, obj])
+        r2_dyn_ch = [fit_probe_r2(z_d, colors_arr[:, obj, ch]) for ch in range(3)]
+        r2_coord_ch = [fit_probe_r2(z_c, colors_arr[:, obj, ch]) for ch in range(3)]
+        max_radius = 20.0; identity_vec = np.zeros((num_samples, 4))
+        identity_vec[:, :3] = colors_arr[:, obj, :]; identity_vec[:, 3] = radii_arr[:, obj] / max_radius
+        r2_per_dim.append({
+            "dyn_color": float(np.mean(r2_dyn_ch)), "coord_color": float(np.mean(r2_coord_ch)),
+            "dyn_pos": r2_dyn_pos, "coord_pos": r2_coord_pos,
+            "dyn_identity": fit_multivariate_probe_r2(z_d, identity_vec), "coord_identity": fit_multivariate_probe_r2(z_c, identity_vec),
+        })
+    r2_dyn_color_all = np.mean([p["dyn_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_color_all = np.mean([p["coord_color"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_dyn_pos_all = np.mean([p["dyn_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_pos_all = np.mean([p["coord_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_dyn_identity_all = np.mean([p["dyn_identity"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    r2_coord_identity_all = np.mean([p["coord_identity"] for p in r2_per_dim]) if r2_per_dim else 0.0
+    return {"dim_to_obj": dim_to_obj, "r2_per_dim": r2_per_dim,
+            "r2_dyn_color": float(r2_dyn_color_all), "r2_coord_color": float(r2_coord_color_all),
+            "delta_r2_color": float(r2_dyn_color_all - r2_coord_color_all),
+            "r2_dyn_pos": float(r2_dyn_pos_all), "r2_coord_pos": float(r2_coord_pos_all),
+            "r2_dyn_identity": float(r2_dyn_identity_all), "r2_coord_identity": float(r2_coord_identity_all),
+            "delta_r2_identity": float(r2_dyn_identity_all - r2_coord_identity_all)}
+
+
+def compute_semantic_probes(model, num_samples=200, train_ratio=0.5, base_seed=30000, device="cpu"):
+    model.eval()
+    (_, _, _, _, _, z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr) = collect_multitraj_eval_data(model, num_samples=num_samples, base_seed=base_seed, device=device)
+    return _compute_semantic_probes_core(z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr, model.d_t, model.sub_features, train_ratio=train_ratio)
+
+
+def evaluate_run(model, arm_config, seed, device, eval_steps=200):
+    d_t = arm_config.get("d_t", 3); sub_features = arm_config.get("sub_features", 1); name = arm_config["name"]
+    eval_env = PhysicsSandbox(N=3, seed=seed + 10000); eval_history = collections.deque(maxlen=4)
+    obs = eval_env.reset(); eval_history.append(obs)
+    for _ in range(4): obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)
+    z_dyn_all, z_coord_all = [], []
+    for _ in range(eval_steps):
+        obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)
+        if len(eval_history) == 4:
+            x_t = torch.from_numpy(eval_history[3]).float().unsqueeze(0).to(device)
+            with torch.no_grad(): z_coord, z_dyn = model.encoder(x_t)
+            z_dyn_all.append(z_dyn[:, :d_t * sub_features].cpu().numpy()); z_coord_all.append(z_coord[:, :d_t].cpu().numpy())
+    z_dyn_arr = np.concatenate(z_dyn_all, axis=0); z_coord_arr = np.concatenate(z_coord_all, axis=0)
+    if sub_features > 1: z_dyn_pooled_check = z_dyn_arr[:, :d_t * sub_features].reshape(eval_steps, d_t, sub_features).mean(axis=2)
+    else: z_dyn_pooled_check = z_dyn_arr[:, :d_t]
+    has_collapsed_eval, per_dim_std = check_collapse(z_dyn_pooled_check, d_t); vh = compute_vicreg_health(z_dyn_pooled_check, d_t)
+    test_env = PhysicsSandbox(N=3, seed=seed + 20000); test_history = collections.deque(maxlen=4)
+    obs = test_env.reset(); test_history.append(obs)
+    centroid_mse = compute_centroid_mse(model, test_env, test_history, num_samples=eval_steps, device=device)
+    semantic = compute_semantic_probes(model, num_samples=eval_steps, base_seed=seed + 30000, device=device)
+    return {"arm": name, "seed": seed, "collapsed_eval": bool(has_collapsed_eval),
+            "per_dim_std": per_dim_std.tolist(), "vicreg_per_dim_std": per_dim_std.tolist(),
+            "vicreg_mean_abs_corr": vh["mean_abs_corr"],
+            "centroid_mse_mean": centroid_mse["mse_mean"], "centroid_r_mean": centroid_mse["r_mean"],
+            "delta_r2_color": semantic["delta_r2_color"], "r2_dyn_color": semantic["r2_dyn_color"],
+            "r2_coord_color": semantic["r2_coord_color"], "r2_dyn_pos": semantic["r2_dyn_pos"],
+            "r2_coord_pos": semantic["r2_coord_pos"], "r2_dyn_identity": semantic["r2_dyn_identity"],
+            "r2_coord_identity": semantic["r2_coord_identity"], "delta_r2_identity": semantic["delta_r2_identity"],
+            "dim_to_obj": semantic["dim_to_obj"]}
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def run_single(arm_config, seed, device, dry_run=False):
+    name = arm_config["name"]; sim_weight = arm_config.get("sim_weight", 25.0)
+    var_weight = arm_config.get("var_weight", 25.0); cov_weight = arm_config.get("cov_weight", 25.0)
+    pos_encoding = arm_config.get("pos_encoding", "none"); d_t = arm_config.get("d_t", 3)
+    d_max = arm_config.get("d_max", 8); lr = arm_config.get("lr", 3e-4)
+    batch_size = arm_config.get("batch_size", 32)
+    replay_buffer_capacity = arm_config.get("replay_buffer_capacity", 4000)
+    model_type = arm_config.get("model_type", "separate")
+    primary_objective = arm_config.get("primary_objective", "jepa")
+    sfa_weight_val = arm_config.get("sfa_weight", 25.0)
+    mask_dyn_sim = arm_config.get("mask_dyn_sim", False)
+    dyn_readout = arm_config.get("dyn_readout", "mean")
+    coord_vicreg = arm_config.get("coord_vicreg", True)
+    set_seed(seed)
+    total_steps = 5 if dry_run else 8000; eval_steps = min(200, total_steps // 2) if dry_run else 200
+
+    model = NonParametricJEPASpatialSeparateDyn(
+        d_max=d_max, h=3, k=4, cooldown=300, stabilization_period=100,
+        pos_encoding=pos_encoding, primary_objective=primary_objective,
+        sfa_weight=sfa_weight_val, gdasr_log_only=True,
+        dyn_readout=dyn_readout, sub_features=1, dyn_source="spatial",
+        mask_dyn_sim=mask_dyn_sim, coord_vicreg=coord_vicreg)
+    model.d_t = d_t; model = model.to(device)
+    param_count = count_parameters(model)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    env = PhysicsSandbox(N=3, seed=seed); obs = env.reset()
+    history = collections.deque(maxlen=4); history.append(obs)
+    replay_buffer = ExtendedReplayBuffer(capacity=replay_buffer_capacity)
+    def _prefill(n):
+        while len(replay_buffer) < n:
+            obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)
+            if len(history) == 4: replay_buffer.push(np.stack(list(history)[:3], axis=0), history[3], info["positions"], info["colors"], info["radii"])
+    prefill_steps = max(1, min(total_steps - 2, 200)); _prefill(prefill_steps)
+    logs = []
+    for step in range(max(1, prefill_steps + 1), total_steps + 1):
+        obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)
+        if len(history) == 4: replay_buffer.push(np.stack(list(history)[:3], axis=0), history[3], info["positions"], info["colors"], info["radii"])
+        x_hist_b, x_target_b, pos_b, colors_b, radii_b = replay_buffer.sample(min(batch_size, len(replay_buffer)))
+        x_hist_t = torch.from_numpy(x_hist_b).float().to(device); x_target_t = torch.from_numpy(x_target_b).float().to(device)
+        model.train(); optimizer.zero_grad()
+        loss_dict, _, (z_target_coord, z_target_dyn) = model(
+            x_hist_t, x_target_t,
+            sim_weight=sim_weight, var_weight=var_weight, cov_weight=cov_weight,
+            d_t_predict=d_t, sfa_weight=sfa_weight_val)
+        total_loss = loss_dict["loss"]; total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0); optimizer.step()
+        sim_loss_val = loss_dict["sim_loss"].item(); model.update_recruitment_logic(sim_loss_val, target_dim=d_t, step=step)
+        log_entry = {"step": step, "loss": total_loss.item(),
+                     "sim_loss": loss_dict["sim_loss"].item(),
+                     "var_loss": loss_dict["var_loss"].item(),
+                     "cov_loss": loss_dict["cov_loss"].item(),
+                     "sfa_loss": loss_dict.get("sfa_loss", 0.0),
+                     "per_dim_std": None}
+        if step % 500 == 0:
+            with torch.no_grad(): per_dim_std_train = z_target_dyn[:, :d_t].std(dim=0).cpu().numpy()
+            log_entry["per_dim_std"] = per_dim_std_train.tolist()
+        logs.append(log_entry)
+        if step % 1000 == 0 or step == total_steps:
+            sfa_str = ""
+            if "sfa_loss" in loss_dict:
+                sfa_str = f"  sfa={loss_dict['sfa_loss'].item():.4f}"
+            print(f"  [{name}] seed={seed} step={step:5d}/{total_steps}"
+                  f"  loss={log_entry['loss']:.4f}  sim={log_entry['sim_loss']:.4f}"
+                  f"  var={log_entry['var_loss']:.4f}  cov={log_entry['cov_loss']:.4f}"
+                  f"{sfa_str}")
+    eval_res = evaluate_run(model, arm_config, seed, device, eval_steps=eval_steps)
+    final_log = logs[-1]
+    eval_res["final_train_loss"] = final_log["loss"]; eval_res["final_sim_loss"] = final_log["sim_loss"]
+    eval_res["final_var_loss"] = final_log["var_loss"]; eval_res["final_cov_loss"] = final_log["cov_loss"]
+    if "sfa_loss" in loss_dict:
+        eval_res["final_sfa_loss"] = loss_dict.get("sfa_loss", torch.tensor(0.0)).item() if isinstance(loss_dict.get("sfa_loss"), torch.Tensor) else loss_dict.get("sfa_loss", 0.0)
+    eval_res["param_count"] = param_count
+    per_dim_std_train_last = None
+    for entry in reversed(logs):
+        if entry["per_dim_std"] is not None: per_dim_std_train_last = np.array(entry["per_dim_std"]); break
+    if per_dim_std_train_last is not None:
+        eval_res["collapsed_train"] = bool(np.any(per_dim_std_train_last < 0.5))
+        eval_res["per_dim_std_train"] = per_dim_std_train_last.tolist()
+    else:
+        eval_res["collapsed_train"] = False; eval_res["per_dim_std_train"] = None
+    eval_res["collapsed"] = eval_res["collapsed_eval"] or eval_res["collapsed_train"]
+    if eval_res["final_train_loss"] > 50.0: eval_res["disqualified"] = True; eval_res["collapsed"] = True
+    else: eval_res["disqualified"] = False
+    return eval_res, model, logs
+
+
+ARMS = [
+    {"name": "A (VICReg-only control)", "model_type": "separate", "primary_objective": "jepa",
+     "mask_dyn_sim": True, "coord_vicreg": True, "sfa_weight": 25.0,
+     "var_weight": 25.0, "cov_weight": 25.0, "sim_weight": 1.0,
+     "lr": 3e-4, "batch_size": 32, "d_max": 8, "d_t": 3,
+     "pos_encoding": "none", "replay_buffer_capacity": 4000},
+    {"name": "B (SFA+VICReg, sfa=5.0)", "model_type": "separate", "primary_objective": "sfa",
+     "mask_dyn_sim": True, "coord_vicreg": True, "sfa_weight": 5.0,
+     "var_weight": 25.0, "cov_weight": 25.0, "sim_weight": 1.0,
+     "lr": 3e-4, "batch_size": 32, "d_max": 8, "d_t": 3,
+     "pos_encoding": "none", "replay_buffer_capacity": 4000},
+    {"name": "C (SFA+VICReg, sfa=1.0)", "model_type": "separate", "primary_objective": "sfa",
+     "mask_dyn_sim": True, "coord_vicreg": True, "sfa_weight": 1.0,
+     "var_weight": 25.0, "cov_weight": 25.0, "sim_weight": 1.0,
+     "lr": 3e-4, "batch_size": 32, "d_max": 8, "d_t": 3,
+     "pos_encoding": "none", "replay_buffer_capacity": 4000},
+]
+
+SEEDS_ORIGINAL = [7, 17, 31, 53, 71, 83, 97, 113, 127, 149]
+SEEDS_FRESH = [101, 103, 107, 109, 131, 137, 139, 151, 157, 163]
+SEEDS = SEEDS_ORIGINAL + SEEDS_FRESH  # union bank: 20 seeds
+
+
+def _sanitize_arm_name(name): return name.lower().replace(' ', '_').replace('(', '').replace(')', '').replace('+', '').replace('=', '_').replace("'", "")
+
+
+def _flatten_result(res, runs_dir):
+    flat = {k: v for k, v in res.items() if k not in ("centroid_mse_per_object", "r2_per_dim", "dim_to_obj")}
+    flat["per_dim_std"] = str(res.get("per_dim_std", [])); flat["per_dim_std_train"] = str(res.get("per_dim_std_train", []))
+    safe_name = _sanitize_arm_name(res["arm"]); run_id = f"{safe_name}_seed{res['seed']}"
+    csv_path = os.path.join(runs_dir, f"{run_id}.csv"); json_path = os.path.join(runs_dir, f"{run_id}.json")
+    pd.DataFrame([flat]).to_csv(csv_path, index=False)
+    with open(json_path, "w") as f: json.dump(res, f, indent=2, default=str)
+    return csv_path
+
+
+def _run_single_worker(args_tuple):
+    arm, seed, device_str, dry_run, runs_dir, checkpoints_dir = args_tuple
+    device = torch.device(device_str); torch.set_num_threads(1)
+    name = arm["name"]; print(f"[{name}] seed={seed} -> starting on {device} (dry_run={dry_run})")
+    eval_res, model, logs = run_single(arm, seed, device, dry_run=dry_run)
+    csv_path = _flatten_result(eval_res, runs_dir)
+    safe_name = _sanitize_arm_name(eval_res["arm"]); run_id = f"{safe_name}_seed{seed}"
+    ckpt_path = os.path.join(checkpoints_dir, f"{safe_name}_seed{seed}.pt")
+    torch.save(model.state_dict(), ckpt_path)
+    logs_path = os.path.join(runs_dir, f"{safe_name}_seed{seed}_logs.csv")
+    pd.DataFrame(logs).to_csv(logs_path, index=False)
+    return eval_res
+
+
+def _generate_analysis(df_all, results_dir):
+    lines = []
+    lines.append("# Iter_029 SFA+VICReg on Separate Backbone — Analysis\n")
+    lines.append("**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train\n")
+    lines.append("**Arms:** A (VICReg-only control), B (SFA+VICReg, sfa=5.0), C (SFA+VICReg, sfa=1.0)\n")
+    lines.append("**Seed bank:** Union of original (10) + fresh (10) = 20 seeds\n")
+    lines.append("**Gate thresholds:** F1: ΔR²_color ≥ 0.30 (Arm B, non-collapsed), "
+                 "F2: collapse rate ≤ 10% (Arm B), F3: centroid MSE within 1σ of Arm A\n\n---\n")
+    arm_names = [a["name"] for a in ARMS]
+
+    # Per-arm summary
+    lines.append("## Per-Arm Summary\n")
+    for arm_name in arm_names:
+        df_arm = df_all[df_all["arm"] == arm_name]
+        if len(df_arm) == 0: continue
+        lines.append(f"### {arm_name}\n")
+        lines.append(f"- N seeds: {len(df_arm)}\n")
+        cr_dual = df_arm["collapsed"].mean(); cc_dual = int(df_arm["collapsed"].sum())
+        cr_eval = df_arm["collapsed_eval"].mean(); cc_eval = int(df_arm["collapsed_eval"].sum())
+        cr_train = df_arm["collapsed_train"].mean(); cc_train = int(df_arm["collapsed_train"].sum())
+        lines.append(f"- Collapse rate (dual): {cr_dual:.2f} ({cc_dual}/{len(df_arm)})\n")
+        lines.append(f"- Collapse rate (eval-only): {cr_eval:.2f} ({cc_eval}/{len(df_arm)})\n")
+        lines.append(f"- Collapse rate (train-only): {cr_train:.2f} ({cc_train}/{len(df_arm)})\n")
+        dq_count = int(df_arm["disqualified"].sum()) if "disqualified" in df_arm.columns else 0
+        if dq_count > 0: lines.append(f"- **Disqualified seeds (loss > 50):** {dq_count}\n")
+        lines.append(f"- Mean ΔR²_color: {df_arm['delta_r2_color'].mean():.4f} ± {df_arm['delta_r2_color'].std():.4f}\n")
+        lines.append(f"- Mean centroid MSE: {df_arm['centroid_mse_mean'].mean():.2f}\n")
+        lines.append(f"- Mean abs corr: {df_arm['vicreg_mean_abs_corr'].mean():.3f}\n")
+        if "final_sfa_loss" in df_arm.columns:
+            sfa_vals = df_arm["final_sfa_loss"].dropna()
+            if len(sfa_vals) > 0:
+                lines.append(f"- Mean final SFA loss: {sfa_vals.mean():.4f}\n")
+        if "param_count" in df_arm.columns: lines.append(f"- Parameter count: {int(df_arm['param_count'].iloc[0])}\n")
+        lines.append("\n")
+
+    # Hard-seed table (seeds 53 and 71)
+    lines.append("## Hard-Seed Table (Seeds 53, 71)\n\n")
+    lines.append("| seed | arm | collapsed | ΔR²_color | centroid_mse | mean_abs_corr | per_dim_std |\n")
+    lines.append("|------|-----|-----------|-----------|--------------|---------------|-------------|\n")
+    hard_seeds = [53, 71]
+    for seed_val in hard_seeds:
+        for arm_name in arm_names:
+            df_match = df_all[(df_all["seed"] == seed_val) & (df_all["arm"] == arm_name)]
+            if len(df_match) == 0: continue
+            row = df_match.iloc[0]
+            c = "Y" if row["collapsed"] else "N"
+            dr2 = f"{row.get('delta_r2_color', 0.0):.4f}"
+            cmse = f"{row.get('centroid_mse_mean', 0.0):.2f}"
+            mac = f"{row.get('vicreg_mean_abs_corr', 0.0):.3f}"
+            pds = str(row.get("per_dim_std", "[]"))
+            lines.append(f"| {seed_val} | {arm_name} | {c} | {dr2} | {cmse} | {mac} | {pds} |\n")
+    lines.append("\n")
+
+    # Original vs Fresh seed bank comparison
+    lines.append("## Original vs Fresh Seed Bank Comparison\n\n")
+    lines.append("| arm | seed_bank | mean_ΔR²_color | collapse_rate | mean_centroid_mse |\n")
+    lines.append("|-----|-----------|----------------|---------------|-------------------|\n")
+    for arm_name in arm_names:
+        df_arm = df_all[df_all["arm"] == arm_name]
+        if len(df_arm) == 0: continue
+        for bank_name, bank_seeds in [("original", SEEDS_ORIGINAL), ("fresh", SEEDS_FRESH)]:
+            df_bank = df_arm[df_arm["seed"].isin(bank_seeds)]
+            if len(df_bank) == 0: continue
+            dr2_mean = f"{df_bank['delta_r2_color'].mean():.4f}"
+            cr = f"{df_bank['collapsed'].mean():.2f}"
+            cmse = f"{df_bank['centroid_mse_mean'].mean():.2f}"
+            lines.append(f"| {arm_name} | {bank_name} ({len(df_bank)}) | {dr2_mean} | {cr} | {cmse} |\n")
+    lines.append("\n")
+
+    # Gate check
+    lines.append("## Gate Check\n\n")
+    df_B = df_all[df_all["arm"] == "B (SFA+VICReg, sfa=5.0)"]
+    df_A = df_all[df_all["arm"] == "A (VICReg-only control)"]
+
+    # F1: ΔR²_color ≥ 0.30 on non-collapsed seeds
+    df_B_nc = df_B[~df_B["collapsed"]] if len(df_B) > 0 else df_B
+    if len(df_B_nc) > 0:
+        dr2_B = df_B_nc["delta_r2_color"].mean()
+        f1_status = "PASS" if dr2_B >= 0.30 else "FAIL"
+        lines.append(f"- **F1 (ΔR²_color ≥ 0.30, non-collapsed):** {f1_status} "
+                      f"(Arm B mean ΔR²_color = {dr2_B:.4f})\n")
+    else:
+        lines.append(f"- **F1:** ALL seeds collapsed — cannot evaluate\n")
+
+    # F2: collapse rate ≤ 10%
+    if len(df_B) > 0:
+        cr_B = df_B["collapsed"].mean(); cc_B = int(df_B["collapsed"].sum())
+        f2_status = "PASS" if cr_B <= 0.10 else "FAIL"
+        lines.append(f"- **F2 (collapse rate ≤ 10%):** {f2_status} "
+                      f"({cr_B:.2f} = {cc_B}/{len(df_B)})\n")
+
+    # F3: centroid MSE within 1σ of Arm A
+    if len(df_A) > 0 and len(df_B) > 0:
+        cmse_A_mean = df_A["centroid_mse_mean"].mean()
+        cmse_A_std = df_A["centroid_mse_mean"].std()
+        cmse_B_mean = df_B["centroid_mse_mean"].mean()
+        threshold = cmse_A_mean + cmse_A_std
+        f3_status = "PASS" if cmse_B_mean <= threshold else "FAIL"
+        lines.append(f"- **F3 (centroid MSE ≤ Arm A + 1σ):** {f3_status} "
+                      f"(Arm B = {cmse_B_mean:.2f}, Arm A mean+1σ = {threshold:.2f})\n")
+    lines.append("\n")
+
+    # Pre-registered outcome classification
+    lines.append("## Pre-Registered Outcome Classification\n\n")
+    if len(df_B_nc) > 0:
+        dr2_B_nc = df_B_nc["delta_r2_color"].mean()
+    else:
+        dr2_B_nc = float("-inf")
+    cr_B = df_B["collapsed"].mean() if len(df_B) > 0 else 1.0
+    if len(df_A) > 0:
+        cmse_A_mean = float(df_A["centroid_mse_mean"].mean())
+        cmse_A_std = float(df_A["centroid_mse_mean"].std())
+    else:
+        cmse_A_mean = 0.0; cmse_A_std = 0.0
+    cmse_B_mean = float(df_B["centroid_mse_mean"].mean()) if len(df_B) > 0 else float("inf")
+
+    f1_fail = dr2_B_nc < 0.30
+    f2_fail = cr_B > 0.10
+    f3_fail = cmse_B_mean > cmse_A_mean + cmse_A_std
+
+    if f1_fail or f2_fail or f3_fail:
+        lines.append("**HYPOTHESIS FALSIFIED**\n\n")
+        reasons = []
+        if f1_fail: reasons.append(f"F1: ΔR²_color = {dr2_B_nc:.4f} < 0.30")
+        if f2_fail: reasons.append(f"F2: collapse rate = {cr_B:.2f} > 0.10")
+        if f3_fail: reasons.append(f"F3: centroid MSE = {cmse_B_mean:.2f} exceeds Arm A + 1σ")
+        lines.append("Reasons: " + "; ".join(reasons) + "\n\n")
+        lines.append("SFA+VICReg is **not consistent with M2's predicted mechanism** for improving\n")
+        lines.append("identity encoding on the separate-backbone architecture.\n")
+    else:
+        lines.append("**POSITIVE — RESULT CONSISTENT WITH M2's PREDICTED MECHANISM**\n\n")
+        lines.append(f"Arm B ΔR²_color (non-collapsed) = {dr2_B_nc:.4f} ≥ 0.30\n")
+        lines.append(f"Arm B collapse rate = {cr_B:.2f} ≤ 0.10\n")
+        lines.append(f"Arm B centroid MSE = {cmse_B_mean:.2f} ≤ Arm A + 1σ\n\n")
+        lines.append("SFA slowness term is consistent with improved identity encoding\n")
+        lines.append("without destabilizing collapse or degrading spatial readout.\n")
+    lines.append("\n")
+
+    # Arm C results (conservative)
+    lines.append("## Arm C (SFA+VICReg, sfa=1.0, conservative)\n\n")
+    if len(df_B) > 0 and len(df_all[df_all["arm"] == "C (SFA+VICReg, sfa=1.0)"]) > 0:
+        df_C = df_all[df_all["arm"] == "C (SFA+VICReg, sfa=1.0)"]
+        cr_C = df_C["collapsed"].mean()
+        dr2_C = df_C["delta_r2_color"].mean()
+        lines.append(f"- Collapse rate: {cr_C:.2f}\n")
+        lines.append(f"- Mean ΔR²_color: {dr2_C:.4f}\n")
+        lines.append(f"- Mean centroid MSE: {df_C['centroid_mse_mean'].mean():.2f}\n")
+    lines.append("\n")
+
+    analysis_path = os.path.join(results_dir, "final_analysis.md")
+    with open(analysis_path, "w", encoding="utf-8") as f: f.write("".join(lines))
+    print(f"Saved analysis to {analysis_path}")
+
+
+def main():
+    cpu_count = os.cpu_count() or 2; default_workers = min(cpu_count - 1, 8)
+    parser = argparse.ArgumentParser(description="Iter_029 SFA+VICReg on Separate Backbone")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--seeds", type=int, nargs="+", default=None)
+    parser.add_argument("--workers", type=int, default=default_workers)
+    parser.add_argument("--sequential", action="store_true")
+    parser.add_argument("--device", type=str, default=None)
+    args = parser.parse_args()
+    dry_run = args.dry_run; seeds = args.seeds if args.seeds is not None else SEEDS
+    max_workers = args.workers
+    if args.device is not None: device = torch.device(args.device)
+    else: device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device_str = str(device)
+    print(f"Device: {device} | Dry-run: {dry_run} | Seeds: {seeds} | Workers: {max_workers if not args.sequential else 1}")
+    results_dir = "archive/iter_029/results"; runs_dir = os.path.join(results_dir, "runs")
+    checkpoints_dir = os.path.join(results_dir, "checkpoints")
+    os.makedirs(runs_dir, exist_ok=True); os.makedirs(checkpoints_dir, exist_ok=True)
+
+    # Log parameter counts BEFORE runs
+    print("\n=== Parameter Counts ===")
+    for arm in ARMS:
+        m = NonParametricJEPASpatialSeparateDyn(
+            d_max=arm["d_max"], h=3, k=4, cooldown=300, stabilization_period=100,
+            pos_encoding=arm["pos_encoding"], primary_objective=arm["primary_objective"],
+            sfa_weight=arm["sfa_weight"], gdasr_log_only=True,
+            dyn_readout="mean", sub_features=1, dyn_source="spatial",
+            mask_dyn_sim=arm["mask_dyn_sim"], coord_vicreg=arm["coord_vicreg"])
+        pc = count_parameters(m)
+        print(f"  {arm['name']}: {pc} parameters")
+    print()
+
+    tasks = [(arm, seed, device_str, dry_run, runs_dir, checkpoints_dir) for arm in ARMS for seed in seeds]
+    total_tasks = len(tasks); print(f"Total tasks: {total_tasks}")
+    all_results = []
+    if args.sequential:
+        for i, task in enumerate(tasks):
+            print(f"\n{'='*70}\nTASK [{i+1}/{total_tasks}]: {task[0]['name']} seed={task[1]}\n{'='*70}")
+            res = _run_single_worker(task); all_results.append(res)
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_to_label = {executor.submit(_run_single_worker, task): f"{task[0]['name']} seed={task[1]}" for task in tasks}
+            for future in concurrent.futures.as_completed(future_to_label):
+                label = future_to_label[future]
+                try: res = future.result(); all_results.append(res); print(f"COMPLETED: {label}")
+                except Exception as exc: print(f"FAILED: {label} -> {exc}")
+    df_all = pd.DataFrame(all_results)
+    summary_path = os.path.join(results_dir, "summary_iter_029.csv"); df_all.to_csv(summary_path, index=False)
+    print(f"\nSaved summary to {summary_path}")
+    _generate_analysis(df_all, results_dir)
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()
+]
+
+[Tool Call: list_dir({'path': 'archive'})]
+[Tool Result: [DIR] iter_001
+[DIR] iter_002
+[DIR] iter_003
+[DIR] iter_004
+[DIR] iter_005
+[DIR] iter_006
+[DIR] iter_007
+[DIR] iter_008
+[DIR] iter_009
+[DIR] iter_010
+[DIR] iter_011
+[DIR] iter_012
+[DIR] iter_013
+[DIR] iter_014
+[DIR] iter_015
+[DIR] iter_016
+[DIR] iter_017
+[DIR] iter_018
+[DIR] iter_019
+[DIR] iter_020
+[DIR] iter_021
+[DIR] iter_022
+[DIR] iter_023
+[DIR] iter_024
+[DIR] iter_025
+[DIR] iter_026
+[DIR] iter_027
+[DIR] iter_028
+[DIR] iter_029
+[DIR] iter_14]
+ 
+
+[Tool Call: list_dir({'path': 'archive/iter_029'})]
+[Tool Result: [DIR] iter_001
+[DIR] iter_002
+      manager_log.md
+      manager_pre_planning_hints.txt
+      planner_plan_prompt.txt
+      planner_plan_response.txt
+      planner_prompt.txt
+      planner_prompt_turn_1.txt
+      proposed_plan.yaml
+[DIR] results]
+ 
+
+[Tool Call: bash({'command': 'dir archive\\iter_029 /B'})]
+[Tool Result: exit_code: 0
+stdout: iter_001
+iter_002
+manager_log.md
+manager_pre_planning_hints.txt
+planner_plan_prompt.txt
+planner_plan_response.txt
+planner_prompt.txt
+planner_prompt_turn_1.txt
+proposed_plan.yaml
+results
+
+stderr: ]
+ 
+
+[Tool Call: list_dir({'path': 'archive/iter_029/results'})]
+[Tool Result: [DIR] checkpoints
+      final_analysis.md
+[DIR] runs
+      summary_iter_029.csv]
+   
+
+[Tool Call: bash({'command': 'type archive\\iter_029\\results\\summary_iter_029.csv | find /c /v ""'})]
+[Tool Result: exit_code: 0
+stdout: 4
+
+stderr: ]
+   
+
+[Tool Call: read_file({'path': 'archive/iter_029/results/summary_iter_029.csv'})]
+[Tool Result: arm,seed,collapsed_eval,per_dim_std,vicreg_per_dim_std,vicreg_mean_abs_corr,centroid_mse_mean,centroid_r_mean,delta_r2_color,r2_dyn_color,r2_coord_color,r2_dyn_pos,r2_coord_pos,r2_dyn_identity,r2_coord_identity,delta_r2_identity,dim_to_obj,final_train_loss,final_sim_loss,final_var_loss,final_cov_loss,param_count,collapsed_train,per_dim_std_train,collapsed,disqualified,final_sfa_loss
+A (VICReg-only control),7,True,"[0.00030423211865127087, 1.8969178199768066e-05, 0.000405352097004652]","[0.00030423211865127087, 1.8969178199768066e-05, 0.000405352097004652]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 2, 1: 0, 2: 1}",4555.65283203125,4521.69677734375,1.9768298864364624,2.107179497556899e-08,135608,False,,True,True,
+"B (SFA+VICReg, sfa=5.0)",7,True,"[0.0002867182483896613, 0.00016390159726142883, 0.0006361715495586395]","[0.0002867182483896613, 0.00016390159726142883, 0.0006361715495586395]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 2, 1: 0, 2: 1}",4555.66845703125,4521.4599609375,1.9734026193618774,4.8753832970760413e-08,135608,False,,True,True,7.334351153076568e-07
+"C (SFA+VICReg, sfa=1.0)",7,True,"[0.00028351135551929474, 0.00016263127326965332, 0.0006346669979393482]","[0.00028351135551929474, 0.00016263127326965332, 0.0006346669979393482]",1.0,,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,"{0: 2, 1: 0, 2: 1}",4555.66552734375,4521.4541015625,1.9734026193618774,4.8753829418046735e-08,135608,False,,True,True,7.328226843128505e-07
+]
+
+[Tool Call: read_file({'path': 'archive/iter_029/results/final_analysis.md'})]
+[Tool Result: # Iter_029 SFA+VICReg on Separate Backbone — Analysis
+**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train
+**Arms:** A (VICReg-only control), B (SFA+VICReg, sfa=5.0), C (SFA+VICReg, sfa=1.0)
+**Seed bank:** Union of original (10) + fresh (10) = 20 seeds
+**Gate thresholds:** F1: ΔR²_color ≥ 0.30 (Arm B, non-collapsed), F2: collapse rate ≤ 10% (Arm B), F3: centroid MSE within 1σ of Arm A
+
+---
+## Per-Arm Summary
+### A (VICReg-only control)
+- N seeds: 1
+- Collapse rate (dual): 1.00 (1/1)
+- Collapse rate (eval-only): 1.00 (1/1)
+- Collapse rate (train-only): 0.00 (0/1)
+- **Disqualified seeds (loss > 50):** 1
+- Mean ΔR²_color: 0.0000 ± nan
+- Mean centroid MSE: nan
+- Mean abs corr: 1.000
+- Parameter count: 135608
+
+### B (SFA+VICReg, sfa=5.0)
+- N seeds: 1
+- Collapse rate (dual): 1.00 (1/1)
+- Collapse rate (eval-only): 1.00 (1/1)
+- Collapse rate (train-only): 0.00 (0/1)
+- **Disqualified seeds (loss > 50):** 1
+- Mean ΔR²_color: 0.0000 ± nan
+- Mean centroid MSE: nan
+- Mean abs corr: 1.000
+- Mean final SFA loss: 0.0000
+- Parameter count: 135608
+
+### C (SFA+VICReg, sfa=1.0)
+- N seeds: 1
+- Collapse rate (dual): 1.00 (1/1)
+- Collapse rate (eval-only): 1.00 (1/1)
+- Collapse rate (train-only): 0.00 (0/1)
+- **Disqualified seeds (loss > 50):** 1
+- Mean ΔR²_color: 0.0000 ± nan
+- Mean centroid MSE: nan
+- Mean abs corr: 1.000
+- Mean final SFA loss: 0.0000
+- Parameter count: 135608
+
+## Hard-Seed Table (Seeds 53, 71)
+
+| seed | arm | collapsed | ΔR²_color | centroid_mse | mean_abs_corr | per_dim_std |
+|------|-----|-----------|-----------|--------------|---------------|-------------|
+
+## Original vs Fresh Seed Bank Comparison
+
+| arm | seed_bank | mean_ΔR²_color | collapse_rate | mean_centroid_mse |
+|-----|-----------|----------------|---------------|-------------------|
+| A (VICReg-only control) | original (1) | 0.0000 | 1.00 | nan |
+| B (SFA+VICReg, sfa=5.0) | original (1) | 0.0000 | 1.00 | nan |
+| C (SFA+VICReg, sfa=1.0) | original (1) | 0.0000 | 1.00 | nan |
+
+## Gate Check
+
+- **F1:** ALL seeds collapsed — cannot evaluate
+- **F2 (collapse rate ≤ 10%):** FAIL (1.00 = 1/1)
+- **F3 (centroid MSE ≤ Arm A + 1σ):** FAIL (Arm B = nan, Arm A mean+1σ = nan)
+
+## Pre-Registered Outcome Classification
+
+**HYPOTHESIS FALSIFIED**
+
+Reasons: F1: ΔR²_color = -inf < 0.30; F2: collapse rate = 1.00 > 0.10
+
+SFA+VICReg is **not consistent with M2's predicted mechanism** for improving
+identity encoding on the separate-backbone architecture.
+
+## Arm C (SFA+VICReg, sfa=1.0, conservative)
+
+- Collapse rate: 1.00
+- Mean ΔR²_color: 0.0000
+- Mean centroid MSE: nan
+
+]
+     
+
+[Tool Call: list_dir({'path': 'archive/iter_029/results/runs'})]
+[Tool Result:       a_vicreg-only_control_seed7.csv
+      a_vicreg-only_control_seed7.json
+      a_vicreg-only_control_seed7_logs.csv
+      b_sfavicreg,_sfa_5.0_seed7.csv
+      b_sfavicreg,_sfa_5.0_seed7.json
+      b_sfavicreg,_sfa_5.0_seed7_logs.csv
+      c_sfavicreg,_sfa_1.0_seed7.csv
+      c_sfavicreg,_sfa_1.0_seed7.json
+      c_sfavicreg,_sfa_1.0_seed7_logs.csv]
+ 
+
+[Tool Call: bash({'command': 'python -m src.run_phase0_sfa_separate_backbone --sequential', 'timeout_sec': 14400})]
+[Tool Result: exit_code: 0
+stdout: Device: cpu | Dry-run: False | Seeds: [7, 17, 31, 53, 71, 83, 97, 113, 127, 149, 101, 103, 107, 109, 131, 137, 139, 151, 157, 163] | Workers: 1
+
+=== Parameter Counts ===
+  A (VICReg-only control): 135608 parameters
+  B (SFA+VICReg, sfa=5.0): 135608 parameters
+  C (SFA+VICReg, sfa=1.0): 135608 parameters
+
+Total tasks: 60
+
+======================================================================
+TASK [1/60]: A (VICReg-only control) seed=7
+======================================================================
+[A (VICReg-only control)] seed=7 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=7 step= 1000/8000  loss=8.7510  sim=717.3132  var=0.1145  cov=0.2252
+  [A (VICReg-only control)] seed=7 step= 2000/8000  loss=3.1680  sim=769.6582  var=0.0000  cov=0.1158
+  [A (VICReg-only control)] seed=7 step= 3000/8000  loss=2.5954  sim=817.5615  var=0.0342  cov=0.0555
+  [A (VICReg-only control)] seed=7 step= 4000/8000  loss=2.0442  sim=782.2910  var=0.0134  cov=0.0585
+  [A (VICReg-only control)] seed=7 step= 5000/8000  loss=2.1517  sim=829.2313  var=0.0206  cov=0.0522
+  [A (VICReg-only control)] seed=7 step= 6000/8000  loss=2.1443  sim=836.4520  var=0.0058  cov=0.0716
+  [A (VICReg-only control)] seed=7 step= 7000/8000  loss=4.7833  sim=893.6685  var=0.0729  cov=0.1115
+  [A (VICReg-only control)] seed=7 step= 8000/8000  loss=7.3151  sim=903.3019  var=0.0619  cov=0.2224
+
+======================================================================
+TASK [2/60]: A (VICReg-only control) seed=17
+======================================================================
+[A (VICReg-only control)] seed=17 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=17 step= 1000/8000  loss=2.4731  sim=3530.5859  var=0.0074  cov=0.0807
+  [A (VICReg-only control)] seed=17 step= 2000/8000  loss=4.1653  sim=3325.1025  var=0.0529  cov=0.1011
+  [A (VICReg-only control)] seed=17 step= 3000/8000  loss=9.4363  sim=2615.4182  var=0.0830  cov=0.2875
+  [A (VICReg-only control)] seed=17 step= 4000/8000  loss=2.0005  sim=2132.2332  var=0.0274  cov=0.0425
+  [A (VICReg-only control)] seed=17 step= 5000/8000  loss=5.5133  sim=2045.2090  var=0.0243  cov=0.1879
+  [A (VICReg-only control)] seed=17 step= 6000/8000  loss=5.6851  sim=2148.1311  var=0.1366  cov=0.0866
+  [A (VICReg-only control)] seed=17 step= 7000/8000  loss=2.4116  sim=2000.5940  var=0.0087  cov=0.0805
+  [A (VICReg-only control)] seed=17 step= 8000/8000  loss=2.3702  sim=1995.7390  var=0.0342  cov=0.0535
+
+======================================================================
+TASK [3/60]: A (VICReg-only control) seed=31
+======================================================================
+[A (VICReg-only control)] seed=31 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=31 step= 1000/8000  loss=8.2900  sim=3711.6592  var=0.1774  cov=0.1375
+  [A (VICReg-only control)] seed=31 step= 2000/8000  loss=6.1248  sim=3195.1860  var=0.0271  cov=0.2113
+  [A (VICReg-only control)] seed=31 step= 3000/8000  loss=3.1006  sim=2637.8330  var=0.0346  cov=0.0818
+  [A (VICReg-only control)] seed=31 step= 4000/8000  loss=8.7756  sim=2644.3279  var=0.0183  cov=0.3282
+  [A (VICReg-only control)] seed=31 step= 5000/8000  loss=1.9099  sim=2882.1714  var=0.0006  cov=0.0706
+  [A (VICReg-only control)] seed=31 step= 6000/8000  loss=2.5134  sim=3153.4407  var=0.0353  cov=0.0586
+  [A (VICReg-only control)] seed=31 step= 7000/8000  loss=3.3884  sim=3405.6362  var=0.0150  cov=0.1160
+  [A (VICReg-only control)] seed=31 step= 8000/8000  loss=4.2559  sim=3501.7532  var=0.0565  cov=0.1094
+
+======================================================================
+TASK [4/60]: A (VICReg-only control) seed=53
+======================================================================
+[A (VICReg-only control)] seed=53 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=53 step= 1000/8000  loss=10.1274  sim=3830.5505  var=0.1356  cov=0.2359
+  [A (VICReg-only control)] seed=53 step= 2000/8000  loss=3.0615  sim=3305.2991  var=0.0390  cov=0.0652
+  [A (VICReg-only control)] seed=53 step= 3000/8000  loss=12.8403  sim=3218.5725  var=0.0000  cov=0.4920
+  [A (VICReg-only control)] seed=53 step= 4000/8000  loss=3.3252  sim=2931.3669  var=0.0095  cov=0.1124
+  [A (VICReg-only control)] seed=53 step= 5000/8000  loss=6.2761  sim=2961.5413  var=0.0383  cov=0.2022
+  [A (VICReg-only control)] seed=53 step= 6000/8000  loss=5.1384  sim=2717.9424  var=0.0963  cov=0.0962
+  [A (VICReg-only control)] seed=53 step= 7000/8000  loss=4.7109  sim=2512.6150  var=0.0339  cov=0.1411
+  [A (VICReg-only control)] seed=53 step= 8000/8000  loss=2.4856  sim=2459.7334  var=0.0180  cov=0.0714
+
+======================================================================
+TASK [5/60]: A (VICReg-only control) seed=71
+======================================================================
+[A (VICReg-only control)] seed=71 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=71 step= 1000/8000  loss=5.5156  sim=5307.4424  var=0.1089  cov=0.0854
+  [A (VICReg-only control)] seed=71 step= 2000/8000  loss=4.1694  sim=4747.8330  var=0.0108  cov=0.1464
+  [A (VICReg-only control)] seed=71 step= 3000/8000  loss=5.9980  sim=4846.4717  var=0.0400  cov=0.1904
+  [A (VICReg-only control)] seed=71 step= 4000/8000  loss=4.3853  sim=4616.5024  var=0.0862  cov=0.0797
+  [A (VICReg-only control)] seed=71 step= 5000/8000  loss=3.8628  sim=4480.8926  var=0.0330  cov=0.1131
+  [A (VICReg-only control)] seed=71 step= 6000/8000  loss=1.6758  sim=4563.5518  var=0.0051  cov=0.0476
+  [A (VICReg-only control)] seed=71 step= 7000/8000  loss=5.6938  sim=4349.8008  var=0.1432  cov=0.0790
+  [A (VICReg-only control)] seed=71 step= 8000/8000  loss=2.4482  sim=4365.0811  var=0.0163  cov=0.0778
+
+======================================================================
+TASK [6/60]: A (VICReg-only control) seed=83
+======================================================================
+[A (VICReg-only control)] seed=83 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=83 step= 1000/8000  loss=4.3308  sim=2500.2788  var=0.0127  cov=0.1415
+  [A (VICReg-only control)] seed=83 step= 2000/8000  loss=2.3372  sim=2239.2954  var=0.0256  cov=0.0461
+  [A (VICReg-only control)] seed=83 step= 3000/8000  loss=5.2012  sim=2100.5945  var=0.0659  cov=0.1226
+  [A (VICReg-only control)] seed=83 step= 4000/8000  loss=4.8407  sim=1917.2135  var=0.0536  cov=0.1263
+  [A (VICReg-only control)] seed=83 step= 5000/8000  loss=5.6996  sim=1875.1438  var=0.1329  cov=0.0810
+  [A (VICReg-only control)] seed=83 step= 6000/8000  loss=4.6371  sim=2005.2518  var=0.0689  cov=0.1099
+  [A (VICReg-only control)] seed=83 step= 7000/8000  loss=8.6205  sim=2020.7140  var=0.0302  cov=0.3038
+  [A (VICReg-only control)] seed=83 step= 8000/8000  loss=1.1245  sim=2169.9478  var=0.0074  cov=0.0250
+
+======================================================================
+TASK [7/60]: A (VICReg-only control) seed=97
+======================================================================
+[A (VICReg-only control)] seed=97 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=97 step= 1000/8000  loss=10.0085  sim=2998.0059  var=0.1420  cov=0.2290
+  [A (VICReg-only control)] seed=97 step= 2000/8000  loss=4.1321  sim=3292.7310  var=0.0160  cov=0.1398
+  [A (VICReg-only control)] seed=97 step= 3000/8000  loss=4.6279  sim=3707.2637  var=0.0079  cov=0.1688
+  [A (VICReg-only control)] seed=97 step= 4000/8000  loss=3.2446  sim=3311.1799  var=0.0481  cov=0.0749
+  [A (VICReg-only control)] seed=97 step= 5000/8000  loss=6.5466  sim=3416.5881  var=0.0905  cov=0.1640
+  [A (VICReg-only control)] seed=97 step= 6000/8000  loss=5.5515  sim=3535.3020  var=0.0969  cov=0.1201
+  [A (VICReg-only control)] seed=97 step= 7000/8000  loss=4.5173  sim=3509.7358  var=0.0340  cov=0.1365
+  [A (VICReg-only control)] seed=97 step= 8000/8000  loss=6.0669  sim=3512.3799  var=0.1182  cov=0.1161
+
+======================================================================
+TASK [8/60]: A (VICReg-only control) seed=113
+======================================================================
+[A (VICReg-only control)] seed=113 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=113 step= 1000/8000  loss=12.0436  sim=1981.4246  var=0.0516  cov=0.3977
+  [A (VICReg-only control)] seed=113 step= 2000/8000  loss=9.2063  sim=1446.3666  var=0.0628  cov=0.2681
+  [A (VICReg-only control)] seed=113 step= 3000/8000  loss=2.2053  sim=1040.8070  var=0.0039  cov=0.0787
+  [A (VICReg-only control)] seed=113 step= 4000/8000  loss=1.9337  sim=949.8708  var=0.0181  cov=0.0511
+  [A (VICReg-only control)] seed=113 step= 5000/8000  loss=5.2465  sim=893.0545  var=0.0000  cov=0.2032
+  [A (VICReg-only control)] seed=113 step= 6000/8000  loss=5.6956  sim=728.7993  var=0.0991  cov=0.1159
+  [A (VICReg-only control)] seed=113 step= 7000/8000  loss=4.0738  sim=928.4938  var=0.0140  cov=0.1345
+  [A (VICReg-only control)] seed=113 step= 8000/8000  loss=1.5872  sim=744.1630  var=0.0061  cov=0.0548
+
+======================================================================
+TASK [9/60]: A (VICReg-only control) seed=127
+======================================================================
+[A (VICReg-only control)] seed=127 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=127 step= 1000/8000  loss=6.5166  sim=3013.3398  var=0.0912  cov=0.1354
+  [A (VICReg-only control)] seed=127 step= 2000/8000  loss=4.1588  sim=2021.3754  var=0.0064  cov=0.1256
+  [A (VICReg-only control)] seed=127 step= 3000/8000  loss=13.2454  sim=1798.9232  var=0.0384  cov=0.4767
+  [A (VICReg-only control)] seed=127 step= 4000/8000  loss=3.9890  sim=1825.7140  var=0.0251  cov=0.1265
+  [A (VICReg-only control)] seed=127 step= 5000/8000  loss=8.4805  sim=1779.0103  var=0.1024  cov=0.2212
+  [A (VICReg-only control)] seed=127 step= 6000/8000  loss=3.1490  sim=1446.9984  var=0.0345  cov=0.0773
+  [A (VICReg-only control)] seed=127 step= 7000/8000  loss=3.1575  sim=1210.7408  var=0.0665  cov=0.0518
+  [A (VICReg-only control)] seed=127 step= 8000/8000  loss=2.2832  sim=1154.5654  var=0.0214  cov=0.0608
+
+======================================================================
+TASK [10/60]: A (VICReg-only control) seed=149
+======================================================================
+[A (VICReg-only control)] seed=149 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=149 step= 1000/8000  loss=8.4697  sim=1934.2678  var=0.1850  cov=0.1254
+  [A (VICReg-only control)] seed=149 step= 2000/8000  loss=4.7417  sim=2212.3423  var=0.0155  cov=0.1671
+  [A (VICReg-only control)] seed=149 step= 3000/8000  loss=2.4507  sim=2100.1655  var=0.0016  cov=0.0897
+  [A (VICReg-only control)] seed=149 step= 4000/8000  loss=3.8518  sim=2163.4387  var=0.0497  cov=0.1009
+  [A (VICReg-only control)] seed=149 step= 5000/8000  loss=5.1960  sim=2113.6890  var=0.0099  cov=0.1911
+  [A (VICReg-only control)] seed=149 step= 6000/8000  loss=2.8477  sim=2130.1362  var=0.0388  cov=0.0687
+  [A (VICReg-only control)] seed=149 step= 7000/8000  loss=5.3628  sim=2083.3672  var=0.0000  cov=0.2089
+  [A (VICReg-only control)] seed=149 step= 8000/8000  loss=4.3674  sim=2144.9067  var=0.0770  cov=0.0942
+
+======================================================================
+TASK [11/60]: A (VICReg-only control) seed=101
+======================================================================
+[A (VICReg-only control)] seed=101 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=101 step= 1000/8000  loss=6.2677  sim=1261.8406  var=0.0122  cov=0.2271
+  [A (VICReg-only control)] seed=101 step= 2000/8000  loss=6.3738  sim=1121.0428  var=0.1396  cov=0.1045
+  [A (VICReg-only control)] seed=101 step= 3000/8000  loss=4.1384  sim=1107.2640  var=0.0264  cov=0.1301
+  [A (VICReg-only control)] seed=101 step= 4000/8000  loss=3.5896  sim=1273.1779  var=0.0064  cov=0.1296
+  [A (VICReg-only control)] seed=101 step= 5000/8000  loss=5.9678  sim=1223.0602  var=0.0000  cov=0.2327
+  [A (VICReg-only control)] seed=101 step= 6000/8000  loss=3.9453  sim=1300.4503  var=0.0719  cov=0.0724
+  [A (VICReg-only control)] seed=101 step= 7000/8000  loss=3.0342  sim=1331.5779  var=0.0339  cov=0.0810
+  [A (VICReg-only control)] seed=101 step= 8000/8000  loss=2.6783  sim=1297.6439  var=0.0204  cov=0.0789
+
+======================================================================
+TASK [12/60]: A (VICReg-only control) seed=103
+======================================================================
+[A (VICReg-only control)] seed=103 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=103 step= 1000/8000  loss=4.8728  sim=1651.6086  var=0.0656  cov=0.1221
+  [A (VICReg-only control)] seed=103 step= 2000/8000  loss=1.3302  sim=1578.9601  var=0.0000  cov=0.0419
+  [A (VICReg-only control)] seed=103 step= 3000/8000  loss=3.0597  sim=1559.2744  var=0.0197  cov=0.0958
+  [A (VICReg-only control)] seed=103 step= 4000/8000  loss=7.0553  sim=1524.9996  var=0.0713  cov=0.2042
+  [A (VICReg-only control)] seed=103 step= 5000/8000  loss=8.3477  sim=1537.3724  var=0.0000  cov=0.3236
+  [A (VICReg-only control)] seed=103 step= 6000/8000  loss=3.6193  sim=1690.7250  var=0.1014  cov=0.0398
+  [A (VICReg-only control)] seed=103 step= 7000/8000  loss=3.8527  sim=1619.0823  var=0.0089  cov=0.1401
+  [A (VICReg-only control)] seed=103 step= 8000/8000  loss=4.4419  sim=1609.1221  var=0.0016  cov=0.1726
+
+======================================================================
+TASK [13/60]: A (VICReg-only control) seed=107
+======================================================================
+[A (VICReg-only control)] seed=107 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=107 step= 1000/8000  loss=8.4973  sim=3685.8320  var=0.1630  cov=0.1419
+  [A (VICReg-only control)] seed=107 step= 2000/8000  loss=10.6875  sim=2470.4922  var=0.0940  cov=0.3193
+  [A (VICReg-only control)] seed=107 step= 3000/8000  loss=7.3582  sim=2596.2842  var=0.0031  cov=0.2766
+  [A (VICReg-only control)] seed=107 step= 4000/8000  loss=2.8291  sim=2439.1721  var=0.0080  cov=0.0931
+  [A (VICReg-only control)] seed=107 step= 5000/8000  loss=2.8979  sim=2530.2847  var=0.0506  cov=0.0540
+  [A (VICReg-only control)] seed=107 step= 6000/8000  loss=2.0432  sim=2416.3755  var=0.0118  cov=0.0556
+  [A (VICReg-only control)] seed=107 step= 7000/8000  loss=2.3826  sim=2321.7358  var=0.0189  cov=0.0660
+  [A (VICReg-only control)] seed=107 step= 8000/8000  loss=4.2771  sim=2201.1821  var=0.0095  cov=0.1533
+
+======================================================================
+TASK [14/60]: A (VICReg-only control) seed=109
+======================================================================
+[A (VICReg-only control)] seed=109 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=109 step= 1000/8000  loss=6.5938  sim=2360.3203  var=0.1112  cov=0.1212
+  [A (VICReg-only control)] seed=109 step= 2000/8000  loss=9.2083  sim=1892.1014  var=0.0597  cov=0.2861
+  [A (VICReg-only control)] seed=109 step= 3000/8000  loss=4.0049  sim=1807.1543  var=0.1037  cov=0.0334
+  [A (VICReg-only control)] seed=109 step= 4000/8000  loss=9.5079  sim=1571.9187  var=0.0193  cov=0.3391
+  [A (VICReg-only control)] seed=109 step= 5000/8000  loss=5.2083  sim=1687.2760  var=0.0719  cov=0.1196
+  [A (VICReg-only control)] seed=109 step= 6000/8000  loss=1.3531  sim=1687.8175  var=0.0158  cov=0.0238
+  [A (VICReg-only control)] seed=109 step= 7000/8000  loss=7.7920  sim=1536.9839  var=0.0494  cov=0.2496
+  [A (VICReg-only control)] seed=109 step= 8000/8000  loss=7.3418  sim=1661.4622  var=0.0617  cov=0.2219
+
+======================================================================
+TASK [15/60]: A (VICReg-only control) seed=131
+======================================================================
+[A (VICReg-only control)] seed=131 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=131 step= 1000/8000  loss=8.3469  sim=1510.7098  var=0.0898  cov=0.2228
+  [A (VICReg-only control)] seed=131 step= 2000/8000  loss=1.5059  sim=1495.3796  var=0.0075  cov=0.0416
+  [A (VICReg-only control)] seed=131 step= 3000/8000  loss=3.8456  sim=1456.3384  var=0.0643  cov=0.0801
+  [A (VICReg-only control)] seed=131 step= 4000/8000  loss=7.2467  sim=1548.1810  var=0.0112  cov=0.2709
+  [A (VICReg-only control)] seed=131 step= 5000/8000  loss=6.8995  sim=1547.3013  var=0.0486  cov=0.2168
+  [A (VICReg-only control)] seed=131 step= 6000/8000  loss=6.5720  sim=1257.6876  var=0.0194  cov=0.2347
+  [A (VICReg-only control)] seed=131 step= 7000/8000  loss=4.2107  sim=1144.6146  var=0.0335  cov=0.1173
+  [A (VICReg-only control)] seed=131 step= 8000/8000  loss=1.6195  sim=1110.8473  var=0.0249  cov=0.0332
+
+======================================================================
+TASK [16/60]: A (VICReg-only control) seed=137
+======================================================================
+[A (VICReg-only control)] seed=137 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=137 step= 1000/8000  loss=5.5791  sim=4336.5864  var=0.0600  cov=0.1476
+  [A (VICReg-only control)] seed=137 step= 2000/8000  loss=4.9287  sim=4038.4631  var=0.0050  cov=0.1831
+  [A (VICReg-only control)] seed=137 step= 3000/8000  loss=2.2473  sim=4067.6025  var=0.0003  cov=0.0818
+  [A (VICReg-only control)] seed=137 step= 4000/8000  loss=1.8477  sim=4359.4849  var=0.0038  cov=0.0608
+  [A (VICReg-only control)] seed=137 step= 5000/8000  loss=4.7256  sim=4374.4414  var=0.0725  cov=0.1087
+  [A (VICReg-only control)] seed=137 step= 6000/8000  loss=2.7402  sim=4178.9683  var=0.0667  cov=0.0354
+  [A (VICReg-only control)] seed=137 step= 7000/8000  loss=6.5981  sim=4455.3315  var=0.0242  cov=0.2273
+  [A (VICReg-only control)] seed=137 step= 8000/8000  loss=6.2358  sim=4458.9341  var=0.0151  cov=0.2265
+
+======================================================================
+TASK [17/60]: A (VICReg-only control) seed=139
+======================================================================
+[A (VICReg-only control)] seed=139 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=139 step= 1000/8000  loss=8.7566  sim=2734.4280  var=0.1986  cov=0.1304
+  [A (VICReg-only control)] seed=139 step= 2000/8000  loss=1.2834  sim=2254.7070  var=0.0029  cov=0.0352
+  [A (VICReg-only control)] seed=139 step= 3000/8000  loss=3.6360  sim=2272.6467  var=0.0196  cov=0.1121
+  [A (VICReg-only control)] seed=139 step= 4000/8000  loss=5.4290  sim=2102.4917  var=0.1192  cov=0.0887
+  [A (VICReg-only control)] seed=139 step= 5000/8000  loss=6.3706  sim=2029.5967  var=0.0000  cov=0.2406
+  [A (VICReg-only control)] seed=139 step= 6000/8000  loss=4.2117  sim=2003.4983  var=0.0205  cov=0.1419
+  [A (VICReg-only control)] seed=139 step= 7000/8000  loss=4.5985  sim=2027.9310  var=0.0894  cov=0.0844
+  [A (VICReg-only control)] seed=139 step= 8000/8000  loss=2.7888  sim=1973.5382  var=0.0167  cov=0.0870
+
+======================================================================
+TASK [18/60]: A (VICReg-only control) seed=151
+======================================================================
+[A (VICReg-only control)] seed=151 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=151 step= 1000/8000  loss=6.1853  sim=2401.8916  var=0.0359  cov=0.1891
+  [A (VICReg-only control)] seed=151 step= 2000/8000  loss=5.0593  sim=2571.6709  var=0.0848  cov=0.1046
+  [A (VICReg-only control)] seed=151 step= 3000/8000  loss=4.6584  sim=2510.7810  var=0.0080  cov=0.1695
+  [A (VICReg-only control)] seed=151 step= 4000/8000  loss=5.7002  sim=2520.0540  var=0.1146  cov=0.1023
+  [A (VICReg-only control)] seed=151 step= 5000/8000  loss=5.0476  sim=2534.0891  var=0.0584  cov=0.1339
+  [A (VICReg-only control)] seed=151 step= 6000/8000  loss=5.1453  sim=2603.7466  var=0.0313  cov=0.1659
+  [A (VICReg-only control)] seed=151 step= 7000/8000  loss=5.4028  sim=2598.1223  var=0.0387  cov=0.1689
+  [A (VICReg-only control)] seed=151 step= 8000/8000  loss=2.3210  sim=2532.2935  var=0.0000  cov=0.0821
+
+======================================================================
+TASK [19/60]: A (VICReg-only control) seed=157
+======================================================================
+[A (VICReg-only control)] seed=157 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=157 step= 1000/8000  loss=6.4615  sim=238.0021  var=0.0000  cov=0.2491
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 356.6839 (baseline mean=262.4430, std=23.2984)
+  [A (VICReg-only control)] seed=157 step= 2000/8000  loss=10.9400  sim=293.1275  var=0.0320  cov=0.3988
+  [A (VICReg-only control)] seed=157 step= 3000/8000  loss=4.9879  sim=237.7371  var=0.0000  cov=0.1915
+  [A (VICReg-only control)] seed=157 step= 4000/8000  loss=1.4437  sim=223.0204  var=0.0147  cov=0.0374
+  [A (VICReg-only control)] seed=157 step= 5000/8000  loss=1.3190  sim=240.3243  var=0.0000  cov=0.0484
+  [A (VICReg-only control)] seed=157 step= 6000/8000  loss=6.2583  sim=317.7180  var=0.0601  cov=0.1870
+  [A (VICReg-only control)] seed=157 step= 7000/8000  loss=26.8692  sim=257.5907  var=0.0008  cov=1.0679
+  [A (VICReg-only control)] seed=157 step= 8000/8000  loss=9.3019  sim=249.5282  var=0.0738  cov=0.2928
+
+======================================================================
+TASK [20/60]: A (VICReg-only control) seed=163
+======================================================================
+[A (VICReg-only control)] seed=163 -> starting on cpu (dry_run=False)
+  [A (VICReg-only control)] seed=163 step= 1000/8000  loss=3.6649  sim=812.5870  var=0.0362  cov=0.0935
+  [A (VICReg-only control)] seed=163 step= 2000/8000  loss=8.6870  sim=810.0915  var=0.1532  cov=0.1848
+  [A (VICReg-only control)] seed=163 step= 3000/8000  loss=5.5950  sim=847.3940  var=0.0015  cov=0.2158
+  [A (VICReg-only control)] seed=163 step= 4000/8000  loss=5.4957  sim=801.2659  var=0.0779  cov=0.1373
+  [A (VICReg-only control)] seed=163 step= 5000/8000  loss=2.2251  sim=767.3434  var=0.0386  cov=0.0462
+  [A (VICReg-only control)] seed=163 step= 6000/8000  loss=3.7325  sim=771.7947  var=0.0300  cov=0.1140
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 927.9077 (baseline mean=845.7968, std=19.8974)
+  [A (VICReg-only control)] seed=163 step= 7000/8000  loss=5.6835  sim=896.0088  var=0.0174  cov=0.2045
+  [A (VICReg-only control)] seed=163 step= 8000/8000  loss=8.9438  sim=857.6865  var=0.0471  cov=0.3043
+
+======================================================================
+TASK [21/60]: B (SFA+VICReg, sfa=5.0) seed=7
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=7 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=7 step= 1000/8000  loss=6.6050  sim=228.2717  var=0.0389  cov=0.2012  sfa=0.0876
+  [B (SFA+VICReg, sfa=5.0)] seed=7 step= 2000/8000  loss=1.9752  sim=300.5046  var=0.0184  cov=0.0324  sfa=0.1030
+  [B (SFA+VICReg, sfa=5.0)] seed=7 step= 3000/8000  loss=4.4293  sim=483.4991  var=0.0000  cov=0.1470  sfa=0.0839
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 582.7555 (baseline mean=454.3335, std=31.7228)
+  [B (SFA+VICReg, sfa=5.0)] seed=7 step= 4000/8000  loss=5.5479  sim=541.2043  var=0.0117  cov=0.1878  sfa=0.0757
+  [B (SFA+VICReg, sfa=5.0)] seed=7 step= 5000/8000  loss=3.0455  sim=300.5099  var=0.0671  cov=0.0336  sfa=0.0947
+  [B (SFA+VICReg, sfa=5.0)] seed=7 step= 6000/8000  loss=2.5028  sim=192.3153  var=0.0000  cov=0.0770  sfa=0.0713
+  [B (SFA+VICReg, sfa=5.0)] seed=7 step= 7000/8000  loss=3.2136  sim=105.6947  var=0.0758  cov=0.0281  sfa=0.0791
+  [B (SFA+VICReg, sfa=5.0)] seed=7 step= 8000/8000  loss=2.2983  sim=101.4254  var=0.0055  cov=0.0655  sfa=0.0720
+
+======================================================================
+TASK [22/60]: B (SFA+VICReg, sfa=5.0) seed=17
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=17 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=17 step= 1000/8000  loss=3.6963  sim=6.8043  var=0.0599  cov=0.0521  sfa=0.1508
+  [B (SFA+VICReg, sfa=5.0)] seed=17 step= 2000/8000  loss=5.1016  sim=8.7447  var=0.0375  cov=0.1254  sfa=0.1824
+  [B (SFA+VICReg, sfa=5.0)] seed=17 step= 3000/8000  loss=2.1731  sim=6.7382  var=0.0215  cov=0.0375  sfa=0.1295
+  [B (SFA+VICReg, sfa=5.0)] seed=17 step= 4000/8000  loss=7.3812  sim=7.1511  var=0.0027  cov=0.2647  sfa=0.1289
+  [B (SFA+VICReg, sfa=5.0)] seed=17 step= 5000/8000  loss=2.3814  sim=8.6440  var=0.0411  cov=0.0308  sfa=0.1071
+  [B (SFA+VICReg, sfa=5.0)] seed=17 step= 6000/8000  loss=3.6500  sim=9.2200  var=0.0000  cov=0.1176  sfa=0.1315
+  [B (SFA+VICReg, sfa=5.0)] seed=17 step= 7000/8000  loss=2.7889  sim=7.0623  var=0.0588  cov=0.0301  sfa=0.1049
+  [B (SFA+VICReg, sfa=5.0)] seed=17 step= 8000/8000  loss=3.0044  sim=6.8209  var=0.0549  cov=0.0380  sfa=0.1163
+
+======================================================================
+TASK [23/60]: B (SFA+VICReg, sfa=5.0) seed=31
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=31 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=31 step= 1000/8000  loss=9.6898  sim=3.3652  var=0.2210  cov=0.1270  sfa=0.1872
+  [B (SFA+VICReg, sfa=5.0)] seed=31 step= 2000/8000  loss=10.6272  sim=4.2389  var=0.1102  cov=0.2837  sfa=0.1432
+  [B (SFA+VICReg, sfa=5.0)] seed=31 step= 3000/8000  loss=7.6379  sim=5.5810  var=0.0926  cov=0.1667  sfa=0.2227
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 7.9273 (baseline mean=6.5576, std=0.3328)
+  [B (SFA+VICReg, sfa=5.0)] seed=31 step= 4000/8000  loss=10.4673  sim=8.0404  var=0.0611  cov=0.3056  sfa=0.2501
+  [B (SFA+VICReg, sfa=5.0)] seed=31 step= 5000/8000  loss=4.7423  sim=7.7192  var=0.0000  cov=0.1541  sfa=0.1682
+  [B (SFA+VICReg, sfa=5.0)] seed=31 step= 6000/8000  loss=2.5682  sim=7.1197  var=0.0379  cov=0.0303  sfa=0.1653
+  [B (SFA+VICReg, sfa=5.0)] seed=31 step= 7000/8000  loss=3.4006  sim=7.5176  var=0.0341  cov=0.0647  sfa=0.1763
+  [B (SFA+VICReg, sfa=5.0)] seed=31 step= 8000/8000  loss=4.7502  sim=8.9427  var=0.0536  cov=0.0998  sfa=0.1739
+
+======================================================================
+TASK [24/60]: B (SFA+VICReg, sfa=5.0) seed=53
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=53 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=53 step= 1000/8000  loss=9.9868  sim=31.5795  var=0.1826  cov=0.1033  sfa=0.3839
+  [B (SFA+VICReg, sfa=5.0)] seed=53 step= 2000/8000  loss=7.8233  sim=30.4957  var=0.0071  cov=0.2577  sfa=0.1693
+  [B (SFA+VICReg, sfa=5.0)] seed=53 step= 3000/8000  loss=6.0822  sim=26.8383  var=0.0000  cov=0.1974  sfa=0.1894
+  [B (SFA+VICReg, sfa=5.0)] seed=53 step= 4000/8000  loss=3.2479  sim=23.1627  var=0.0219  cov=0.0821  sfa=0.0813
+  [B (SFA+VICReg, sfa=5.0)] seed=53 step= 5000/8000  loss=3.0547  sim=15.9111  var=0.0134  cov=0.0737  sfa=0.1221
+  [B (SFA+VICReg, sfa=5.0)] seed=53 step= 6000/8000  loss=4.5081  sim=9.3927  var=0.0000  cov=0.1494  sfa=0.1267
+  [B (SFA+VICReg, sfa=5.0)] seed=53 step= 7000/8000  loss=2.9562  sim=8.9025  var=0.0193  cov=0.0728  sfa=0.0933
+  [B (SFA+VICReg, sfa=5.0)] seed=53 step= 8000/8000  loss=4.3257  sim=12.9920  var=0.0373  cov=0.0998  sfa=0.1509
+
+======================================================================
+TASK [25/60]: B (SFA+VICReg, sfa=5.0) seed=71
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=71 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=71 step= 1000/8000  loss=9.3386  sim=18.8254  var=0.0622  cov=0.2502  sfa=0.2051
+  [B (SFA+VICReg, sfa=5.0)] seed=71 step= 2000/8000  loss=3.4545  sim=20.2517  var=0.0000  cov=0.1042  sfa=0.0923
+  [B (SFA+VICReg, sfa=5.0)] seed=71 step= 3000/8000  loss=2.3494  sim=19.0298  var=0.0000  cov=0.0277  sfa=0.2944
+  [B (SFA+VICReg, sfa=5.0)] seed=71 step= 4000/8000  loss=9.1431  sim=16.9141  var=0.1337  cov=0.1947  sfa=0.1295
+  [B (SFA+VICReg, sfa=5.0)] seed=71 step= 5000/8000  loss=6.1870  sim=14.5130  var=0.0738  cov=0.1300  sfa=0.1743
+  [B (SFA+VICReg, sfa=5.0)] seed=71 step= 6000/8000  loss=4.4188  sim=15.7257  var=0.0924  cov=0.0371  sfa=0.1892
+  [B (SFA+VICReg, sfa=5.0)] seed=71 step= 7000/8000  loss=3.4880  sim=14.9310  var=0.0545  cov=0.0556  sfa=0.1102
+  [B (SFA+VICReg, sfa=5.0)] seed=71 step= 8000/8000  loss=1.6996  sim=13.2903  var=0.0036  cov=0.0213  sfa=0.1614
+
+======================================================================
+TASK [26/60]: B (SFA+VICReg, sfa=5.0) seed=83
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=83 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=83 step= 1000/8000  loss=9.2108  sim=5.6050  var=0.0505  cov=0.2683  sfa=0.1996
+  [B (SFA+VICReg, sfa=5.0)] seed=83 step= 2000/8000  loss=8.7961  sim=12.8475  var=0.0166  cov=0.2831  sfa=0.2488
+  [B (SFA+VICReg, sfa=5.0)] seed=83 step= 3000/8000  loss=8.8433  sim=19.8144  var=0.0437  cov=0.2509  sfa=0.2804
+  [B (SFA+VICReg, sfa=5.0)] seed=83 step= 4000/8000  loss=6.6305  sim=22.6051  var=0.1208  cov=0.1173  sfa=0.1232
+  [B (SFA+VICReg, sfa=5.0)] seed=83 step= 5000/8000  loss=2.4683  sim=32.4383  var=0.0481  cov=0.0220  sfa=0.1310
+  [B (SFA+VICReg, sfa=5.0)] seed=83 step= 6000/8000  loss=3.2076  sim=43.7582  var=0.0268  cov=0.0696  sfa=0.1499
+  [B (SFA+VICReg, sfa=5.0)] seed=83 step= 7000/8000  loss=3.2558  sim=51.1030  var=0.0000  cov=0.0960  sfa=0.1526
+  [B (SFA+VICReg, sfa=5.0)] seed=83 step= 8000/8000  loss=4.8293  sim=33.2604  var=0.0381  cov=0.1208  sfa=0.1367
+
+======================================================================
+TASK [27/60]: B (SFA+VICReg, sfa=5.0) seed=97
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=97 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=97 step= 1000/8000  loss=5.5026  sim=5.0616  var=0.1452  cov=0.0485  sfa=0.1114
+  [B (SFA+VICReg, sfa=5.0)] seed=97 step= 2000/8000  loss=5.9075  sim=8.2538  var=0.1141  cov=0.0848  sfa=0.1660
+  [B (SFA+VICReg, sfa=5.0)] seed=97 step= 3000/8000  loss=3.8488  sim=11.7241  var=0.0402  cov=0.0874  sfa=0.1218
+  [B (SFA+VICReg, sfa=5.0)] seed=97 step= 4000/8000  loss=4.7297  sim=13.0857  var=0.0790  cov=0.0883  sfa=0.1030
+  [B (SFA+VICReg, sfa=5.0)] seed=97 step= 5000/8000  loss=9.0443  sim=11.7315  var=0.2987  cov=0.0437  sfa=0.0885
+  [B (SFA+VICReg, sfa=5.0)] seed=97 step= 6000/8000  loss=3.5642  sim=12.6341  var=0.0000  cov=0.1242  sfa=0.0755
+  [B (SFA+VICReg, sfa=5.0)] seed=97 step= 7000/8000  loss=2.7848  sim=15.0500  var=0.0000  cov=0.0900  sfa=0.0974
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 16.6306 (baseline mean=14.7746, std=0.4633)
+  [B (SFA+VICReg, sfa=5.0)] seed=97 step= 8000/8000  loss=3.2330  sim=14.4837  var=0.0588  cov=0.0506  sfa=0.0838
+
+======================================================================
+TASK [28/60]: B (SFA+VICReg, sfa=5.0) seed=113
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=113 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=113 step= 1000/8000  loss=9.8268  sim=3.4599  var=0.2095  cov=0.1616  sfa=0.0949
+  [B (SFA+VICReg, sfa=5.0)] seed=113 step= 2000/8000  loss=6.3512  sim=4.3939  var=0.1329  cov=0.0844  sfa=0.1746
+  [B (SFA+VICReg, sfa=5.0)] seed=113 step= 3000/8000  loss=2.5359  sim=5.3467  var=0.0012  cov=0.0657  sfa=0.1607
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 6.1705 (baseline mean=5.2534, std=0.2212)
+  [B (SFA+VICReg, sfa=5.0)] seed=113 step= 4000/8000  loss=5.8011  sim=7.7914  var=0.0353  cov=0.1771  sfa=0.0909
+  [B (SFA+VICReg, sfa=5.0)] seed=113 step= 5000/8000  loss=4.6180  sim=5.8157  var=0.0664  cov=0.0973  sfa=0.1005
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 8.2863 (baseline mean=7.2095, std=0.2562)
+  [B (SFA+VICReg, sfa=5.0)] seed=113 step= 6000/8000  loss=6.4628  sim=8.3941  var=0.1120  cov=0.1226  sfa=0.1093
+  [B (SFA+VICReg, sfa=5.0)] seed=113 step= 7000/8000  loss=2.9502  sim=7.1460  var=0.0568  cov=0.0339  sfa=0.1183
+  [B (SFA+VICReg, sfa=5.0)] seed=113 step= 8000/8000  loss=2.6888  sim=6.5356  var=0.0291  cov=0.0566  sfa=0.1021
+
+======================================================================
+TASK [29/60]: B (SFA+VICReg, sfa=5.0) seed=127
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=127 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=127 step= 1000/8000  loss=12.1349  sim=4.4656  var=0.3228  cov=0.1175  sfa=0.2142
+  [B (SFA+VICReg, sfa=5.0)] seed=127 step= 2000/8000  loss=3.8004  sim=26.7421  var=0.0245  cov=0.1056  sfa=0.0850
+  [B (SFA+VICReg, sfa=5.0)] seed=127 step= 3000/8000  loss=3.9550  sim=76.8959  var=0.0172  cov=0.1205  sfa=0.0886
+  [B (SFA+VICReg, sfa=5.0)] seed=127 step= 4000/8000  loss=4.8837  sim=84.2678  var=0.0624  cov=0.1133  sfa=0.0928
+  [B (SFA+VICReg, sfa=5.0)] seed=127 step= 5000/8000  loss=3.6432  sim=54.5747  var=0.0104  cov=0.1140  sfa=0.0840
+  [B (SFA+VICReg, sfa=5.0)] seed=127 step= 6000/8000  loss=3.7576  sim=61.3369  var=0.0705  cov=0.0588  sfa=0.0980
+  [B (SFA+VICReg, sfa=5.0)] seed=127 step= 7000/8000  loss=2.7619  sim=46.4678  var=0.0115  cov=0.0792  sfa=0.0931
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 60.7222 (baseline mean=47.7754, std=3.2330)
+  [B (SFA+VICReg, sfa=5.0)] seed=127 step= 8000/8000  loss=19.0647  sim=73.5567  var=0.0627  cov=0.6802  sfa=0.0900
+
+======================================================================
+TASK [30/60]: B (SFA+VICReg, sfa=5.0) seed=149
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=149 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=149 step= 1000/8000  loss=6.3281  sim=203.1623  var=0.0574  cov=0.1759  sfa=0.0792
+  [B (SFA+VICReg, sfa=5.0)] seed=149 step= 2000/8000  loss=8.7965  sim=201.1756  var=0.0327  cov=0.2985  sfa=0.0843
+  [B (SFA+VICReg, sfa=5.0)] seed=149 step= 3000/8000  loss=5.0228  sim=127.8696  var=0.0016  cov=0.1796  sfa=0.0758
+  [B (SFA+VICReg, sfa=5.0)] seed=149 step= 4000/8000  loss=4.7238  sim=140.5068  var=0.0578  cov=0.1080  sfa=0.0997
+  [B (SFA+VICReg, sfa=5.0)] seed=149 step= 5000/8000  loss=7.7264  sim=147.5546  var=0.0541  cov=0.2260  sfa=0.0981
+  [B (SFA+VICReg, sfa=5.0)] seed=149 step= 6000/8000  loss=3.5228  sim=158.9149  var=0.0710  cov=0.0466  sfa=0.0857
+  [B (SFA+VICReg, sfa=5.0)] seed=149 step= 7000/8000  loss=1.5716  sim=127.2702  var=0.0000  cov=0.0387  sfa=0.0786
+  [B (SFA+VICReg, sfa=5.0)] seed=149 step= 8000/8000  loss=3.0637  sim=168.7151  var=0.0737  cov=0.0327  sfa=0.0611
+
+======================================================================
+TASK [31/60]: B (SFA+VICReg, sfa=5.0) seed=101
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=101 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=101 step= 1000/8000  loss=5.4694  sim=5.0091  var=0.0071  cov=0.1647  sfa=0.2220
+  [B (SFA+VICReg, sfa=5.0)] seed=101 step= 2000/8000  loss=7.6941  sim=5.4529  var=0.2108  cov=0.0496  sfa=0.2237
+  [B (SFA+VICReg, sfa=5.0)] seed=101 step= 3000/8000  loss=3.4683  sim=7.6110  var=0.0589  cov=0.0446  sfa=0.1724
+  [B (SFA+VICReg, sfa=5.0)] seed=101 step= 4000/8000  loss=5.0291  sim=9.0349  var=0.1331  cov=0.0357  sfa=0.1554
+  [B (SFA+VICReg, sfa=5.0)] seed=101 step= 5000/8000  loss=2.6093  sim=11.8776  var=0.0000  cov=0.0823  sfa=0.1008
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 15.3630 (baseline mean=12.3454, std=0.7523)
+  [B (SFA+VICReg, sfa=5.0)] seed=101 step= 6000/8000  loss=2.0345  sim=18.7348  var=0.0000  cov=0.0650  sfa=0.0763
+  [B (SFA+VICReg, sfa=5.0)] seed=101 step= 7000/8000  loss=1.6134  sim=12.1188  var=0.0247  cov=0.0220  sfa=0.0789
+  [B (SFA+VICReg, sfa=5.0)] seed=101 step= 8000/8000  loss=2.5817  sim=13.6862  var=0.0000  cov=0.0834  sfa=0.0853
+
+======================================================================
+TASK [32/60]: B (SFA+VICReg, sfa=5.0) seed=103
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=103 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=103 step= 1000/8000  loss=6.8157  sim=63.7743  var=0.1004  cov=0.1314  sfa=0.0939
+  [B (SFA+VICReg, sfa=5.0)] seed=103 step= 2000/8000  loss=4.6312  sim=60.4582  var=0.0017  cov=0.1496  sfa=0.1161
+  [B (SFA+VICReg, sfa=5.0)] seed=103 step= 3000/8000  loss=5.0365  sim=58.1713  var=0.0668  cov=0.0969  sfa=0.1374
+  [B (SFA+VICReg, sfa=5.0)] seed=103 step= 4000/8000  loss=6.0993  sim=51.6314  var=0.0793  cov=0.1124  sfa=0.2315
+  [B (SFA+VICReg, sfa=5.0)] seed=103 step= 5000/8000  loss=4.3711  sim=53.8844  var=0.0345  cov=0.0949  sfa=0.1945
+  [B (SFA+VICReg, sfa=5.0)] seed=103 step= 6000/8000  loss=2.4397  sim=53.0517  var=0.0556  cov=0.0117  sfa=0.1154
+  [B (SFA+VICReg, sfa=5.0)] seed=103 step= 7000/8000  loss=4.0664  sim=48.6775  var=0.0562  cov=0.0745  sfa=0.1256
+  [B (SFA+VICReg, sfa=5.0)] seed=103 step= 8000/8000  loss=3.9751  sim=46.2506  var=0.0391  cov=0.0768  sfa=0.1723
+
+======================================================================
+TASK [33/60]: B (SFA+VICReg, sfa=5.0) seed=107
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=107 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=107 step= 1000/8000  loss=9.8109  sim=192.3486  var=0.0351  cov=0.3065  sfa=0.1473
+  [B (SFA+VICReg, sfa=5.0)] seed=107 step= 2000/8000  loss=5.7701  sim=155.0315  var=0.1040  cov=0.0893  sfa=0.1260
+  [B (SFA+VICReg, sfa=5.0)] seed=107 step= 3000/8000  loss=3.9443  sim=165.8475  var=0.0000  cov=0.1196  sfa=0.1190
+  [B (SFA+VICReg, sfa=5.0)] seed=107 step= 4000/8000  loss=2.9928  sim=170.0966  var=0.0282  cov=0.0479  sfa=0.1805
+  [B (SFA+VICReg, sfa=5.0)] seed=107 step= 5000/8000  loss=3.5350  sim=192.6813  var=0.0417  cov=0.0661  sfa=0.1314
+  [B (SFA+VICReg, sfa=5.0)] seed=107 step= 6000/8000  loss=5.3576  sim=219.0458  var=0.0128  cov=0.1615  sfa=0.1577
+  [B (SFA+VICReg, sfa=5.0)] seed=107 step= 7000/8000  loss=4.5423  sim=274.2950  var=0.0020  cov=0.1453  sfa=0.1306
+  [B (SFA+VICReg, sfa=5.0)] seed=107 step= 8000/8000  loss=2.4571  sim=285.7697  var=0.0000  cov=0.0670  sfa=0.1047
+
+======================================================================
+TASK [34/60]: B (SFA+VICReg, sfa=5.0) seed=109
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=109 -> starting on cpu (dry_run=False)
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 9.4216 (baseline mean=6.5229, std=0.7059)
+  [B (SFA+VICReg, sfa=5.0)] seed=109 step= 1000/8000  loss=9.9498  sim=12.6317  var=0.2095  cov=0.1214  sfa=0.3085
+  [B (SFA+VICReg, sfa=5.0)] seed=109 step= 2000/8000  loss=10.1925  sim=36.0426  var=0.0000  cov=0.3664  sfa=0.1746
+  [B (SFA+VICReg, sfa=5.0)] seed=109 step= 3000/8000  loss=7.3720  sim=30.6184  var=0.1187  cov=0.1486  sfa=0.1040
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 49.5643 (baseline mean=35.4356, std=3.4836)
+  [B (SFA+VICReg, sfa=5.0)] seed=109 step= 4000/8000  loss=2.1644  sim=47.0123  var=0.0128  cov=0.0516  sfa=0.0836
+  [B (SFA+VICReg, sfa=5.0)] seed=109 step= 5000/8000  loss=9.7876  sim=36.4473  var=0.0741  cov=0.2880  sfa=0.1328
+  [B (SFA+VICReg, sfa=5.0)] seed=109 step= 6000/8000  loss=3.5105  sim=36.9905  var=0.0072  cov=0.1043  sfa=0.1226
+  [B (SFA+VICReg, sfa=5.0)] seed=109 step= 7000/8000  loss=3.5269  sim=25.4285  var=0.0419  cov=0.0692  sfa=0.1166
+  [B (SFA+VICReg, sfa=5.0)] seed=109 step= 8000/8000  loss=6.0759  sim=45.4598  var=0.1308  cov=0.0884  sfa=0.1074
+
+======================================================================
+TASK [35/60]: B (SFA+VICReg, sfa=5.0) seed=131
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=131 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=131 step= 1000/8000  loss=13.3467  sim=43.0580  var=0.0517  cov=0.4237  sfa=0.1795
+  [B (SFA+VICReg, sfa=5.0)] seed=131 step= 2000/8000  loss=5.3249  sim=23.3915  var=0.0287  cov=0.1184  sfa=0.2706
+  [B (SFA+VICReg, sfa=5.0)] seed=131 step= 3000/8000  loss=4.3031  sim=15.6531  var=0.0000  cov=0.1046  sfa=0.2987
+  [B (SFA+VICReg, sfa=5.0)] seed=131 step= 4000/8000  loss=6.8493  sim=12.8468  var=0.0000  cov=0.2286  sfa=0.1935
+  [B (SFA+VICReg, sfa=5.0)] seed=131 step= 5000/8000  loss=2.8060  sim=12.0744  var=0.0154  cov=0.0459  sfa=0.2155
+  [B (SFA+VICReg, sfa=5.0)] seed=131 step= 6000/8000  loss=5.4719  sim=11.3310  var=0.0000  cov=0.1790  sfa=0.1591
+  [B (SFA+VICReg, sfa=5.0)] seed=131 step= 7000/8000  loss=4.8251  sim=9.7923  var=0.0675  cov=0.0697  sfa=0.2303
+  [B (SFA+VICReg, sfa=5.0)] seed=131 step= 8000/8000  loss=4.8600  sim=9.8701  var=0.0000  cov=0.1335  sfa=0.2808
+
+======================================================================
+TASK [36/60]: B (SFA+VICReg, sfa=5.0) seed=137
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=137 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=137 step= 1000/8000  loss=9.3793  sim=2.2503  var=0.0123  cov=0.2919  sfa=0.3294
+  [B (SFA+VICReg, sfa=5.0)] seed=137 step= 2000/8000  loss=5.4186  sim=2.3689  var=0.0239  cov=0.1283  sfa=0.3099
+  [B (SFA+VICReg, sfa=5.0)] seed=137 step= 3000/8000  loss=4.6924  sim=2.5041  var=0.0826  cov=0.0451  sfa=0.2904
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 2.8416 (baseline mean=2.3505, std=0.1226)
+  [B (SFA+VICReg, sfa=5.0)] seed=137 step= 4000/8000  loss=6.3780  sim=3.8338  var=0.0424  cov=0.1510  sfa=0.2799
+  [B (SFA+VICReg, sfa=5.0)] seed=137 step= 5000/8000  loss=7.4773  sim=2.4157  var=0.0040  cov=0.2261  sfa=0.3217
+  [B (SFA+VICReg, sfa=5.0)] seed=137 step= 6000/8000  loss=6.6702  sim=2.5250  var=0.0628  cov=0.1309  sfa=0.3445
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.7375 (baseline mean=3.0914, std=0.1576)
+  [B (SFA+VICReg, sfa=5.0)] seed=137 step= 7000/8000  loss=2.7013  sim=3.5465  var=0.0171  cov=0.0460  sfa=0.2065
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 6.1265 (baseline mean=4.6258, std=0.3739)
+  [B (SFA+VICReg, sfa=5.0)] seed=137 step= 8000/8000  loss=4.6840  sim=3.4547  var=0.0241  cov=0.1166  sfa=0.2049
+
+======================================================================
+TASK [37/60]: B (SFA+VICReg, sfa=5.0) seed=139
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=139 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=139 step= 1000/8000  loss=8.9152  sim=33.1824  var=0.1364  cov=0.1383  sfa=0.3145
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 50.5081 (baseline mean=39.4783, std=2.7522)
+  [B (SFA+VICReg, sfa=5.0)] seed=139 step= 2000/8000  loss=5.6545  sim=50.2117  var=0.0000  cov=0.1632  sfa=0.2943
+  [B (SFA+VICReg, sfa=5.0)] seed=139 step= 3000/8000  loss=10.7059  sim=43.5294  var=0.0225  cov=0.3309  sfa=0.3394
+  [B (SFA+VICReg, sfa=5.0)] seed=139 step= 4000/8000  loss=8.2344  sim=60.8962  var=0.0968  cov=0.1610  sfa=0.3429
+  [B (SFA+VICReg, sfa=5.0)] seed=139 step= 5000/8000  loss=5.3594  sim=59.7813  var=0.0008  cov=0.1476  sfa=0.3070
+  [B (SFA+VICReg, sfa=5.0)] seed=139 step= 6000/8000  loss=4.8363  sim=57.4939  var=0.0226  cov=0.0857  sfa=0.3972
+  [B (SFA+VICReg, sfa=5.0)] seed=139 step= 7000/8000  loss=6.7031  sim=58.9377  var=0.0750  cov=0.1280  sfa=0.2984
+  [B (SFA+VICReg, sfa=5.0)] seed=139 step= 8000/8000  loss=5.6343  sim=71.1848  var=0.0435  cov=0.1155  sfa=0.3098
+
+======================================================================
+TASK [38/60]: B (SFA+VICReg, sfa=5.0) seed=151
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=151 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=151 step= 1000/8000  loss=8.7035  sim=412.2660  var=0.1076  cov=0.1132  sfa=0.4676
+  [B (SFA+VICReg, sfa=5.0)] seed=151 step= 2000/8000  loss=2.9198  sim=415.2393  var=0.0343  cov=0.0173  sfa=0.1912
+  [B (SFA+VICReg, sfa=5.0)] seed=151 step= 3000/8000  loss=4.1886  sim=432.5020  var=0.0000  cov=0.1150  sfa=0.1537
+  [B (SFA+VICReg, sfa=5.0)] seed=151 step= 4000/8000  loss=4.8030  sim=417.2376  var=0.0633  cov=0.0668  sfa=0.1498
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 428.7479 (baseline mean=418.6994, std=2.5013)
+  [B (SFA+VICReg, sfa=5.0)] seed=151 step= 5000/8000  loss=5.8372  sim=438.4535  var=0.0469  cov=0.1439  sfa=0.1030
+  [B (SFA+VICReg, sfa=5.0)] seed=151 step= 6000/8000  loss=3.2377  sim=416.1936  var=0.0090  cov=0.0679  sfa=0.1229
+  [B (SFA+VICReg, sfa=5.0)] seed=151 step= 7000/8000  loss=4.4525  sim=395.0405  var=0.0453  cov=0.0917  sfa=0.1511
+  [B (SFA+VICReg, sfa=5.0)] seed=151 step= 8000/8000  loss=6.5208  sim=396.1129  var=0.1571  cov=0.0488  sfa=0.1288
+
+======================================================================
+TASK [39/60]: B (SFA+VICReg, sfa=5.0) seed=157
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=157 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=157 step= 1000/8000  loss=2.9976  sim=5.3758  var=0.0000  cov=0.0756  sfa=0.1997
+  [B (SFA+VICReg, sfa=5.0)] seed=157 step= 2000/8000  loss=13.1153  sim=10.4652  var=0.2645  cov=0.2132  sfa=0.2266
+  [B (SFA+VICReg, sfa=5.0)] seed=157 step= 3000/8000  loss=5.9747  sim=19.7674  var=0.0000  cov=0.2156  sfa=0.1058
+  [B (SFA+VICReg, sfa=5.0)] seed=157 step= 4000/8000  loss=3.1625  sim=18.8370  var=0.0248  cov=0.0765  sfa=0.1195
+  [B (SFA+VICReg, sfa=5.0)] seed=157 step= 5000/8000  loss=4.6570  sim=23.1913  var=0.0206  cov=0.1451  sfa=0.0975
+  [B (SFA+VICReg, sfa=5.0)] seed=157 step= 6000/8000  loss=3.3178  sim=35.0462  var=0.0373  cov=0.0746  sfa=0.0983
+  [B (SFA+VICReg, sfa=5.0)] seed=157 step= 7000/8000  loss=8.7811  sim=29.0160  var=0.0357  cov=0.2928  sfa=0.1053
+  [B (SFA+VICReg, sfa=5.0)] seed=157 step= 8000/8000  loss=9.4539  sim=37.7445  var=0.1205  cov=0.2371  sfa=0.0947
+
+======================================================================
+TASK [40/60]: B (SFA+VICReg, sfa=5.0) seed=163
+======================================================================
+[B (SFA+VICReg, sfa=5.0)] seed=163 -> starting on cpu (dry_run=False)
+  [B (SFA+VICReg, sfa=5.0)] seed=163 step= 1000/8000  loss=9.9282  sim=5.4987  var=0.2822  cov=0.0858  sfa=0.1098
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 6.7489 (baseline mean=5.6146, std=0.2791)
+  [B (SFA+VICReg, sfa=5.0)] seed=163 step= 2000/8000  loss=9.3905  sim=4.7754  var=0.0022  cov=0.3122  sfa=0.2639
+  [B (SFA+VICReg, sfa=5.0)] seed=163 step= 3000/8000  loss=4.0069  sim=4.3167  var=0.0190  cov=0.0752  sfa=0.3028
+  [B (SFA+VICReg, sfa=5.0)] seed=163 step= 4000/8000  loss=5.4617  sim=3.6475  var=0.1060  cov=0.0672  sfa=0.2204
+  [B (SFA+VICReg, sfa=5.0)] seed=163 step= 5000/8000  loss=4.9932  sim=3.0510  var=0.0335  cov=0.1021  sfa=0.3087
+  [B (SFA+VICReg, sfa=5.0)] seed=163 step= 6000/8000  loss=5.3232  sim=3.8548  var=0.0288  cov=0.1415  sfa=0.1950
+  [B (SFA+VICReg, sfa=5.0)] seed=163 step= 7000/8000  loss=4.8937  sim=3.6989  var=0.1136  cov=0.0196  sfa=0.2986
+  [B (SFA+VICReg, sfa=5.0)] seed=163 step= 8000/8000  loss=12.1192  sim=3.5359  var=0.0192  cov=0.4245  sfa=0.1801
+
+======================================================================
+TASK [41/60]: C (SFA+VICReg, sfa=1.0) seed=7
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=7 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=7 step= 1000/8000  loss=6.6361  sim=127.3455  var=0.0719  cov=0.1826  sfa=0.0814
+  [C (SFA+VICReg, sfa=1.0)] seed=7 step= 2000/8000  loss=1.4247  sim=119.7409  var=0.0104  cov=0.0369  sfa=0.1048
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 137.8001 (baseline mean=122.3766, std=3.7898)
+  [C (SFA+VICReg, sfa=1.0)] seed=7 step= 3000/8000  loss=2.3804  sim=128.7684  var=0.0125  cov=0.0735  sfa=0.0677
+  [C (SFA+VICReg, sfa=1.0)] seed=7 step= 4000/8000  loss=5.7991  sim=130.2505  var=0.0000  cov=0.2215  sfa=0.0860
+  [C (SFA+VICReg, sfa=1.0)] seed=7 step= 5000/8000  loss=2.0757  sim=80.3696  var=0.0386  cov=0.0387  sfa=0.0993
+  [C (SFA+VICReg, sfa=1.0)] seed=7 step= 6000/8000  loss=2.3194  sim=72.4263  var=0.0177  cov=0.0645  sfa=0.0694
+  [C (SFA+VICReg, sfa=1.0)] seed=7 step= 7000/8000  loss=1.5423  sim=68.3357  var=0.0153  cov=0.0354  sfa=0.0809
+  [C (SFA+VICReg, sfa=1.0)] seed=7 step= 8000/8000  loss=2.0011  sim=54.3709  var=0.0282  cov=0.0436  sfa=0.0782
+
+======================================================================
+TASK [42/60]: C (SFA+VICReg, sfa=1.0) seed=17
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=17 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=17 step= 1000/8000  loss=4.0301  sim=8.6834  var=0.0659  cov=0.0844  sfa=0.1451
+  [C (SFA+VICReg, sfa=1.0)] seed=17 step= 2000/8000  loss=5.8591  sim=12.4269  var=0.0562  cov=0.1652  sfa=0.2011
+  [C (SFA+VICReg, sfa=1.0)] seed=17 step= 3000/8000  loss=1.8135  sim=9.5880  var=0.0308  cov=0.0343  sfa=0.1304
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 11.5305 (baseline mean=9.9200, std=0.4002)
+  [C (SFA+VICReg, sfa=1.0)] seed=17 step= 4000/8000  loss=4.0208  sim=11.0041  var=0.0000  cov=0.1524  sfa=0.1416
+  [C (SFA+VICReg, sfa=1.0)] seed=17 step= 5000/8000  loss=2.6634  sim=12.2193  var=0.0403  cov=0.0565  sfa=0.1810
+  [C (SFA+VICReg, sfa=1.0)] seed=17 step= 6000/8000  loss=1.6297  sim=11.2212  var=0.0000  cov=0.0554  sfa=0.1886
+  [C (SFA+VICReg, sfa=1.0)] seed=17 step= 7000/8000  loss=1.8142  sim=9.1385  var=0.0155  cov=0.0496  sfa=0.1383
+  [C (SFA+VICReg, sfa=1.0)] seed=17 step= 8000/8000  loss=2.7596  sim=9.1497  var=0.0114  cov=0.0876  sfa=0.2067
+
+======================================================================
+TASK [43/60]: C (SFA+VICReg, sfa=1.0) seed=31
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=31 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=31 step= 1000/8000  loss=6.3889  sim=3.6185  var=0.1259  cov=0.1208  sfa=0.1580
+  [C (SFA+VICReg, sfa=1.0)] seed=31 step= 2000/8000  loss=10.4646  sim=4.1965  var=0.0903  cov=0.3201  sfa=0.1414
+  [C (SFA+VICReg, sfa=1.0)] seed=31 step= 3000/8000  loss=6.2585  sim=6.0060  var=0.0875  cov=0.1524  sfa=0.2141
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 6.2392 (baseline mean=5.3563, std=0.2070)
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 7.6619 (baseline mean=6.5264, std=0.2750)
+  [C (SFA+VICReg, sfa=1.0)] seed=31 step= 4000/8000  loss=9.1181  sim=8.7814  var=0.0468  cov=0.3048  sfa=0.2694
+  [C (SFA+VICReg, sfa=1.0)] seed=31 step= 5000/8000  loss=3.4011  sim=7.5087  var=0.0051  cov=0.1211  sfa=0.2007
+  [C (SFA+VICReg, sfa=1.0)] seed=31 step= 6000/8000  loss=2.5918  sim=6.6219  var=0.0432  cov=0.0484  sfa=0.2312
+  [C (SFA+VICReg, sfa=1.0)] seed=31 step= 7000/8000  loss=3.6453  sim=6.4818  var=0.0511  cov=0.0828  sfa=0.2268
+  [C (SFA+VICReg, sfa=1.0)] seed=31 step= 8000/8000  loss=4.4516  sim=7.1844  var=0.0319  cov=0.1333  sfa=0.2675
+
+======================================================================
+TASK [44/60]: C (SFA+VICReg, sfa=1.0) seed=53
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=53 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=53 step= 1000/8000  loss=9.7641  sim=31.5816  var=0.1907  cov=0.1457  sfa=0.4046
+  [C (SFA+VICReg, sfa=1.0)] seed=53 step= 2000/8000  loss=8.2642  sim=27.6035  var=0.0089  cov=0.3014  sfa=0.1743
+  [C (SFA+VICReg, sfa=1.0)] seed=53 step= 3000/8000  loss=3.0295  sim=27.5878  var=0.0109  cov=0.0917  sfa=0.2991
+  [C (SFA+VICReg, sfa=1.0)] seed=53 step= 4000/8000  loss=4.7291  sim=27.5297  var=0.0534  cov=0.1204  sfa=0.1418
+  [C (SFA+VICReg, sfa=1.0)] seed=53 step= 5000/8000  loss=3.6881  sim=26.2803  var=0.0000  cov=0.1219  sfa=0.3313
+  [C (SFA+VICReg, sfa=1.0)] seed=53 step= 6000/8000  loss=4.3158  sim=24.5812  var=0.0046  cov=0.1482  sfa=0.3195
+  [C (SFA+VICReg, sfa=1.0)] seed=53 step= 7000/8000  loss=7.1548  sim=25.3131  var=0.0594  cov=0.2046  sfa=0.3535
+  [C (SFA+VICReg, sfa=1.0)] seed=53 step= 8000/8000  loss=3.1215  sim=28.7860  var=0.0597  cov=0.0453  sfa=0.3122
+
+======================================================================
+TASK [45/60]: C (SFA+VICReg, sfa=1.0) seed=71
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=71 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=71 step= 1000/8000  loss=8.4852  sim=18.6486  var=0.0374  cov=0.2674  sfa=0.2082
+  [C (SFA+VICReg, sfa=1.0)] seed=71 step= 2000/8000  loss=3.4047  sim=21.4698  var=0.0000  cov=0.1182  sfa=0.1213
+  [C (SFA+VICReg, sfa=1.0)] seed=71 step= 3000/8000  loss=0.8743  sim=18.9248  var=0.0000  cov=0.0151  sfa=0.3008
+  [C (SFA+VICReg, sfa=1.0)] seed=71 step= 4000/8000  loss=8.1545  sim=17.3841  var=0.1086  cov=0.2026  sfa=0.1459
+  [C (SFA+VICReg, sfa=1.0)] seed=71 step= 5000/8000  loss=4.6294  sim=13.9879  var=0.0561  cov=0.1124  sfa=0.1740
+  [C (SFA+VICReg, sfa=1.0)] seed=71 step= 6000/8000  loss=2.9124  sim=14.1063  var=0.0410  cov=0.0540  sfa=0.2804
+  [C (SFA+VICReg, sfa=1.0)] seed=71 step= 7000/8000  loss=3.7942  sim=11.8930  var=0.0572  cov=0.0743  sfa=0.2572
+  [C (SFA+VICReg, sfa=1.0)] seed=71 step= 8000/8000  loss=1.3090  sim=11.8493  var=0.0126  cov=0.0203  sfa=0.2151
+
+======================================================================
+TASK [46/60]: C (SFA+VICReg, sfa=1.0) seed=83
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=83 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=83 step= 1000/8000  loss=8.1425  sim=3.2727  var=0.1066  cov=0.2029  sfa=0.2110
+  [C (SFA+VICReg, sfa=1.0)] seed=83 step= 2000/8000  loss=10.5251  sim=2.9333  var=0.0000  cov=0.4056  sfa=0.3153
+  [C (SFA+VICReg, sfa=1.0)] seed=83 step= 3000/8000  loss=12.4189  sim=2.7453  var=0.1099  cov=0.3712  sfa=0.3428
+  [C (SFA+VICReg, sfa=1.0)] seed=83 step= 4000/8000  loss=8.6277  sim=2.7590  var=0.0128  cov=0.3201  sfa=0.2228
+  [C (SFA+VICReg, sfa=1.0)] seed=83 step= 5000/8000  loss=3.7609  sim=4.0974  var=0.0119  cov=0.1235  sfa=0.2888
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 5.1572 (baseline mean=4.2067, std=0.2376)
+  [C (SFA+VICReg, sfa=1.0)] seed=83 step= 6000/8000  loss=3.8665  sim=4.6809  var=0.0080  cov=0.1366  sfa=0.2094
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 5.8439 (baseline mean=4.7506, std=0.2668)
+  [C (SFA+VICReg, sfa=1.0)] seed=83 step= 7000/8000  loss=1.8763  sim=5.5190  var=0.0000  cov=0.0585  sfa=0.3340
+  [C (SFA+VICReg, sfa=1.0)] seed=83 step= 8000/8000  loss=5.9643  sim=6.0389  var=0.0219  cov=0.1950  sfa=0.4497
+
+======================================================================
+TASK [47/60]: C (SFA+VICReg, sfa=1.0) seed=97
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=97 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=97 step= 1000/8000  loss=6.1142  sim=4.9851  var=0.1773  cov=0.0583  sfa=0.1122
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 6.1703 (baseline mean=5.2307, std=0.2337)
+  [C (SFA+VICReg, sfa=1.0)] seed=97 step= 2000/8000  loss=5.3607  sim=6.1619  var=0.1215  cov=0.0835  sfa=0.1545
+  [C (SFA+VICReg, sfa=1.0)] seed=97 step= 3000/8000  loss=4.1523  sim=7.7115  var=0.0613  cov=0.0971  sfa=0.1349
+  [C (SFA+VICReg, sfa=1.0)] seed=97 step= 4000/8000  loss=7.5101  sim=7.7709  var=0.0677  cov=0.2243  sfa=0.1671
+  [C (SFA+VICReg, sfa=1.0)] seed=97 step= 5000/8000  loss=8.6830  sim=7.6147  var=0.2772  cov=0.0642  sfa=0.1035
+  [C (SFA+VICReg, sfa=1.0)] seed=97 step= 6000/8000  loss=5.0923  sim=8.6506  var=0.0229  cov=0.1727  sfa=0.1152
+  [C (SFA+VICReg, sfa=1.0)] seed=97 step= 7000/8000  loss=2.7842  sim=9.7678  var=0.0156  cov=0.0894  sfa=0.1079
+  [C (SFA+VICReg, sfa=1.0)] seed=97 step= 8000/8000  loss=2.9919  sim=9.6684  var=0.0587  cov=0.0523  sfa=0.1139
+
+======================================================================
+TASK [48/60]: C (SFA+VICReg, sfa=1.0) seed=113
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=113 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=113 step= 1000/8000  loss=9.4320  sim=2.3493  var=0.2354  cov=0.1347  sfa=0.1073
+  [C (SFA+VICReg, sfa=1.0)] seed=113 step= 2000/8000  loss=5.5730  sim=2.8831  var=0.1224  cov=0.0915  sfa=0.1749
+  [C (SFA+VICReg, sfa=1.0)] seed=113 step= 3000/8000  loss=1.8741  sim=4.0701  var=0.0071  cov=0.0588  sfa=0.1648
+  [C (SFA+VICReg, sfa=1.0)] seed=113 step= 4000/8000  loss=9.9394  sim=5.8673  var=0.0921  cov=0.3007  sfa=0.0927
+  [C (SFA+VICReg, sfa=1.0)] seed=113 step= 5000/8000  loss=3.9575  sim=4.2564  var=0.0616  cov=0.0912  sfa=0.1125
+  [C (SFA+VICReg, sfa=1.0)] seed=113 step= 6000/8000  loss=5.2382  sim=5.6947  var=0.0935  cov=0.1092  sfa=0.1169
+  [C (SFA+VICReg, sfa=1.0)] seed=113 step= 7000/8000  loss=2.7774  sim=5.4221  var=0.0619  cov=0.0388  sfa=0.1661
+  [C (SFA+VICReg, sfa=1.0)] seed=113 step= 8000/8000  loss=2.7398  sim=5.8290  var=0.0356  cov=0.0666  sfa=0.1441
+
+======================================================================
+TASK [49/60]: C (SFA+VICReg, sfa=1.0) seed=127
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=127 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=127 step= 1000/8000  loss=12.7638  sim=3.6153  var=0.3549  cov=0.1442  sfa=0.2337
+  [C (SFA+VICReg, sfa=1.0)] seed=127 step= 2000/8000  loss=4.5676  sim=8.0987  var=0.0526  cov=0.1149  sfa=0.2386
+  [C (SFA+VICReg, sfa=1.0)] seed=127 step= 3000/8000  loss=3.5141  sim=7.4405  var=0.0080  cov=0.1189  sfa=0.2674
+  [C (SFA+VICReg, sfa=1.0)] seed=127 step= 4000/8000  loss=5.2232  sim=8.4628  var=0.1031  cov=0.0965  sfa=0.2150
+  [C (SFA+VICReg, sfa=1.0)] seed=127 step= 5000/8000  loss=5.2163  sim=8.7457  var=0.0215  cov=0.1715  sfa=0.3384
+  [C (SFA+VICReg, sfa=1.0)] seed=127 step= 6000/8000  loss=3.9089  sim=11.5721  var=0.0699  cov=0.0688  sfa=0.4006
+  [C (SFA+VICReg, sfa=1.0)] seed=127 step= 7000/8000  loss=0.6023  sim=10.8286  var=0.0055  cov=0.0065  sfa=0.2668
+  [C (SFA+VICReg, sfa=1.0)] seed=127 step= 8000/8000  loss=11.0680  sim=8.4107  var=0.0000  cov=0.4256  sfa=0.3970
+
+======================================================================
+TASK [50/60]: C (SFA+VICReg, sfa=1.0) seed=149
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=149 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=149 step= 1000/8000  loss=5.7017  sim=8.6334  var=0.0625  cov=0.1516  sfa=0.2169
+  [C (SFA+VICReg, sfa=1.0)] seed=149 step= 2000/8000  loss=8.9644  sim=10.5060  var=0.1137  cov=0.2332  sfa=0.1913
+  [C (SFA+VICReg, sfa=1.0)] seed=149 step= 3000/8000  loss=5.0996  sim=8.3861  var=0.0197  cov=0.1703  sfa=0.2670
+  [C (SFA+VICReg, sfa=1.0)] seed=149 step= 4000/8000  loss=3.0869  sim=7.6476  var=0.0304  cov=0.0795  sfa=0.2384
+  [C (SFA+VICReg, sfa=1.0)] seed=149 step= 5000/8000  loss=5.4012  sim=6.2080  var=0.0901  cov=0.1088  sfa=0.2651
+  [C (SFA+VICReg, sfa=1.0)] seed=149 step= 6000/8000  loss=2.2685  sim=6.1501  var=0.0491  cov=0.0288  sfa=0.1867
+  [C (SFA+VICReg, sfa=1.0)] seed=149 step= 7000/8000  loss=4.2423  sim=7.7215  var=0.0089  cov=0.1437  sfa=0.2605
+  [C (SFA+VICReg, sfa=1.0)] seed=149 step= 8000/8000  loss=2.5168  sim=5.0004  var=0.0606  cov=0.0298  sfa=0.1550
+
+======================================================================
+TASK [51/60]: C (SFA+VICReg, sfa=1.0) seed=101
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=101 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=101 step= 1000/8000  loss=3.4891  sim=4.5156  var=0.0000  cov=0.1279  sfa=0.2278
+  [C (SFA+VICReg, sfa=1.0)] seed=101 step= 2000/8000  loss=6.0600  sim=5.7275  var=0.2057  cov=0.0269  sfa=0.2044
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 9.6429 (baseline mean=7.9159, std=0.4271)
+  [C (SFA+VICReg, sfa=1.0)] seed=101 step= 3000/8000  loss=1.4025  sim=8.6688  var=0.0000  cov=0.0500  sfa=0.1364
+  [C (SFA+VICReg, sfa=1.0)] seed=101 step= 4000/8000  loss=4.6097  sim=8.6558  var=0.1001  cov=0.0787  sfa=0.0947
+  [C (SFA+VICReg, sfa=1.0)] seed=101 step= 5000/8000  loss=5.8460  sim=9.8788  var=0.0195  cov=0.2084  sfa=0.1095
+  [C (SFA+VICReg, sfa=1.0)] seed=101 step= 6000/8000  loss=1.1010  sim=17.5118  var=0.0007  cov=0.0378  sfa=0.0939
+  [C (SFA+VICReg, sfa=1.0)] seed=101 step= 7000/8000  loss=1.4401  sim=17.8702  var=0.0106  cov=0.0408  sfa=0.0869
+  [C (SFA+VICReg, sfa=1.0)] seed=101 step= 8000/8000  loss=1.1984  sim=19.0349  var=0.0024  cov=0.0400  sfa=0.0839
+
+======================================================================
+TASK [52/60]: C (SFA+VICReg, sfa=1.0) seed=103
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=103 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=103 step= 1000/8000  loss=5.5018  sim=72.5904  var=0.0852  cov=0.1059  sfa=0.1172
+  [C (SFA+VICReg, sfa=1.0)] seed=103 step= 2000/8000  loss=4.2019  sim=67.1439  var=0.0197  cov=0.1303  sfa=0.1395
+  [C (SFA+VICReg, sfa=1.0)] seed=103 step= 3000/8000  loss=4.4089  sim=66.9446  var=0.0279  cov=0.1302  sfa=0.1604
+  [C (SFA+VICReg, sfa=1.0)] seed=103 step= 4000/8000  loss=6.1336  sim=59.1365  var=0.0920  cov=0.1400  sfa=0.1741
+  [C (SFA+VICReg, sfa=1.0)] seed=103 step= 5000/8000  loss=4.1283  sim=59.6339  var=0.0362  cov=0.1145  sfa=0.2055
+  [C (SFA+VICReg, sfa=1.0)] seed=103 step= 6000/8000  loss=2.9413  sim=58.0939  var=0.0602  cov=0.0457  sfa=0.1241
+  [C (SFA+VICReg, sfa=1.0)] seed=103 step= 7000/8000  loss=3.3743  sim=55.3096  var=0.0563  cov=0.0653  sfa=0.1575
+  [C (SFA+VICReg, sfa=1.0)] seed=103 step= 8000/8000  loss=3.5951  sim=51.2555  var=0.0389  cov=0.0893  sfa=0.2024
+
+======================================================================
+TASK [53/60]: C (SFA+VICReg, sfa=1.0) seed=107
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=107 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=107 step= 1000/8000  loss=9.2365  sim=107.5913  var=0.0570  cov=0.2868  sfa=0.1276
+  [C (SFA+VICReg, sfa=1.0)] seed=107 step= 2000/8000  loss=5.9400  sim=114.2676  var=0.0874  cov=0.1324  sfa=0.1332
+  [C (SFA+VICReg, sfa=1.0)] seed=107 step= 3000/8000  loss=4.1694  sim=124.4997  var=0.0543  cov=0.0987  sfa=0.1153
+  [C (SFA+VICReg, sfa=1.0)] seed=107 step= 4000/8000  loss=2.9893  sim=132.4185  var=0.0151  cov=0.0920  sfa=0.1768
+  [C (SFA+VICReg, sfa=1.0)] seed=107 step= 5000/8000  loss=2.5478  sim=136.8387  var=0.0684  cov=0.0216  sfa=0.1272
+  [C (SFA+VICReg, sfa=1.0)] seed=107 step= 6000/8000  loss=3.3080  sim=137.8627  var=0.0165  cov=0.1021  sfa=0.1806
+  [C (SFA+VICReg, sfa=1.0)] seed=107 step= 7000/8000  loss=5.0206  sim=148.6249  var=0.0000  cov=0.1880  sfa=0.1341
+  [C (SFA+VICReg, sfa=1.0)] seed=107 step= 8000/8000  loss=3.6441  sim=139.6307  var=0.0109  cov=0.1250  sfa=0.0983
+
+======================================================================
+TASK [54/60]: C (SFA+VICReg, sfa=1.0) seed=109
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=109 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=109 step= 1000/8000  loss=7.6161  sim=88.9131  var=0.1144  cov=0.1757  sfa=0.1906
+  [C (SFA+VICReg, sfa=1.0)] seed=109 step= 2000/8000  loss=7.1908  sim=69.7518  var=0.0126  cov=0.2620  sfa=0.1732
+  [C (SFA+VICReg, sfa=1.0)] seed=109 step= 3000/8000  loss=6.3532  sim=50.4475  var=0.1006  cov=0.1402  sfa=0.1426
+  [C (SFA+VICReg, sfa=1.0)] seed=109 step= 4000/8000  loss=2.5478  sim=56.7380  var=0.0000  cov=0.0897  sfa=0.1188
+  [C (SFA+VICReg, sfa=1.0)] seed=109 step= 5000/8000  loss=6.7606  sim=40.5023  var=0.1506  cov=0.1117  sfa=0.1296
+  [C (SFA+VICReg, sfa=1.0)] seed=109 step= 6000/8000  loss=2.2172  sim=39.3078  var=0.0240  cov=0.0529  sfa=0.1652
+  [C (SFA+VICReg, sfa=1.0)] seed=109 step= 7000/8000  loss=1.4185  sim=31.3333  var=0.0173  cov=0.0269  sfa=0.1466
+  [C (SFA+VICReg, sfa=1.0)] seed=109 step= 8000/8000  loss=6.7531  sim=34.5806  var=0.0915  cov=0.1708  sfa=0.1412
+
+======================================================================
+TASK [55/60]: C (SFA+VICReg, sfa=1.0) seed=131
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=131 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=131 step= 1000/8000  loss=6.8603  sim=36.6910  var=0.0652  cov=0.1783  sfa=0.1964
+  [C (SFA+VICReg, sfa=1.0)] seed=131 step= 2000/8000  loss=3.8813  sim=17.6709  var=0.0777  cov=0.0563  sfa=0.2943
+  [C (SFA+VICReg, sfa=1.0)] seed=131 step= 3000/8000  loss=5.9380  sim=18.0033  var=0.0000  cov=0.2134  sfa=0.4089
+  [C (SFA+VICReg, sfa=1.0)] seed=131 step= 4000/8000  loss=6.8720  sim=16.5333  var=0.0000  cov=0.2579  sfa=0.2388
+  [C (SFA+VICReg, sfa=1.0)] seed=131 step= 5000/8000  loss=1.6041  sim=12.9839  var=0.0094  cov=0.0291  sfa=0.4435
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 14.3240 (baseline mean=12.3752, std=0.4861)
+  [C (SFA+VICReg, sfa=1.0)] seed=131 step= 6000/8000  loss=3.9230  sim=14.7764  var=0.0000  cov=0.1419  sfa=0.1880
+  [C (SFA+VICReg, sfa=1.0)] seed=131 step= 7000/8000  loss=3.3984  sim=12.4622  var=0.0776  cov=0.0422  sfa=0.2055
+  [C (SFA+VICReg, sfa=1.0)] seed=131 step= 8000/8000  loss=2.3590  sim=11.9240  var=0.0000  cov=0.0796  sfa=0.2473
+
+======================================================================
+TASK [56/60]: C (SFA+VICReg, sfa=1.0) seed=137
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=137 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=137 step= 1000/8000  loss=8.4349  sim=2.1202  var=0.0798  cov=0.2422  sfa=0.2155
+  [C (SFA+VICReg, sfa=1.0)] seed=137 step= 2000/8000  loss=4.5080  sim=2.5587  var=0.0109  cov=0.1528  sfa=0.3421
+  [C (SFA+VICReg, sfa=1.0)] seed=137 step= 3000/8000  loss=3.6345  sim=3.3749  var=0.0695  cov=0.0609  sfa=0.3317
+  [C (SFA+VICReg, sfa=1.0)] seed=137 step= 4000/8000  loss=5.5365  sim=3.3981  var=0.0448  cov=0.1603  sfa=0.2840
+  [C (SFA+VICReg, sfa=1.0)] seed=137 step= 5000/8000  loss=6.0300  sim=3.2963  var=0.0456  cov=0.1746  sfa=0.3997
+  [C (SFA+VICReg, sfa=1.0)] seed=137 step= 6000/8000  loss=4.6524  sim=2.9877  var=0.0368  cov=0.1316  sfa=0.3290
+  [C (SFA+VICReg, sfa=1.0)] seed=137 step= 7000/8000  loss=2.3988  sim=3.3066  var=0.0276  cov=0.0544  sfa=0.2584
+  [C (SFA+VICReg, sfa=1.0)] seed=137 step= 8000/8000  loss=3.5055  sim=3.1442  var=0.0074  cov=0.1186  sfa=0.1821
+
+======================================================================
+TASK [57/60]: C (SFA+VICReg, sfa=1.0) seed=139
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=139 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=139 step= 1000/8000  loss=8.7982  sim=34.0855  var=0.1447  cov=0.1780  sfa=0.3270
+  [C (SFA+VICReg, sfa=1.0)] seed=139 step= 2000/8000  loss=9.1797  sim=44.0075  var=0.0004  cov=0.3474  sfa=0.3728
+  [C (SFA+VICReg, sfa=1.0)] seed=139 step= 3000/8000  loss=6.7984  sim=47.7885  var=0.0363  cov=0.2192  sfa=0.2527
+  [C (SFA+VICReg, sfa=1.0)] seed=139 step= 4000/8000  loss=6.5971  sim=58.3816  var=0.1165  cov=0.1315  sfa=0.3290
+  [C (SFA+VICReg, sfa=1.0)] seed=139 step= 5000/8000  loss=5.5960  sim=54.0161  var=0.0253  cov=0.1763  sfa=0.4398
+  [C (SFA+VICReg, sfa=1.0)] seed=139 step= 6000/8000  loss=5.1503  sim=59.7585  var=0.0550  cov=0.1265  sfa=0.4627
+  [C (SFA+VICReg, sfa=1.0)] seed=139 step= 7000/8000  loss=7.2831  sim=60.8785  var=0.0606  cov=0.2142  sfa=0.3002
+  [C (SFA+VICReg, sfa=1.0)] seed=139 step= 8000/8000  loss=4.7603  sim=68.4079  var=0.0984  cov=0.0759  sfa=0.2935
+
+======================================================================
+TASK [58/60]: C (SFA+VICReg, sfa=1.0) seed=151
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=151 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=151 step= 1000/8000  loss=6.8241  sim=404.3319  var=0.0877  cov=0.1343  sfa=0.4872
+  [C (SFA+VICReg, sfa=1.0)] seed=151 step= 2000/8000  loss=2.8273  sim=397.5528  var=0.0292  cov=0.0382  sfa=0.2412
+  [C (SFA+VICReg, sfa=1.0)] seed=151 step= 3000/8000  loss=9.6299  sim=389.5814  var=0.0000  cov=0.3527  sfa=0.3089
+  [C (SFA+VICReg, sfa=1.0)] seed=151 step= 4000/8000  loss=4.6268  sim=376.9922  var=0.0176  cov=0.1406  sfa=0.3042
+  [C (SFA+VICReg, sfa=1.0)] seed=151 step= 5000/8000  loss=5.6059  sim=380.8193  var=0.0892  cov=0.1159  sfa=0.2351
+  [C (SFA+VICReg, sfa=1.0)] seed=151 step= 6000/8000  loss=3.1153  sim=376.6023  var=0.0513  cov=0.0461  sfa=0.4107
+  [C (SFA+VICReg, sfa=1.0)] seed=151 step= 7000/8000  loss=14.7089  sim=380.8605  var=0.0747  cov=0.4921  sfa=0.3703
+  [C (SFA+VICReg, sfa=1.0)] seed=151 step= 8000/8000  loss=4.0211  sim=374.9711  var=0.0000  cov=0.1394  sfa=0.3074
+
+======================================================================
+TASK [59/60]: C (SFA+VICReg, sfa=1.0) seed=157
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=157 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=157 step= 1000/8000  loss=3.1713  sim=11.8004  var=0.0029  cov=0.1113  sfa=0.2011
+  [C (SFA+VICReg, sfa=1.0)] seed=157 step= 2000/8000  loss=11.3561  sim=18.7599  var=0.1802  cov=0.2648  sfa=0.1838
+  [C (SFA+VICReg, sfa=1.0)] seed=157 step= 3000/8000  loss=2.1177  sim=24.6534  var=0.0000  cov=0.0777  sfa=0.1161
+  [C (SFA+VICReg, sfa=1.0)] seed=157 step= 4000/8000  loss=2.2540  sim=24.2597  var=0.0344  cov=0.0488  sfa=0.1308
+  [C (SFA+VICReg, sfa=1.0)] seed=157 step= 5000/8000  loss=3.8441  sim=21.1221  var=0.0405  cov=0.1079  sfa=0.1035
+  [C (SFA+VICReg, sfa=1.0)] seed=157 step= 6000/8000  loss=5.6484  sim=20.9165  var=0.0139  cov=0.2058  sfa=0.1184
+  [C (SFA+VICReg, sfa=1.0)] seed=157 step= 7000/8000  loss=14.0532  sim=15.9111  var=0.0010  cov=0.5540  sfa=0.1374
+  [C (SFA+VICReg, sfa=1.0)] seed=157 step= 8000/8000  loss=10.6280  sim=17.3712  var=0.0913  cov=0.3274  sfa=0.1133
+
+======================================================================
+TASK [60/60]: C (SFA+VICReg, sfa=1.0) seed=163
+======================================================================
+[C (SFA+VICReg, sfa=1.0)] seed=163 -> starting on cpu (dry_run=False)
+  [C (SFA+VICReg, sfa=1.0)] seed=163 step= 1000/8000  loss=10.4795  sim=1.6267  var=0.3056  cov=0.1023  sfa=0.1131
+[GDASR LOG-ONLY] Growth point detected at d_t=3, error 3.1831 (baseline mean=1.8688, std=0.3120)
+  [C (SFA+VICReg, sfa=1.0)] seed=163 step= 2000/8000  loss=4.2239  sim=29.8019  var=0.0536  cov=0.1019  sfa=0.0933
+  [C (SFA+VICReg, sfa=1.0)] seed=163 step= 3000/8000  loss=3.3458  sim=30.9677  var=0.0290  cov=0.0952  sfa=0.1468
+  [C (SFA+VICReg, sfa=1.0)] seed=163 step= 4000/8000  loss=5.1930  sim=39.6361  var=0.1240  cov=0.0781  sfa=0.1023
+  [C (SFA+VICReg, sfa=1.0)] seed=163 step= 5000/8000  loss=1.9441  sim=37.1766  var=0.0138  cov=0.0578  sfa=0.1140
+  [C (SFA+VICReg, sfa=1.0)] seed=163 step= 6000/8000  loss=4.6115  sim=32.1762  var=0.0391  cov=0.1386  sfa=0.0771
+  [C (SFA+VICReg, sfa=1.0)] seed=163 step= 7000/8000  loss=8.9063  sim=32.6565  var=0.0971  cov=0.2509  sfa=0.0990
+  [C (SFA+VICReg, sfa=1.0)] seed=163 step= 8000/8000  loss=6.4162  sim=24.8334  var=0.0057  cov=0.2406  sfa=0.0945
+
+Saved summary to archive/iter_029/results\summary_iter_029.csv
+Saved analysis to archive/iter_029/results\final_analysis.md
+
+Done.
+
+stderr: ]
+ The experiment completed all 60 tasks successfully with **0 failures**. Let me now read the generated results to report the findings. 
+
+[Tool Call: read_file({'path': 'archive/iter_029/results/summary_iter_029.csv'})]
+[Tool Result: arm,seed,collapsed_eval,per_dim_std,vicreg_per_dim_std,vicreg_mean_abs_corr,centroid_mse_mean,centroid_r_mean,delta_r2_color,r2_dyn_color,r2_coord_color,r2_dyn_pos,r2_coord_pos,r2_dyn_identity,r2_coord_identity,delta_r2_identity,dim_to_obj,final_train_loss,final_sim_loss,final_var_loss,final_cov_loss,param_count,collapsed_train,per_dim_std_train,collapsed,disqualified,final_sfa_loss
+A (VICReg-only control),7,False,"[1.2087328433990479, 0.7601882219314575, 0.9444600343704224]","[1.2087328433990479, 0.7601882219314575, 0.9444600343704224]",0.4771420227282664,66.56941805874412,0.1660722716647783,0.17708728913443544,-0.26350092622169613,-0.4405882153561316,0.03871197686297889,0.04077059592005864,0.10446189094137977,0.09549167614389105,0.008970214797488718,"{0: 1, 1: 2, 2: 0}",7.31512451171875,903.3019409179688,0.06185253709554672,0.22236718237400055,135608,False,"[1.137069582939148, 1.197875738143921, 0.882500946521759]",False,False,
+A (VICReg-only control),17,False,"[0.7631939649581909, 1.013793706893921, 1.2137985229492188]","[0.7631939649581909, 1.013793706893921, 1.2137985229492188]",0.1273645426808112,66.97899849679767,0.48727305890239564,-0.15707598180064802,-0.2483882619115502,-0.09131228011090216,-0.27586993539408183,-0.08507011450571363,0.09443125277621682,0.057481685002038284,0.036949567774178536,"{0: 2, 1: 1, 2: 0}",2.3702392578125,1995.739013671875,0.03422348573803902,0.05354290083050728,135608,False,"[1.1479488611221313, 0.8831596970558167, 0.9438769817352295]",False,False,
+A (VICReg-only control),31,False,"[0.967227041721344, 0.9508752226829529, 1.1339515447616577]","[0.967227041721344, 0.9508752226829529, 1.1339515447616577]",0.2781082271210255,205.16324254539518,0.5591096724627715,-0.08993824203023756,-0.1775133542316442,-0.08757511220140662,0.09941012116727554,-0.3198931525935867,0.07618884487252886,0.10421206305855395,-0.028023218186025087,"{0: 1, 1: 0, 2: 2}",4.255859375,3501.753173828125,0.056464433670043945,0.10942670702934265,135608,False,"[0.9619318246841431, 1.1958855390548706, 1.21787428855896]",False,False,
+A (VICReg-only control),53,False,"[1.1486736536026, 0.679221510887146, 1.0565036535263062]","[1.1486736536026, 0.679221510887146, 1.0565036535263062]",0.29475715023731225,125.27150762588214,0.4301736288032178,-0.03909239293172108,-0.06956298523724556,-0.030470592305524485,-0.007444751795849284,0.08410493147583098,0.09080990465650703,0.03650442623737767,0.054305478419129354,"{0: 1, 1: 0, 2: 2}",2.485595703125,2459.7333984375,0.018040578812360764,0.07135845720767975,135608,False,"[1.018179178237915, 1.0006451606750488, 1.1358057260513306]",False,False,
+A (VICReg-only control),71,False,"[0.9214791059494019, 1.387037992477417, 1.3052146434783936]","[0.9214791059494019, 1.387037992477417, 1.3052146434783936]",0.30557265529283234,54.095796131574026,0.5034922371541022,-0.06620508183741194,-0.12674057177885975,-0.0605354899414478,0.1225356786544971,-0.1860701641417439,0.08116424628585295,0.056776377134579836,0.02438786915127311,"{0: 1, 1: 0, 2: 2}",2.4482421875,4365.0810546875,0.016287634149193764,0.07783454656600952,135608,False,"[1.0988762378692627, 1.124832034111023, 0.9604969024658203]",False,False,
+A (VICReg-only control),83,False,"[1.106806993484497, 1.1798503398895264, 1.0091469287872314]","[1.106806993484497, 1.1798503398895264, 1.0091469287872314]",0.07744523894373377,185.9021368086288,0.2809980686837442,0.03078066182314744,-0.04083931541585707,-0.07161997723900451,-0.10339128843192073,0.0429454620806519,0.0384955316793523,0.06601530142526153,-0.02751976974590923,"{0: 1, 1: 2, 2: 0}",1.12451171875,2169.94775390625,0.007403900381177664,0.025021804496645927,135608,False,"[1.0868805646896362, 1.1831064224243164, 1.2500689029693604]",False,False,
+A (VICReg-only control),97,False,"[0.8790978193283081, 1.163002610206604, 1.1286038160324097]","[0.8790978193283081, 1.163002610206604, 1.1286038160324097]",0.14007748635471642,205.42352133597888,0.4036425921350484,0.5750689581437628,0.025604417258580203,-0.5494645408851826,-0.22949603988430411,0.287980259924096,0.08999822784138782,0.08657431589273756,0.0034239119486502573,"{0: 0, 1: 1, 2: 2}",6.06689453125,3512.3798828125,0.11820118129253387,0.11610977351665497,135608,False,"[0.8589522242546082, 1.3240395784378052, 1.1360938549041748]",False,False,
+A (VICReg-only control),113,False,"[1.175364375114441, 0.966156005859375, 1.2049744129180908]","[1.175364375114441, 0.966156005859375, 1.2049744129180908]",0.20488193007864908,103.09425532721453,0.2551414894440997,-0.21050091258281778,-0.23319716759795173,-0.022696255015133962,-0.06108507429966359,0.0018602471270583083,0.0743739437757323,0.09038604083621722,-0.016012097060484926,"{0: 2, 1: 1, 2: 0}",1.58721923828125,744.1629638671875,0.0061029791831970215,0.05483052134513855,135608,False,"[1.3393588066101074, 1.1178538799285889, 0.978744387626648]",False,False,
+A (VICReg-only control),127,False,"[1.3607780933380127, 1.1853948831558228, 1.1694570779800415]","[1.3607780933380127, 1.1853948831558228, 1.1694570779800415]",0.1317304605566485,360.30863189609323,0.1651456089092207,-0.06400598231987045,-0.19080388079571722,-0.12679789847584677,0.0015709798661932932,0.01738891746192735,0.06480487308542111,0.02543176087052316,0.03937311221489795,"{0: 2, 1: 1, 2: 0}",2.283203125,1154.5654296875,0.021430253982543945,0.06078255921602249,135608,False,"[1.025071382522583, 1.04104745388031, 1.145613431930542]",False,False,
+A (VICReg-only control),149,False,"[0.8507044315338135, 1.3353254795074463, 1.1938523054122925]","[0.8507044315338135, 1.3353254795074463, 1.1938523054122925]",0.11293843607329485,171.9821097525285,0.5955981876477406,0.40043312524818325,0.008881380568754402,-0.3915517446794288,-0.056618643966303596,-0.2813560583499303,0.08571682322781526,0.1545902102743506,-0.06887338704653534,"{0: 2, 1: 1, 2: 0}",4.367431640625,2144.90673828125,0.07701089233160019,0.09423656761646271,135608,False,"[0.691763162612915, 1.2110514640808105, 1.0836129188537598]",False,False,
+A (VICReg-only control),101,False,"[1.1424362659454346, 1.1288514137268066, 0.9202460646629333]","[1.1424362659454346, 1.1288514137268066, 0.9202460646629333]",0.2345069649769093,217.94576659030687,0.43207058245797064,-0.04022220928341862,-0.026052759856707856,0.01416944942671076,0.048905072945476635,-0.0009556126183467573,0.0680497605351446,0.08831641114968432,-0.020266650614539722,"{0: 2, 1: 0, 2: 1}",2.6783447265625,1297.6439208984375,0.020384589210152626,0.07891662418842316,135608,False,"[0.9309343099594116, 1.1554138660430908, 1.0699985027313232]",False,False,
+A (VICReg-only control),103,False,"[1.3160252571105957, 1.136818766593933, 0.923122227191925]","[1.3160252571105957, 1.136818766593933, 0.923122227191925]",0.2317779549807748,209.95413356053984,0.4113146035860485,-0.29329717992139526,-0.26751862946002575,0.025778550461369527,-0.14393184401258652,-0.18145109899506537,0.12026671781892247,0.06303166437619308,0.05723505344272939,"{0: 0, 1: 1, 2: 2}",4.44189453125,1609.1220703125,0.0015749832382425666,0.17259788513183594,135608,False,"[1.0421288013458252, 1.0063486099243164, 1.1212176084518433]",False,False,
+A (VICReg-only control),107,False,"[1.27696692943573, 1.1719578504562378, 1.0789164304733276]","[1.27696692943573, 1.1719578504562378, 1.0789164304733276]",0.3442184802989104,132.04759855061198,0.28579934836514964,0.1253909991042443,-0.1214915917012202,-0.2468825908054645,0.056129137883427584,0.004281644220561283,0.0348044275985665,0.03752511999388467,-0.002720692395318171,"{0: 0, 1: 1, 2: 2}",4.277099609375,2201.18212890625,0.009522318840026855,0.15327264368534088,135608,False,"[1.1613534688949585, 1.052840232849121, 1.05377197265625]",False,False,
+A (VICReg-only control),109,False,"[0.950430691242218, 1.0504642724990845, 0.86311936378479]","[0.950430691242218, 1.0504642724990845, 0.86311936378479]",0.10584233818761431,80.57850654994327,0.37828484408930363,-0.058688309042983,-0.19339839105845455,-0.13471008201547155,-0.1359955699827933,-0.09050967412907444,0.033396907338226645,0.06846588163212149,-0.03506897429389484,"{0: 1, 1: 0, 2: 2}",7.341796875,1661.462158203125,0.06169474124908447,0.22189417481422424,135608,False,"[1.0591672658920288, 1.121648907661438, 1.1075098514556885]",False,False,
+A (VICReg-only control),131,False,"[1.4106121063232422, 1.2728347778320312, 1.260852575302124]","[1.4106121063232422, 1.2728347778320312, 1.260852575302124]",0.29572141402417157,85.61516941691508,0.17095441363964425,0.3340558787545889,0.14027746924280823,-0.19377840951178069,-0.43801707971837683,-0.11585389443082435,0.1771581684951957,0.031121476938405574,0.1460366915567901,"{0: 2, 1: 1, 2: 0}",1.6195068359375,1110.8472900390625,0.02486618421971798,0.033194392919540405,135608,False,"[0.8643568754196167, 1.2565251588821411, 1.0234949588775635]",False,False,
+A (VICReg-only control),137,False,"[1.3354674577713013, 1.2024163007736206, 1.1799249649047852]","[1.3354674577713013, 1.2024163007736206, 1.1799249649047852]",0.12580071654651806,113.36258315407248,0.4726120506168063,0.1433913521974814,-0.04049898074796878,-0.18389033294545018,-0.11340076771654084,-0.05974492061437956,0.05269330757839016,0.10542289277352128,-0.05272958519513112,"{0: 0, 1: 1, 2: 2}",6.23583984375,4458.93408203125,0.015087027102708817,0.22649610042572021,135608,False,"[1.0844628810882568, 0.9716841578483582, 1.2489759922027588]",False,False,
+A (VICReg-only control),139,False,"[0.7856268286705017, 0.9801625609397888, 1.1776036024093628]","[0.7856268286705017, 0.9801625609397888, 1.1776036024093628]",0.39203070025047704,245.8580568970348,0.43782846809725623,0.10281921989669549,-0.03634712078404805,-0.13916634068074354,-0.3029151875192386,-0.2619911617395117,0.06930557297696367,0.028020687987625248,0.041284884989338425,"{0: 1, 1: 2, 2: 0}",2.788818359375,1973.5382080078125,0.01672893762588501,0.08702549338340759,135608,False,"[1.0908753871917725, 0.9711153507232666, 1.0906602144241333]",False,False,
+A (VICReg-only control),151,False,"[1.0426403284072876, 0.907200276851654, 1.051527500152588]","[1.0426403284072876, 0.907200276851654, 1.051527500152588]",0.25933372146805583,150.74586634821193,0.2174295683034976,-0.03591941595028324,-0.1356825723769025,-0.09976315642661927,-0.29357860306769124,-0.05776539987103061,0.1292639407167184,0.06698059521133155,0.06228334550538685,"{0: 1, 1: 0, 2: 2}",2.321044921875,2532.29345703125,0.0,0.08205316215753555,135608,False,"[1.2753204107284546, 1.089560627937317, 1.0162395238876343]",False,False,
+A (VICReg-only control),157,False,"[0.6793819665908813, 1.1573680639266968, 0.9995501041412354]","[0.6793819665908813, 1.1573680639266968, 0.9995501041412354]",0.13280574001569648,115.31746874061442,0.12458162480727479,-0.07392791807347586,-0.057507926240070534,0.01641999183340533,-0.04676889778364968,0.0905957763339064,0.0796250813840446,0.1471241668233093,-0.06749908543926471,"{0: 0, 1: 2, 2: 1}",9.301925659179688,249.52821350097656,0.07378089427947998,0.29277026653289795,135608,False,"[1.2087485790252686, 1.1293119192123413, 0.8968980312347412]",False,False,
+A (VICReg-only control),163,False,"[1.1979180574417114, 1.1168445348739624, 1.1389206647872925]","[1.1979180574417114, 1.1168445348739624, 1.1389206647872925]",0.10734478707093621,300.419981230858,0.38296438410250894,0.12939555006580267,-0.07133174665205087,-0.20072729671785353,-0.22874353215104049,-0.1726736740639443,0.043231780449440836,0.029785791928722327,0.013445988520718509,"{0: 0, 1: 1, 2: 2}",8.94378662109375,857.6864624023438,0.04711539298295975,0.3042607307434082,135608,False,"[0.9971257448196411, 1.2434836626052856, 0.9280587434768677]",False,False,
+"B (SFA+VICReg, sfa=5.0)",7,False,"[1.383201241493225, 0.9745151400566101, 1.0626932382583618]","[1.383201241493225, 0.9745151400566101, 1.0626932382583618]",0.39647568039631936,71.78086871726269,0.06456697364276859,0.7727784438243037,-0.348165392787154,-1.1209438366114577,-0.13204755314582273,-0.00611500306798433,0.02278284423600374,0.02355940019479404,-0.0007765559587902988,"{0: 1, 1: 2, 2: 0}",2.2982864379882812,101.42540740966797,0.005522529128938913,0.06546100974082947,135608,False,"[0.9991166591644287, 1.0744380950927734, 1.2018612623214722]",False,False,0.07204537838697433
+"B (SFA+VICReg, sfa=5.0)",17,False,"[1.0303469896316528, 1.1592730283737183, 0.875186562538147]","[1.0303469896316528, 1.1592730283737183, 0.875186562538147]",0.042863455995959365,90.29525263128528,0.2535825286610749,0.09529891896166715,-0.035612015949640315,-0.13091093491130745,0.15924656377795368,-0.24952625142527438,0.028742718834698994,0.04706360548738916,-0.018320886652690164,"{0: 2, 1: 1, 2: 0}",3.0044479370117188,6.820908069610596,0.05485653877258301,0.03797101229429245,135608,False,"[1.183616280555725, 0.958495557308197, 0.9061927199363708]",False,False,0.11626485735177994
+"B (SFA+VICReg, sfa=5.0)",31,False,"[1.310414433479309, 1.2630285024642944, 0.8645572066307068]","[1.310414433479309, 1.2630285024642944, 0.8645572066307068]",0.09632634956979484,207.01956262386716,0.5197417358439019,-0.3520872260968353,-0.3588370322987889,-0.006749806201953608,-0.07747724372197062,-0.02637418380103555,0.02056847211116038,0.025043185441398053,-0.004474713330237672,"{0: 0, 1: 2, 2: 1}",4.750212669372559,8.94273567199707,0.05357960984110832,0.09980323910713196,135608,False,"[1.1513241529464722, 1.26815664768219, 1.0741140842437744]",False,False,0.1739261895418167
+"B (SFA+VICReg, sfa=5.0)",53,False,"[0.8680583834648132, 1.1542837619781494, 0.911353588104248]","[0.8680583834648132, 1.1542837619781494, 0.911353588104248]",0.3281058060885939,137.15371685925368,0.4717165779992422,-0.04840061148907422,-0.1714188415120845,-0.12301823002301028,-0.01208409227475223,-0.12926003723890697,0.035687672879309185,0.06333307889955235,-0.027645406020243166,"{0: 1, 1: 0, 2: 2}",4.325692176818848,12.992035865783691,0.03725546598434448,0.09976264834403992,135608,False,"[0.9810442924499512, 1.102358102798462, 1.0898659229278564]",False,False,0.15091155469417572
+"B (SFA+VICReg, sfa=5.0)",71,False,"[1.3406065702438354, 1.226110577583313, 1.2482761144638062]","[1.3406065702438354, 1.226110577583313, 1.2482761144638062]",0.04857638633477021,66.59957851325613,0.1938892855173163,0.041272524827395095,-0.06014735862613362,-0.10141988345352872,0.0046644593785521255,0.11059889445232507,0.018120726817242933,0.03806784574250296,-0.019947118925260025,"{0: 1, 1: 2, 2: 0}",1.699631690979004,13.29028606414795,0.0036146442871540785,0.021287309005856514,135608,False,"[1.004932165145874, 1.2227903604507446, 1.0405715703964233]",False,False,0.16140587627887726
+"B (SFA+VICReg, sfa=5.0)",83,False,"[0.8525862693786621, 1.2030136585235596, 1.1784694194793701]","[0.8525862693786621, 1.2030136585235596, 1.1784694194793701]",0.06400240128245828,111.75836228218562,0.3960090331409964,-0.07945054916466626,-0.06430041203190252,0.015150137132763745,-0.34365483847820455,0.08624295357953082,0.05768885139568739,0.04826658061545356,0.009422270780233832,"{0: 1, 1: 2, 2: 0}",4.829334259033203,33.2603874206543,0.038130998611450195,0.12079190462827682,135608,False,"[0.9523711800575256, 1.2208466529846191, 1.2110005617141724]",False,False,0.13667483627796173
+"B (SFA+VICReg, sfa=5.0)",97,False,"[0.9893265962600708, 0.89670729637146, 0.7413356304168701]","[0.9893265962600708, 0.89670729637146, 0.7413356304168701]",0.09614551750011746,259.9565687835998,0.3069802790879954,0.9152374666389905,-0.07510458146059999,-0.9903420480995905,-0.012551767823541246,-0.1354167083672384,0.043797366835711636,0.02410705618856453,0.019690310647147106,"{0: 2, 1: 0, 2: 1}",3.2330331802368164,14.483689308166504,0.05883852764964104,0.05057263374328613,135608,False,"[1.0114864110946655, 1.176251769065857, 1.089484453201294]",False,False,0.08380147069692612
+"B (SFA+VICReg, sfa=5.0)",113,False,"[1.1198080778121948, 0.9477019309997559, 1.1393473148345947]","[1.1198080778121948, 0.9477019309997559, 1.1393473148345947]",0.12506215046162075,96.52181646117519,0.21266776208053095,0.0028584688939060077,-0.0625742062366151,-0.0654326751305211,-0.05920960413148398,0.07539557228106071,0.05312192009736042,0.03286836674558069,0.02025355335177973,"{0: 1, 1: 2, 2: 0}",2.6887760162353516,6.535554885864258,0.029053151607513428,0.05662369728088379,135608,False,"[1.1107426881790161, 1.1521669626235962, 0.9273912310600281]",False,False,0.10212194174528122
+"B (SFA+VICReg, sfa=5.0)",127,False,"[1.266898512840271, 1.4320636987686157, 1.2698554992675781]","[1.266898512840271, 1.4320636987686157, 1.2698554992675781]",0.10902214101754858,308.98532825963997,0.3858504603893944,0.21731125550915206,-0.060340363126409745,-0.2776516186355618,-0.3550983149690295,-0.017777941008385294,0.07807752782764565,0.024224405580146786,0.05385312224749887,"{0: 2, 1: 0, 2: 1}",19.064720153808594,73.5566635131836,0.06269979476928711,0.6802380084991455,135608,False,"[1.1194641590118408, 0.8473930954933167, 0.9933869242668152]",False,False,0.09002599120140076
+"B (SFA+VICReg, sfa=5.0)",149,False,"[1.5414408445358276, 0.8577545285224915, 1.2303270101547241]","[1.5414408445358276, 0.8577545285224915, 1.2303270101547241]",0.12085698165044223,268.3649473459015,0.23207691701452515,0.356565357131264,-0.03317727141019087,-0.3897426285414549,-0.0735900472372069,-0.4299089417742306,0.061414908257036514,0.08577639633845087,-0.024361488081414355,"{0: 2, 1: 1, 2: 0}",3.0637054443359375,168.7151336669922,0.0737367495894432,0.032708942890167236,135608,False,"[1.364535927772522, 0.7911859154701233, 1.1217315196990967]",False,False,0.06106829270720482
+"B (SFA+VICReg, sfa=5.0)",101,False,"[0.9209396243095398, 1.0387096405029297, 1.030377745628357]","[0.9209396243095398, 1.0387096405029297, 1.030377745628357]",0.14599601592264957,239.1921146614968,0.3100087858363896,0.09805580607057918,-0.016052801748241235,-0.11410860781882042,0.018686951115147177,0.1056859225823018,0.03410079306346936,0.06105763540211614,-0.02695684233864678,"{0: 1, 1: 0, 2: 2}",2.58168888092041,13.686239242553711,0.0,0.08338001370429993,135608,False,"[1.0473053455352783, 1.1177157163619995, 1.1525955200195312]",False,False,0.0853012204170227
+"B (SFA+VICReg, sfa=5.0)",103,False,"[1.1396597623825073, 0.9249141216278076, 1.3922134637832642]","[1.1396597623825073, 0.9249141216278076, 1.3922134637832642]",0.17210609785715203,179.52478686050426,0.3091752482795142,0.1568818651388566,-0.013751691151845047,-0.17063355629070165,-0.03529006834626166,-0.2545743059795693,0.018400035382232078,0.03335274900103032,-0.014952713618798245,"{0: 0, 1: 1, 2: 2}",3.9751205444335938,46.250572204589844,0.03910299018025398,0.0768338218331337,135608,False,"[1.0983681678771973, 1.2769699096679688, 0.8967573642730713]",False,False,0.1722572296857834
+"B (SFA+VICReg, sfa=5.0)",107,False,"[1.1824836730957031, 1.5471360683441162, 1.3138710260391235]","[1.1824836730957031, 1.5471360683441162, 1.3138710260391235]",0.3154918920308957,135.40128815562323,0.3222932142113176,0.18017376089293444,-0.1867128632328158,-0.36688662412575024,0.01316334728657457,-0.013311115119189735,0.06970057804149805,0.04928292058950071,0.02041765745199734,"{0: 1, 1: 2, 2: 0}",2.457061767578125,285.7696533203125,0.0,0.06700890511274338,135608,False,"[1.028450608253479, 1.3910683393478394, 1.1622254848480225]",False,False,0.10472219437360764
+"B (SFA+VICReg, sfa=5.0)",109,False,"[0.8892536163330078, 1.1181988716125488, 1.1267613172531128]","[0.8892536163330078, 1.1181988716125488, 1.1267613172531128]",0.1153198798314163,68.55715134361417,0.4761837619991132,0.16134393271677017,-0.007535379781724016,-0.1688793124984942,0.027748758973424287,0.03744218433816193,0.07816427975648255,0.08099223066974892,-0.002827950913266375,"{0: 1, 1: 2, 2: 0}",6.075946807861328,45.45981979370117,0.13077139854431152,0.08843287080526352,135608,False,"[1.2765741348266602, 1.2916518449783325, 0.7632514834403992]",False,False,0.10735880583524704
+"B (SFA+VICReg, sfa=5.0)",131,False,"[1.0592821836471558, 1.0113813877105713, 1.0652052164077759]","[1.0592821836471558, 1.0113813877105713, 1.0652052164077759]",0.09736770983931498,64.05758680954735,0.29851702034900857,0.11758235425500765,-0.042624042453518585,-0.16020639670852624,-0.1299956049667026,-0.05617496891041326,0.027007779049849263,0.12319299418273288,-0.09618521513288363,"{0: 2, 1: 0, 2: 1}",4.860040664672852,9.870100021362305,0.0,0.13349315524101257,135608,False,"[1.0234637260437012, 1.313848614692688, 1.2522395849227905]",False,False,0.28081223368644714
+"B (SFA+VICReg, sfa=5.0)",137,False,"[1.3188689947128296, 1.4165396690368652, 1.2074767351150513]","[1.3188689947128296, 1.4165396690368652, 1.2074767351150513]",0.1497327456070223,131.94069808324002,0.2931266957602857,2.3942816894541994,0.021072157047324725,-2.3732095324068747,-0.00839856507095793,-0.27739849946909617,0.02823255897300862,0.06264180733501905,-0.034409248362010425,"{0: 2, 1: 0, 2: 1}",4.684049129486084,3.4547324180603027,0.024140456691384315,0.11662771552801132,135608,False,"[1.1186168193817139, 0.9423661231994629, 1.1362855434417725]",False,False,0.2048880010843277
+"B (SFA+VICReg, sfa=5.0)",139,False,"[0.9954679608345032, 0.9941202402114868, 1.029871940612793]","[0.9954679608345032, 0.9941202402114868, 1.029871940612793]",0.09556592023822745,257.0668141890639,0.3717467109937039,0.2195281980781657,0.009846119209454022,-0.20968207886871168,-0.12262849828919824,0.11843159315855885,0.05872089860134788,0.03530924298214281,0.023411655619205073,"{0: 0, 1: 1, 2: 2}",5.634254455566406,71.18476104736328,0.04354581981897354,0.11545579880475998,135608,False,"[1.1324454545974731, 0.9543746709823608, 1.0176728963851929]",False,False,0.30980974435806274
+"B (SFA+VICReg, sfa=5.0)",151,False,"[0.881145179271698, 1.1688730716705322, 0.9329746961593628]","[0.881145179271698, 1.1688730716705322, 0.9329746961593628]",0.33487872253242407,117.25018857880268,0.482734770066936,-0.2232624668947446,-0.2898721608525348,-0.06660969395779022,-0.4828120608558651,-0.4523373495794984,0.0942004970357937,0.07185237171538901,0.022348125320404685,"{0: 1, 1: 0, 2: 2}",6.520843505859375,396.1129455566406,0.1571163535118103,0.048757653683423996,135608,False,"[0.9401133060455322, 0.9552908539772034, 1.2744096517562866]",False,False,0.12875181436538696
+"B (SFA+VICReg, sfa=5.0)",157,False,"[1.0697784423828125, 1.1435989141464233, 1.2696778774261475]","[1.0697784423828125, 1.1435989141464233, 1.2696778774261475]",0.07839323928704356,111.45278782999321,0.2310567426385229,0.37576345315994175,-0.09643986752039484,-0.4722033206803366,0.05922057140509751,0.15102022825999906,0.03940622271416879,0.05695906338655343,-0.01755284067238464,"{0: 1, 1: 0, 2: 2}",9.45389175415039,37.7445182800293,0.12045540660619736,0.23706218600273132,135608,False,"[1.2302687168121338, 1.0773473978042603, 0.8992391228675842]",False,False,0.09467530995607376
+"B (SFA+VICReg, sfa=5.0)",163,False,"[1.3579007387161255, 0.9751805067062378, 1.027159333229065]","[1.3579007387161255, 0.9751805067062378, 1.027159333229065]",0.04303085667984002,274.1426685987073,0.37656339194624283,0.09590945213999075,-0.045967600542221786,-0.14187705268221254,-0.017444586980929877,-0.25796176194993936,0.03665579347647644,0.0531428439356206,-0.016487050459144156,"{0: 0, 1: 2, 2: 1}",12.119219779968262,3.535874605178833,0.01917036436498165,0.4245489537715912,135608,False,"[0.9701650738716125, 1.2204087972640991, 1.0033009052276611]",False,False,0.1801285296678543
+"C (SFA+VICReg, sfa=1.0)",7,False,"[1.1747595071792603, 1.197868824005127, 1.2166684865951538]","[1.1747595071792603, 1.197868824005127, 1.2166684865951538]",0.4028107400980185,70.71468357383806,0.15201566624665558,-0.05881694369875912,-0.4599349355625393,-0.40111799186378017,0.03972780167540931,-0.0362379395131226,0.0425603570835685,0.03332359553665613,0.009236761546912373,"{0: 1, 1: 2, 2: 0}",2.0010986328125,54.37086486816406,0.028240064159035683,0.04355322942137718,135608,False,"[1.1435863971710205, 1.2540339231491089, 0.9298697113990784]",False,False,0.07819431275129318
+"C (SFA+VICReg, sfa=1.0)",17,False,"[1.07185697555542, 1.1273388862609863, 1.0417109727859497]","[1.07185697555542, 1.1273388862609863, 1.0417109727859497]",0.04384519062772721,89.91026866036005,0.2800854070603836,0.10517949587976883,-0.01274261531851517,-0.117922111198284,0.18456146878650603,-0.243140896942761,0.027662261339376288,0.045953200291551144,-0.018290938952174856,"{0: 2, 1: 1, 2: 0}",2.7595815658569336,9.149662017822266,0.0114199323579669,0.08758071810007095,135608,False,"[1.1348931789398193, 1.2079906463623047, 0.9811403751373291]",False,False,0.2066899687051773
+"C (SFA+VICReg, sfa=1.0)",31,False,"[1.484606146812439, 1.3499878644943237, 0.9221040606498718]","[1.484606146812439, 1.3499878644943237, 0.9221040606498718]",0.09029063124119546,211.5261784579226,0.5004303932985003,-0.3221400741211171,-0.3531521097107053,-0.03101203558958822,-0.06396097888382853,-1.0918118291125545e-05,0.014441760065967238,0.024596380880661555,-0.010154620814694317,"{0: 0, 1: 2, 2: 1}",4.451612949371338,7.184396266937256,0.03191928192973137,0.13334211707115173,135608,False,"[1.2320886850357056, 1.2863130569458008, 1.0866373777389526]",False,False,0.26747825741767883
+"C (SFA+VICReg, sfa=1.0)",53,False,"[1.2237608432769775, 1.0696364641189575, 1.0441347360610962]","[1.2237608432769775, 1.0696364641189575, 1.0441347360610962]",0.11748321286810147,135.2655023362981,0.4666289259657474,0.04027998832596433,-0.044540313084375754,-0.08482030141034008,0.045927720066519274,-0.04659377606605416,0.020104973525072973,0.09533051057484665,-0.07522553704977368,"{0: 1, 1: 0, 2: 2}",3.1215038299560547,28.78603744506836,0.059668801724910736,0.04528427496552467,135608,False,"[1.0382391214370728, 0.9265292882919312, 1.1512800455093384]",False,False,0.31223002076148987
+"C (SFA+VICReg, sfa=1.0)",71,False,"[1.339755654335022, 1.1678798198699951, 1.090072751045227]","[1.339755654335022, 1.1678798198699951, 1.090072751045227]",0.04674329725695222,68.36901649317693,0.14947047380946854,0.13911187478321876,0.0024349184641997783,-0.136676956319019,-0.04956733573301745,0.09577246399630772,0.022011244667883772,0.0320626555165208,-0.010051410848637029,"{0: 1, 1: 2, 2: 0}",1.3089990615844727,11.84932804107666,0.012588679790496826,0.020277587696909904,135608,False,"[1.0142015218734741, 0.9793265461921692, 1.4422416687011719]",False,False,0.2150898575782776
+"C (SFA+VICReg, sfa=1.0)",83,False,"[1.2957760095596313, 1.188105583190918, 1.0510976314544678]","[1.2957760095596313, 1.188105583190918, 1.0510976314544678]",0.052252549594268095,195.24208749371635,0.2720863792694555,-0.02099503874507447,-0.029891770061935136,-0.008896731316860664,-0.22496911538921852,0.05093601912199023,0.044087029978651215,0.0444000024307735,-0.0003129724521222857,"{0: 0, 1: 1, 2: 2}",5.964325428009033,6.0388922691345215,0.021876534447073936,0.19499975442886353,135608,False,"[1.2680314779281616, 0.9834897518157959, 1.0665777921676636]",False,False,0.44972822070121765
+"C (SFA+VICReg, sfa=1.0)",97,False,"[0.785719633102417, 0.9372082948684692, 0.84763503074646]","[0.785719633102417, 0.9372082948684692, 0.84763503074646]",0.10403272039540264,260.3151286053981,0.31447870782675036,0.734190019474893,-0.022695284398784887,-0.7568853038736779,-0.04737787312091354,-0.09115577308502743,0.04391511962606428,0.02750884817869481,0.016406271447369468,"{0: 2, 1: 0, 2: 1}",2.991909980773926,9.668440818786621,0.058654628694057465,0.05228818953037262,135608,False,"[0.9590798616409302, 1.2516567707061768, 1.1099929809570312]",False,False,0.1138564720749855
+"C (SFA+VICReg, sfa=1.0)",113,False,"[1.2342222929000854, 0.9318791627883911, 1.1736111640930176]","[1.2342222929000854, 0.9318791627883911, 1.1736111640930176]",0.09687758811949276,97.32208442040474,0.24205080347183064,0.0030071123117421314,-0.047013650055798495,-0.050020762367540626,-0.0712723186456679,0.07452096895802744,0.06136130895708417,0.03300188231593115,0.02835942664115302,"{0: 1, 1: 2, 2: 0}",2.7397594451904297,5.82895040512085,0.03555433079600334,0.0666387528181076,135608,False,"[1.220564603805542, 1.201982855796814, 1.0300370454788208]",False,False,0.1441352516412735
+"C (SFA+VICReg, sfa=1.0)",127,False,"[1.391797423362732, 1.3220784664154053, 1.3444349765777588]","[1.391797423362732, 1.3220784664154053, 1.3444349765777588]",0.0873310248709273,333.0560456219683,0.3311591311504308,-0.040375859604718074,-0.03276516048436554,0.007610699120352531,-0.12303588551845117,-0.02089624717761736,0.03229557188441464,0.03470290353856479,-0.0024073316541501494,"{0: 0, 1: 1, 2: 2}",11.068046569824219,8.410674095153809,0.0,0.4255744218826294,135608,False,"[1.093787431716919, 1.1211044788360596, 1.1520715951919556]",False,False,0.3969724178314209
+"C (SFA+VICReg, sfa=1.0)",149,False,"[1.5520728826522827, 1.101364254951477, 1.022032380104065]","[1.5520728826522827, 1.101364254951477, 1.022032380104065]",0.08373047603604111,261.0212067782657,0.270930911671785,0.3804139165082379,-0.051378542835903006,-0.4317924593441409,0.06205273635134937,-0.2116065587929293,0.05843938410951366,0.08839649987018501,-0.02995711576067135,"{0: 1, 1: 2, 2: 0}",2.51676082611084,5.000372886657715,0.06063513085246086,0.029841316863894463,135608,False,"[1.2519960403442383, 1.0616214275360107, 0.831122875213623]",False,False,0.1550159603357315
+"C (SFA+VICReg, sfa=1.0)",101,False,"[0.9910405874252319, 1.0028793811798096, 0.9684866666793823]","[0.9910405874252319, 1.0028793811798096, 0.9684866666793823]",0.14059603729021328,240.88993108322848,0.2959810525106375,0.17292502811556398,0.07502315187485342,-0.09790187624071055,-0.022746586467009482,0.07330929194219189,0.06036850301039339,0.06012778153811712,0.00024072147227627294,"{0: 1, 1: 0, 2: 2}",1.198415756225586,19.03485679626465,0.0024394590873271227,0.04002750664949417,135608,False,"[1.008514404296875, 1.097791075706482, 1.1077605485916138]",False,False,0.08392402529716492
+"C (SFA+VICReg, sfa=1.0)",103,False,"[1.2749354839324951, 0.8402784466743469, 1.4104182720184326]","[1.2749354839324951, 0.8402784466743469, 1.4104182720184326]",0.10390011007212392,180.53722029528421,0.3012506511679849,0.13981919668814877,-0.010365805188865762,-0.15018500187701453,0.0001845932469212904,-0.2658231782957295,0.01613920044772943,0.035496827891802786,-0.019357627444073357,"{0: 0, 1: 1, 2: 2}",3.5950965881347656,51.25551986694336,0.03885382413864136,0.08931191265583038,135608,False,"[1.272156834602356, 1.2142285108566284, 0.8975169062614441]",False,False,0.20237575471401215
+"C (SFA+VICReg, sfa=1.0)",107,False,"[1.2614866495132446, 1.3776741027832031, 1.191359519958496]","[1.2614866495132446, 1.3776741027832031, 1.191359519958496]",0.32384957071609094,133.38981186052408,0.3449663119611421,0.1361977038238767,-0.22088332777877095,-0.35708103160264765,0.01550468700832656,-0.0684141709065544,0.05905587411839667,0.046540189544673836,0.012515684573722832,"{0: 1, 1: 2, 2: 0}",3.6440887451171875,139.6306610107422,0.010939736850559711,0.12502293288707733,135608,False,"[1.0840352773666382, 1.2822620868682861, 1.1033412218093872]",False,False,0.09834986925125122
+"C (SFA+VICReg, sfa=1.0)",109,False,"[0.9721692204475403, 1.1194443702697754, 1.0474646091461182]","[0.9721692204475403, 1.1194443702697754, 1.0474646091461182]",0.1752813582415346,68.5347041074735,0.4789617162282786,-0.06433140226794505,-0.010283394234228553,0.0540480080337165,0.014663583120678022,0.08076732429751947,0.07183198461910952,0.08487619962899177,-0.01304421500988226,"{0: 2, 1: 1, 2: 0}",6.7530517578125,34.580570220947266,0.09151814877986908,0.1708095669746399,135608,False,"[1.1509078741073608, 1.3211737871170044, 0.8757210373878479]",False,False,0.14116054773330688
+"C (SFA+VICReg, sfa=1.0)",131,False,"[1.086730718612671, 0.9907283186912537, 1.0514315366744995]","[1.086730718612671, 0.9907283186912537, 1.0514315366744995]",0.11455456651989333,65.72417577056125,0.286249599912861,0.11424707975645013,-0.02944283474824144,-0.14368991450469157,-0.07520162039658244,-0.028587228829399607,0.011400317809950211,0.1264690087170266,-0.11506869090707639,"{0: 2, 1: 0, 2: 1}",2.3589859008789062,11.923977851867676,0.0,0.07955579459667206,135608,False,"[1.0679333209991455, 1.095268964767456, 1.147936224937439]",False,False,0.24725788831710815
+"C (SFA+VICReg, sfa=1.0)",137,False,"[1.372056484222412, 1.4692672491073608, 1.4046870470046997]","[1.372056484222412, 1.4692672491073608, 1.4046870470046997]",0.13265125415974774,136.87168191015326,0.2193439926018821,0.7413137986283911,-0.009078319094254125,-0.7503921177226452,-0.01276012357711842,-0.291658139549928,0.022387247084212247,0.0835433501758324,-0.06115610309162016,"{0: 0, 1: 1, 2: 2}",3.505535364151001,3.1441538333892822,0.007417460437864065,0.11862894147634506,135608,False,"[1.1529691219329834, 0.9933406710624695, 1.2947274446487427]",False,False,0.1821012943983078
+"C (SFA+VICReg, sfa=1.0)",139,False,"[1.01063072681427, 1.0367709398269653, 1.0432411432266235]","[1.01063072681427, 1.0367709398269653, 1.0432411432266235]",0.06988607588331447,256.6087935796388,0.3793625155871812,0.08329774591354132,-0.020703134557276088,-0.1040008804708174,-0.04258463010198743,0.14148329697495063,0.031770344075120215,0.03278393105452478,-0.0010135869794045682,"{0: 0, 1: 2, 2: 1}",4.76025390625,68.40787506103516,0.09835398197174072,0.07593001425266266,135608,False,"[0.7777450084686279, 1.099875807762146, 1.2555210590362549]",False,False,0.2934703230857849
+"C (SFA+VICReg, sfa=1.0)",151,False,"[1.0461827516555786, 1.1464468240737915, 1.036681056022644]","[1.0461827516555786, 1.1464468240737915, 1.036681056022644]",0.0698889779114809,126.81473623959856,0.3944263479997489,0.1430231428846459,-0.029370763858616283,-0.1723939067432622,-0.11069286070166055,0.13438382584676709,0.05016301119824621,0.07131930239548838,-0.021156291197242168,"{0: 1, 1: 0, 2: 2}",4.02105712890625,374.97113037109375,0.0,0.139352485537529,135608,False,"[1.2178268432617188, 1.0349503755569458, 1.2875702381134033]",False,False,0.3073648512363434
+"C (SFA+VICReg, sfa=1.0)",157,False,"[1.055582880973816, 1.0282783508300781, 0.9584618806838989]","[1.055582880973816, 1.0282783508300781, 0.9584618806838989]",0.110464685078782,110.29975199729112,0.258384028137246,0.48595356583654503,-0.0060879557631347845,-0.49204152159967984,0.02404463179698742,0.16433593392228418,0.029382731729664102,0.05836319919801514,-0.028980467468351034,"{0: 1, 1: 0, 2: 2}",10.628019332885742,17.371212005615234,0.09132874011993408,0.32740288972854614,135608,False,"[1.0718930959701538, 1.1024702787399292, 0.9153227210044861]",False,False,0.11329010128974915
+"C (SFA+VICReg, sfa=1.0)",163,False,"[1.1776210069656372, 1.1701496839523315, 1.3065823316574097]","[1.1776210069656372, 1.1701496839523315, 1.3065823316574097]",0.14469913914758767,300.09997978548614,0.315241332381474,-0.05607516200039196,-0.0756074273496549,-0.019532265349262928,-0.24221944105838888,0.05887609524305452,0.02585605316514905,0.027116529109115772,-0.0012604759439667212,"{0: 0, 1: 1, 2: 2}",6.416219711303711,24.83340835571289,0.0057448348961770535,0.24061256647109985,135608,False,"[1.2997934818267822, 1.0226600170135498, 0.9984390735626221]",False,False,0.09452470391988754
+]
+
+[Tool Call: read_file({'path': 'archive/iter_029/results/final_analysis.md'})]
+[Tool Result: # Iter_029 SFA+VICReg on Separate Backbone — Analysis
+**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train
+**Arms:** A (VICReg-only control), B (SFA+VICReg, sfa=5.0), C (SFA+VICReg, sfa=1.0)
+**Seed bank:** Union of original (10) + fresh (10) = 20 seeds
+**Gate thresholds:** F1: ΔR²_color ≥ 0.30 (Arm B, non-collapsed), F2: collapse rate ≤ 10% (Arm B), F3: centroid MSE within 1σ of Arm A
+
+---
+## Per-Arm Summary
+### A (VICReg-only control)
+- N seeds: 20
+- Collapse rate (dual): 0.00 (0/20)
+- Collapse rate (eval-only): 0.00 (0/20)
+- Collapse rate (train-only): 0.00 (0/20)
+- Mean ΔR²_color: 0.0445 ± 0.2108
+- Mean centroid MSE: 159.83
+- Mean abs corr: 0.219
+- Parameter count: 135608
+
+### B (SFA+VICReg, sfa=5.0)
+- N seeds: 20
+- Collapse rate (dual): 0.00 (0/20)
+- Collapse rate (eval-only): 0.00 (0/20)
+- Collapse rate (train-only): 0.00 (0/20)
+- Mean ΔR²_color: 0.2749 ± 0.5772
+- Mean centroid MSE: 159.85
+- Mean abs corr: 0.149
+- Mean final SFA loss: 0.1408
+- Parameter count: 135608
+
+### C (SFA+VICReg, sfa=1.0)
+- N seeds: 20
+- Collapse rate (dual): 0.00 (0/20)
+- Collapse rate (eval-only): 0.00 (0/20)
+- Collapse rate (train-only): 0.00 (0/20)
+- Mean ΔR²_color: 0.1428 ± 0.2634
+- Mean centroid MSE: 167.13
+- Mean abs corr: 0.126
+- Mean final SFA loss: 0.2052
+- Parameter count: 135608
+
+## Hard-Seed Table (Seeds 53, 71)
+
+| seed | arm | collapsed | ΔR²_color | centroid_mse | mean_abs_corr | per_dim_std |
+|------|-----|-----------|-----------|--------------|---------------|-------------|
+| 53 | A (VICReg-only control) | N | -0.0391 | 125.27 | 0.295 | [1.1486736536026, 0.679221510887146, 1.0565036535263062] |
+| 53 | B (SFA+VICReg, sfa=5.0) | N | -0.0484 | 137.15 | 0.328 | [0.8680583834648132, 1.1542837619781494, 0.911353588104248] |
+| 53 | C (SFA+VICReg, sfa=1.0) | N | 0.0403 | 135.27 | 0.117 | [1.2237608432769775, 1.0696364641189575, 1.0441347360610962] |
+| 71 | A (VICReg-only control) | N | -0.0662 | 54.10 | 0.306 | [0.9214791059494019, 1.387037992477417, 1.3052146434783936] |
+| 71 | B (SFA+VICReg, sfa=5.0) | N | 0.0413 | 66.60 | 0.049 | [1.3406065702438354, 1.226110577583313, 1.2482761144638062] |
+| 71 | C (SFA+VICReg, sfa=1.0) | N | 0.1391 | 68.37 | 0.047 | [1.339755654335022, 1.1678798198699951, 1.090072751045227] |
+
+## Original vs Fresh Seed Bank Comparison
+
+| arm | seed_bank | mean_ΔR²_color | collapse_rate | mean_centroid_mse |
+|-----|-----------|----------------|---------------|-------------------|
+| A (VICReg-only control) | original (10) | 0.0557 | 0.00 | 154.48 |
+| A (VICReg-only control) | fresh (10) | 0.0333 | 0.00 | 165.18 |
+| B (SFA+VICReg, sfa=5.0) | original (10) | 0.1921 | 0.00 | 161.84 |
+| B (SFA+VICReg, sfa=5.0) | fresh (10) | 0.3576 | 0.00 | 157.86 |
+| C (SFA+VICReg, sfa=1.0) | original (10) | 0.0960 | 0.00 | 172.27 |
+| C (SFA+VICReg, sfa=1.0) | fresh (10) | 0.1896 | 0.00 | 161.98 |
+
+## Gate Check
+
+- **F1 (ΔR²_color ≥ 0.30, non-collapsed):** FAIL (Arm B mean ΔR²_color = 0.2749)
+- **F2 (collapse rate ≤ 10%):** PASS (0.00 = 0/20)
+- **F3 (centroid MSE ≤ Arm A + 1σ):** PASS (Arm B = 159.85, Arm A mean+1σ = 241.88)
+
+## Pre-Registered Outcome Classification
+
+**HYPOTHESIS FALSIFIED**
+
+Reasons: F1: ΔR²_color = 0.2749 < 0.30
+
+SFA+VICReg is **not consistent with M2's predicted mechanism** for improving
+identity encoding on the separate-backbone architecture.
+
+## Arm C (SFA+VICReg, sfa=1.0, conservative)
+
+- Collapse rate: 0.00
+- Mean ΔR²_color: 0.1428
+- Mean centroid MSE: 167.13
+
+]
+ All 60 runs completed successfully. Let me verify the results and read the full analysis:  
+
+[Tool Call: read_file({'path': 'archive/iter_029/results/final_analysis.md'})]
+[Tool Result: # Iter_029 SFA+VICReg on Separate Backbone — Analysis
+**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train
+**Arms:** A (VICReg-only control), B (SFA+VICReg, sfa=5.0), C (SFA+VICReg, sfa=1.0)
+**Seed bank:** Union of original (10) + fresh (10) = 20 seeds
+**Gate thresholds:** F1: ΔR²_color ≥ 0.30 (Arm B, non-collapsed), F2: collapse rate ≤ 10% (Arm B), F3: centroid MSE within 1σ of Arm A
+
+---
+## Per-Arm Summary
+### A (VICReg-only control)
+- N seeds: 20
+- Collapse rate (dual): 0.00 (0/20)
+- Collapse rate (eval-only): 0.00 (0/20)
+- Collapse rate (train-only): 0.00 (0/20)
+- Mean ΔR²_color: 0.0445 ± 0.2108
+- Mean centroid MSE: 159.83
+- Mean abs corr: 0.219
+- Parameter count: 135608
+
+### B (SFA+VICReg, sfa=5.0)
+- N seeds: 20
+- Collapse rate (dual): 0.00 (0/20)
+- Collapse rate (eval-only): 0.00 (0/20)
+- Collapse rate (train-only): 0.00 (0/20)
+- Mean ΔR²_color: 0.2749 ± 0.5772
+- Mean centroid MSE: 159.85
+- Mean abs corr: 0.149
+- Mean final SFA loss: 0.1408
+- Parameter count: 135608
+
+### C (SFA+VICReg, sfa=1.0)
+- N seeds: 20
+- Collapse rate (dual): 0.00 (0/20)
+- Collapse rate (eval-only): 0.00 (0/20)
+- Collapse rate (train-only): 0.00 (0/20)
+- Mean ΔR²_color: 0.1428 ± 0.2634
+- Mean centroid MSE: 167.13
+- Mean abs corr: 0.126
+- Mean final SFA loss: 0.2052
+- Parameter count: 135608
+
+## Hard-Seed Table (Seeds 53, 71)
+
+| seed | arm | collapsed | ΔR²_color | centroid_mse | mean_abs_corr | per_dim_std |
+|------|-----|-----------|-----------|--------------|---------------|-------------|
+| 53 | A (VICReg-only control) | N | -0.0391 | 125.27 | 0.295 | [1.1486736536026, 0.679221510887146, 1.0565036535263062] |
+| 53 | B (SFA+VICReg, sfa=5.0) | N | -0.0484 | 137.15 | 0.328 | [0.8680583834648132, 1.1542837619781494, 0.911353588104248] |
+| 53 | C (SFA+VICReg, sfa=1.0) | N | 0.0403 | 135.27 | 0.117 | [1.2237608432769775, 1.0696364641189575, 1.0441347360610962] |
+| 71 | A (VICReg-only control) | N | -0.0662 | 54.10 | 0.306 | [0.9214791059494019, 1.387037992477417, 1.3052146434783936] |
+| 71 | B (SFA+VICReg, sfa=5.0) | N | 0.0413 | 66.60 | 0.049 | [1.3406065702438354, 1.226110577583313, 1.2482761144638062] |
+| 71 | C (SFA+VICReg, sfa=1.0) | N | 0.1391 | 68.37 | 0.047 | [1.339755654335022, 1.1678798198699951, 1.090072751045227] |
+
+## Original vs Fresh Seed Bank Comparison
+
+| arm | seed_bank | mean_ΔR²_color | collapse_rate | mean_centroid_mse |
+|-----|-----------|----------------|---------------|-------------------|
+| A (VICReg-only control) | original (10) | 0.0557 | 0.00 | 154.48 |
+| A (VICReg-only control) | fresh (10) | 0.0333 | 0.00 | 165.18 |
+| B (SFA+VICReg, sfa=5.0) | original (10) | 0.1921 | 0.00 | 161.84 |
+| B (SFA+VICReg, sfa=5.0) | fresh (10) | 0.3576 | 0.00 | 157.86 |
+| C (SFA+VICReg, sfa=1.0) | original (10) | 0.0960 | 0.00 | 172.27 |
+| C (SFA+VICReg, sfa=1.0) | fresh (10) | 0.1896 | 0.00 | 161.98 |
+
+## Gate Check
+
+- **F1 (ΔR²_color ≥ 0.30, non-collapsed):** FAIL (Arm B mean ΔR²_color = 0.2749)
+- **F2 (collapse rate ≤ 10%):** PASS (0.00 = 0/20)
+- **F3 (centroid MSE ≤ Arm A + 1σ):** PASS (Arm B = 159.85, Arm A mean+1σ = 241.88)
+
+## Pre-Registered Outcome Classification
+
+**HYPOTHESIS FALSIFIED**
+
+Reasons: F1: ΔR²_color = 0.2749 < 0.30
+
+SFA+VICReg is **not consistent with M2's predicted mechanism** for improving
+identity encoding on the separate-backbone architecture.
+
+## Arm C (SFA+VICReg, sfa=1.0, conservative)
+
+- Collapse rate: 0.00
+- Mean ΔR²_color: 0.1428
+- Mean centroid MSE: 167.13
+
+]
+   
+
+[Tool Call: bash({'command': 'dir archive\\iter_029\\results\\runs /B | find /c /v ""'})]
+[Tool Result: exit_code: 0
+stdout: 180
+
+stderr: ]
+   
+
+[Tool Call: bash({'command': 'dir archive\\iter_029\\results\\runs /B'})]
+[Tool Result: exit_code: 0
+stdout: a_vicreg-only_control_seed101.csv
+a_vicreg-only_control_seed101.json
+a_vicreg-only_control_seed101_logs.csv
+a_vicreg-only_control_seed103.csv
+a_vicreg-only_control_seed103.json
+a_vicreg-only_control_seed103_logs.csv
+a_vicreg-only_control_seed107.csv
+a_vicreg-only_control_seed107.json
+a_vicreg-only_control_seed107_logs.csv
+a_vicreg-only_control_seed109.csv
+a_vicreg-only_control_seed109.json
+a_vicreg-only_control_seed109_logs.csv
+a_vicreg-only_control_seed113.csv
+a_vicreg-only_control_seed113.json
+a_vicreg-only_control_seed113_logs.csv
+a_vicreg-only_control_seed127.csv
+a_vicreg-only_control_seed127.json
+a_vicreg-only_control_seed127_logs.csv
+a_vicreg-only_control_seed131.csv
+a_vicreg-only_control_seed131.json
+a_vicreg-only_control_seed131_logs.csv
+a_vicreg-only_control_seed137.csv
+a_vicreg-only_control_seed137.json
+a_vicreg-only_control_seed137_logs.csv
+a_vicreg-only_control_seed139.csv
+a_vicreg-only_control_seed139.json
+a_vicreg-only_control_seed139_logs.csv
+a_vicreg-only_control_seed149.csv
+a_vicreg-only_control_seed149.json
+a_vicreg-only_control_seed149_logs.csv
+a_vicreg-only_control_seed151.csv
+a_vicreg-only_control_seed151.json
+a_vicreg-only_control_seed151_logs.csv
+a_vicreg-only_control_seed157.csv
+a_vicreg-only_control_seed157.json
+a_vicreg-only_control_seed157_logs.csv
+a_vicreg-only_control_seed163.csv
+a_vicreg-only_control_seed163.json
+a_vicreg-only_control_seed163_logs.csv
+a_vicreg-only_control_seed17.csv
+a_vicreg-only_control_seed17.json
+a_vicreg-only_control_seed17_logs.csv
+a_vicreg-only_control_seed31.csv
+a_vicreg-only_control_seed31.json
+a_vicreg-only_control_seed31_logs.csv
+a_vicreg-only_control_seed53.csv
+a_vicreg-only_control_seed53.json
+a_vicreg-only_control_seed53_logs.csv
+a_vicreg-only_control_seed7.csv
+a_vicreg-only_control_seed7.json
+a_vicreg-only_control_seed71.csv
+a_vicreg-only_control_seed71.json
+a_vicreg-only_control_seed71_logs.csv
+a_vicreg-only_control_seed7_logs.csv
+a_vicreg-only_control_seed83.csv
+a_vicreg-only_control_seed83.json
+a_vicreg-only_control_seed83_logs.csv
+a_vicreg-only_control_seed97.csv
+a_vicreg-only_control_seed97.json
+a_vicreg-only_control_seed97_logs.csv
+b_sfavicreg,_sfa_5.0_seed101.csv
+b_sfavicreg,_sfa_5.0_seed101.json
+b_sfavicreg,_sfa_5.0_seed101_logs.csv
+b_sfavicreg,_sfa_5.0_seed103.csv
+b_sfavicreg,_sfa_5.0_seed103.json
+b_sfavicreg,_sfa_5.0_seed103_logs.csv
+b_sfavicreg,_sfa_5.0_seed107.csv
+b_sfavicreg,_sfa_5.0_seed107.json
+b_sfavicreg,_sfa_5.0_seed107_logs.csv
+b_sfavicreg,_sfa_5.0_seed109.csv
+b_sfavicreg,_sfa_5.0_seed109.json
+b_sfavicreg,_sfa_5.0_seed109_logs.csv
+b_sfavicreg,_sfa_5.0_seed113.csv
+b_sfavicreg,_sfa_5.0_seed113.json
+b_sfavicreg,_sfa_5.0_seed113_logs.csv
+b_sfavicreg,_sfa_5.0_seed127.csv
+b_sfavicreg,_sfa_5.0_seed127.json
+b_sfavicreg,_sfa_5.0_seed127_logs.csv
+b_sfavicreg,_sfa_5.0_seed131.csv
+b_sfavicreg,_sfa_5.0_seed131.json
+b_sfavicreg,_sfa_5.0_seed131_logs.csv
+b_sfavicreg,_sfa_5.0_seed137.csv
+b_sfavicreg,_sfa_5.0_seed137.json
+b_sfavicreg,_sfa_5.0_seed137_logs.csv
+b_sfavicreg,_sfa_5.0_seed139.csv
+b_sfavicreg,_sfa_5.0_seed139.json
+b_sfavicreg,_sfa_5.0_seed139_logs.csv
+b_sfavicreg,_sfa_5.0_seed149.csv
+b_sfavicreg,_sfa_5.0_seed149.json
+b_sfavicreg,_sfa_5.0_seed149_logs.csv
+b_sfavicreg,_sfa_5.0_seed151.csv
+b_sfavicreg,_sfa_5.0_seed151.json
+b_sfavicreg,_sfa_5.0_seed151_logs.csv
+b_sfavicreg,_sfa_5.0_seed157.csv
+b_sfavicreg,_sfa_5.0_seed157.json
+b_sfavicreg,_sfa_5.0_seed157_logs.csv
+b_sfavicreg,_sfa_5.0_seed163.csv
+b_sfavicreg,_sfa_5.0_seed163.json
+b_sfavicreg,_sfa_5.0_seed163_logs.csv
+b_sfavicreg,_sfa_5.0_seed17.csv
+b_sfavicreg,_sfa_5.0_seed17.json
+b_sfavicreg,_sfa_5.0_seed17_logs.csv
+b_sfavicreg,_sfa_5.0_seed31.csv
+b_sfavicreg,_sfa_5.0_seed31.json
+b_sfavicreg,_sfa_5.0_seed31_logs.csv
+b_sfavicreg,_sfa_5.0_seed53.csv
+b_sfavicreg,_sfa_5.0_seed53.json
+b_sfavicreg,_sfa_5.0_seed53_logs.csv
+b_sfavicreg,_sfa_5.0_seed7.csv
+b_sfavicreg,_sfa_5.0_seed7.json
+b_sfavicreg,_sfa_5.0_seed71.csv
+b_sfavicreg,_sfa_5.0_seed71.json
+b_sfavicreg,_sfa_5.0_seed71_logs.csv
+b_sfavicreg,_sfa_5.0_seed7_logs.csv
+b_sfavicreg,_sfa_5.0_seed83.csv
+b_sfavicreg,_sfa_5.0_seed83.json
+b_sfavicreg,_sfa_5.0_seed83_logs.csv
+b_sfavicreg,_sfa_5.0_seed97.csv
+b_sfavicreg,_sfa_5.0_seed97.json
+b_sfavicreg,_sfa_5.0_seed97_logs.csv
+c_sfavicreg,_sfa_1.0_seed101.csv
+c_sfavicreg,_sfa_1.0_seed101.json
+c_sfavicreg,_sfa_1.0_seed101_logs.csv
+c_sfavicreg,_sfa_1.0_seed103.csv
+c_sfavicreg,_sfa_1.0_seed103.json
+c_sfavicreg,_sfa_1.0_seed103_logs.csv
+c_sfavicreg,_sfa_1.0_seed107.csv
+c_sfavicreg,_sfa_1.0_seed107.json
+c_sfavicreg,_sfa_1.0_seed107_logs.csv
+c_sfavicreg,_sfa_1.0_seed109.csv
+c_sfavicreg,_sfa_1.0_seed109.json
+c_sfavicreg,_sfa_1.0_seed109_logs.csv
+c_sfavicreg,_sfa_1.0_seed113.csv
+c_sfavicreg,_sfa_1.0_seed113.json
+c_sfavicreg,_sfa_1.0_seed113_logs.csv
+c_sfavicreg,_sfa_1.0_seed127.csv
+c_sfavicreg,_sfa_1.0_seed127.json
+c_sfavicreg,_sfa_1.0_seed127_logs.csv
+c_sfavicreg,_sfa_1.0_seed131.csv
+c_sfavicreg,_sfa_1.0_seed131.json
+c_sfavicreg,_sfa_1.0_seed131_logs.csv
+c_sfavicreg,_sfa_1.0_seed137.csv
+c_sfavicreg,_sfa_1.0_seed137.json
+c_sfavicreg,_sfa_1.0_seed137_logs.csv
+c_sfavicreg,_sfa_1.0_seed139.csv
+c_sfavicreg,_sfa_1.0_seed139.json
+c_sfavicreg,_sfa_1.0_seed139_logs.csv
+c_sfavicreg,_sfa_1.0_seed149.csv
+c_sfavicreg,_sfa_1.0_seed149.json
+c_sfavicreg,_sfa_1.0_seed149_logs.csv
+c_sfavicreg,_sfa_1.0_seed151.csv
+c_sfavicreg,_sfa_1.0_seed151.json
+c_sfavicreg,_sfa_1.0_seed151_logs.csv
+c_sfavicreg,_sfa_1.0_seed157.csv
+c_sfavicreg,_sfa_1.0_seed157.json
+c_sfavicreg,_sfa_1.0_seed157_logs.csv
+c_sfavicreg,_sfa_1.0_seed163.csv
+c_sfavicreg,_sfa_1.0_seed163.json
+c_sfavicreg,_sfa_1.0_seed163_logs.csv
+c_sfavicreg,_sfa_1.0_seed17.csv
+c_sfavicreg,_sfa_1.0_seed17.json
+c_sfavicreg,_sfa_1.0_seed17_logs.csv
+c_sfavicreg,_sfa_1.0_seed31.csv
+c_sfavicreg,_sfa_1.0_seed31.json
+c_sfavicreg,_sfa_1.0_seed31_logs.csv
+c_sfavicreg,_sfa_1.0_seed53.csv
+c_sfavicreg,_sfa_1.0_seed53.json
+c_sfavicreg,_sfa_1.0_seed53_logs.csv
+c_sfavicreg,_sfa_1.0_seed7.csv
+c_sfavicreg,_sfa_1.0_seed7.json
+c_sfavicreg,_sfa_1.0_seed71.csv
+c_sfavicreg,_sfa_1.0_seed71.json
+c_sfavicreg,_sfa_1.0_seed71_logs.csv
+c_sfavicreg,_sfa_1.0_seed7_logs.csv
+c_sfavicreg,_sfa_1.0_seed83.csv
+c_sfavicreg,_sfa_1.0_seed83.json
+c_sfavicreg,_sfa_1.0_seed83_logs.csv
+c_sfavicreg,_sfa_1.0_seed97.csv
+c_sfavicreg,_sfa_1.0_seed97.json
+c_sfavicreg,_sfa_1.0_seed97_logs.csv
+
+stderr: ]
+   
+
+[Tool Call: bash({'command': 'dir archive\\iter_029\\results\\checkpoints /B | find /c /v ""'})]
+[Tool Result: exit_code: 0
+stdout: 60
+
+stderr: ]
+ ---
+
+## Iter_029 SFA+VICReg Separate-Backbone Experiment — Full Report
+
+### Experiment Execution Summary
+
+| Metric | Value |
+|--------|-------|
+| **Total runs executed** | 60 (3 arms × 20 seeds) |
+| **Runs failed** | **0** — all 60 completed successfully |
+| **Device** | CPU (sequential mode) |
+| **Output files** | 180 run files (CSV + JSON + logs) + 60 checkpoints + summary CSV + analysis markdown |
+
+---
+
+### 1. Per-Arm Collapse Rate and ΔR²_color
+
+| Arm | Collapse Rate (dual) | Mean ΔR²_color | Std ΔR²_color | Mean Centroid MSE | Mean abs corr |
+|-----|---------------------|----------------|---------------|-------------------|---------------|
+| **A** (VICReg-only control) | **0%** (0/20) | **0.0445** | ±0.2108 | 159.83 | 0.219 |
+| **B** (SFA+VICReg, sfa=5.0) | **0%** (0/20) | **0.2749** | ±0.5772 | 159.85 | 0.149 |
+| **C** (SFA+VICReg, sfa=1.0) | **0%** (0/20) | **0.1428** | ±0.2634 | 167.13 | 0.126 |
+
+**Key observations:**
+- **Zero collapse across all arms** — no seed collapsed on either eval or train metrics. All 60 runs produced healthy per-dim std values (>0.5 threshold).
+- Arm B shows substantially higher mean ΔR²_color (0.2749) than Arm A (0.0445), but the high variance (±0.5772) indicates inconsistent per-seed outcomes.
+- Arm C (conservative sfa=1.0) sits between A and B at 0.1428.
+- Centroid MSE is essentially identical across arms (~160), indicating SFA does not degrade spatial readout.
+
+---
+
+### 2. Hard-Seed Outcomes (Seeds 53, 71)
+
+| Seed | Arm | Collapsed | ΔR²_color | Centroid MSE | Mean abs corr | Per-dim std |
+|------|-----|-----------|-----------|--------------|---------------|-------------|
+| **53** | A (VICReg-only) | N | **-0.0391** | 125.27 | 0.295 | [1.15, 0.68, 1.06] |
+| **53** | B (SFA+VICReg, 5.0) | N | **-0.0484** | 137.15 | 0.328 | [0.87, 1.15, 0.91] |
+| **53** | C (SFA+VICReg, 1.0) | N | **+0.0403** | 135.27 | 0.117 | [1.22, 1.07, 1.04] |
+| **71** | A (VICReg-only) | N | **-0.0662** | 54.10 | 0.306 | [0.92, 1.39, 1.31] |
+| **71** | B (SFA+VICReg, 5.0) | N | **+0.0413** | 66.60 | 0.049 | [1.34, 1.23, 1.25] |
+| **71** | C (SFA+VICReg, 1.0) | N | **+0.1391** | 68.37 | 0.047 | [1.34, 1.17, 1.09] |
+
+**Hard-seed findings:**
+- Seed 53 remains difficult for all arms — ΔR²_color stays near zero or negative. SFA does **not** rescue this hard seed at either weight.
+- Seed 71 shows modest improvement with SFA: Arm A = -0.066, Arm B = +0.041, Arm C = +0.139. The conservative Arm C (sfa=1.0) actually performs best here.
+- Neither hard seed collapsed under any arm.
+
+---
+
+### 3. Original vs Fresh Seed Bank Comparison
+
+| Arm | Seed Bank | N | Mean ΔR²_color | Collapse Rate | Mean Centroid MSE |
+|-----|-----------|---|----------------|---------------|-------------------|
+| A | Original [7,17,31,53,71,83,97,113,127,149] | 10 | 0.0557 | 0.00 | 154.48 |
+| A | Fresh [101,103,107,109,131,137,139,151,157,163] | 10 | 0.0333 | 0.00 | 165.18 |
+| B | Original | 10 | 0.1921 | 0.00 | 161.84 |
+| B | Fresh | 10 | **0.3576** | 0.00 | 157.86 |
+| C | Original | 10 | 0.0960 | 0.00 | 172.27 |
+| C | Fresh | 10 | **0.1896** | 0.00 | 161.98 |
+
+**Key finding:** SFA+VICReg (both B and C) shows **substantially better ΔR²_color on fresh seeds than original seeds**. For Arm B, fresh seeds yield 0.3576 vs. 0.1921 on originals — an ~86% improvement. This suggests the SFA mechanism benefits more from the fresh seed distribution, though the practical-significance threshold is still not consistently met.
+
+---
+
+### 4. F1/F2/F3 Gate Check Outcomes
+
+| Gate | Criterion | Arm B Result | Status |
+|------|-----------|--------------|--------|
+| **F1** | ΔR²_color ≥ 0.30 (non-collapsed seeds) | **0.2749** | ❌ **FAIL** |
+| **F2** | Collapse rate ≤ 10% (≤2 of 20 seeds) | **0.00** (0/20) | ✅ **PASS** |
+| **F3** | Centroid MSE ≤ Arm A + 1σ | **159.85** ≤ 241.88 | ✅ **PASS** |
+
+- **F1 fails by 0.0251** — Arm B mean ΔR²_color = 0.2749, just below the 0.30 practical-significance threshold. The high variance (±0.577) indicates some seeds perform very well while others are near-zero or negative.
+- **F2 passes decisively** — zero collapse across all 60 runs. SFA does not destabilize the VICReg-only regime.
+- **F3 passes easily** — Arm B centroid MSE (159.85) is virtually identical to Arm A (159.83), well within 1σ. SFA does not degrade spatial readout.
+
+---
+
+### 5. Pre-Registered Outcome Classification
+
+> **HYPOTHESIS FALSIFIED**
+>
+> Reasons: **F1: ΔR²_color = 0.2749 < 0.30**
+>
+> SFA+VICReg is **not consistent with M2's predicted mechanism** for improving identity encoding on the separate-backbone architecture.
+
+**Falsification breakdown:** Only F1 failed. F2 (collapse stability) and F3 (spatial readout preservation) both passed. The failure is marginal — Arm B missed the 0.30 threshold by only ~0.025 (about 8% short). The pre-registration correctly notes that results between 0.18 and 0.30 should be reported as "no detectable marginal benefit."
+
+---
+
+### Additional Observations
+
+1. **SFA loss is active and stable:** Arm B final SFA loss averaged 0.1408, Arm C averaged 0.2052. The slowness term is operational.
+2. **VICReg sim_loss remains high in Arm A:** The control arm shows extremely high sim_loss values (hundreds to thousands), suggesting the `sim_weight=1.0` with `mask_dyn_sim=True` configuration produces large unconstrained similarity magnitudes that do not collapse the representation but also don't drive useful structure.
+3. **Arm C outperforms on hard seeds:** The conservative sfa=1.0 weight performs better on seeds 53 and 71 than sfa=5.0, suggesting diminishing or even negative returns at higher SFA weights for certain seeds.
+4. **No runs disqualified:** No seed produced final loss > 50.0.
+
+
+[NUDGE RESPONSE]
+ The iter_029 SFA+VICReg separate-backbone experiment completed successfully. All 60 runs (3 arms × 20 seeds) executed without failure. Results were saved to `archive/iter_029/results/` including a summary CSV, final analysis markdown, 180 per-run artifacts, and 60 model checkpoints.
+
+The pre-registered hypothesis was **falsified**. Arm B (SFA+VICReg, sfa=5.0) failed gate F1 by a narrow margin: mean ΔR²_color = 0.2749 vs. the 0.30 practical-significance threshold. Gates F2 (0% collapse) and F3 (centroid MSE preserved) both passed. The outcome indicates that while SFA does not destabilize VICReg or degrade spatial readout, it does not provide a practically significant improvement in identity encoding on this architecture.
+
+```yaml
+status: ok
+artifacts:
+  - archive/iter_029/results/summary_iter_029.csv
+  - archive/iter_029/results/final_analysis.md
+  - archive/iter_029/results/runs/
+  - archive/iter_029/results/checkpoints/
+metrics:
+  total_runs: 60
+  completed_runs: 60
+  failed_runs: 0
+  arm_a_collapse_rate: 0.0
+  arm_a_delta_r2_color_mean: 0.0445
+  arm_a_delta_r2_color_std: 0.2108
+  arm_a_centroid_mse_mean: 159.83
+  arm_b_collapse_rate: 0.0
+  arm_b_delta_r2_color_mean: 0.2749
+  arm_b_delta_r2_color_std: 0.5772
+  arm_b_centroid_mse_mean: 159.85
+  arm_b_final_sfa_loss_mean: 0.1408
+  arm_c_collapse_rate: 0.0
+  arm_c_delta_r2_color_mean: 0.1428
+  arm_c_delta_r2_color_std: 0.2634
+  arm_c_centroid_mse_mean: 167.13
+  arm_c_final_sfa_loss_mean: 0.2052
+  f1_status: FAIL
+  f2_status: PASS
+  f3_status: PASS
+  hard_seed_53_arm_b_delta_r2_color: -0.0484
+  hard_seed_71_arm_b_delta_r2_color: 0.0413
+log_excerpt: |
+  [C (SFA+VICReg, sfa=1.0)] seed=163 step= 8000/8000  loss=6.4162  sim=24.8334  var=0.0057  cov=0.2406  sfa=0.0945
+  Saved summary to archive/iter_029/results\summary_iter_029.csv
+  Saved analysis to archive/iter_029/results\final_analysis.md
+  Done.
+experimenter_view: |
+  The hypothesis was falsified by the pre-registered F1 gate: Arm B mean
+  delta_R2_color = 0.2749, narrowly missing the 0.30 practical-significance
+  threshold. However, the experiment produced important structural findings:
+  (1) Zero collapse across all 60 runs (F2 PASS), confirming that adding an
+  explicit SFA slowness term to VICReg does not destabilize the separate-
+  backbone architecture. (2) Centroid MSE is virtually identical between Arm
+  A and Arm B (159.83 vs 159.85; F3 PASS), so SFA does not trade away
+  spatial readout quality. (3) Fresh seeds benefited more from SFA than
+  original seeds (Arm B fresh=0.358, original=0.192), suggesting the effect
+  is seed-distribution dependent. (4) The conservative Arm C (sfa=1.0)
+  outperformed Arm B on both hard seeds (53 and 71), indicating diminishing
+  or even negative returns at higher SFA weights for difficult initial
+  conditions. Overall, SFA+VICReg on the separate backbone shows a trend
+  toward improved identity encoding but fails to cross the pre-specified
+  bar for practical significance. The null result is firmly established.
+notes: "Hypothesis falsified: F1 delta_R2_color=0.2749<0.30; F2/F3 passed. Zero failures across 60 runs."
+```
