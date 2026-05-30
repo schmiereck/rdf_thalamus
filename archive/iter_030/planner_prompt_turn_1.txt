@@ -1,0 +1,887 @@
+# Research Project – Phase 30
+
+## Research Goal
+# GOAL: Thalamus — Curiosity-Driven, Decoder-Free Representation Agent (v4, sml-grounded)
+
+## 0. Status and Relationship to `rdf_thalamus_sml`
+
+This is an **evolutionary revision** of the project goal, not a reset. The existing
+machinery is retained: GDASR (dynamic dimension recruitment), Arm F
+(Non-Parametric Soft-Argmax centroid projection), Arm G (CLTS motorics), the
+Watchdog/noise-robustness apparatus, and Pillars A–E. What changes is that three
+findings, validated across an 8-iteration RDF run in the companion project, now
+govern the design as non-negotiable mandates.
+
+**Companion project:** `..\rdf_thalamus_sml\` (HSUN — Hierarchical Sparse Universal
+Nodes). It validated the *representational foundation* on a controlled 1D binary
+toy problem. The implementing agents have filesystem access to that directory and
+**must read its iteration reports** (`RESEARCH-RESULT-001` through `008`) before
+planning Phase 0.
+
+**Scope of transfer (important):** the sml findings transfer at the **objective
+and regularization level** (M1, M2 below), NOT at the architecture level. The sml
+`P3-C` node is a kernel-3, weight-shared universal node on binary input; the
+existing Thalamus encoder is a kernel-5, stride-2 CNN with a soft-argmax centroid
+head (`NonParametricJEPASpatial`). The evolutionary path keeps the existing CNN.
+The sml `P3-C` node is a *reference and comparison arm*, not a drop-in replacement.
+
+These phases are **implementation-scope labels, not iteration numbers**. The iter
+counter continues from 019; the project does not reset. It resumes with a changed
+training objective (M2) and a scope-reduced, fixed-dimensionality regime (M3).
+
+The three mandates (Section 1.1) resolve or sidestep several of this project's
+documented pathologies: the cold-start trilemma (Iter 016–018), the
+representation collapse under decoder-free prediction, and part of the persistent
+Spatial Specialization Gap (Phases 6–11).
+
+---
+
+## 1. Primary Objective
+
+Design, simulate, and evaluate a neural architecture that achieves hierarchical
+abstraction **without generative decoders**, learns **temporal structure in
+latent space**, and develops a **thalamic gating mechanism** that focuses
+plasticity and motor behavior on the epistemically most relevant entities in a
+1D physics scene. Learning is driven by local objectives constrained by
+anti-collapse and anti-dark-room mechanisms.
+
+The project name "Thalamus" reflects the central role of the gating mechanism:
+selective routing of sensory information and attention, analogous to the
+biological thalamus.
+
+### 1.1 Validated Mandates from `rdf_thalamus_sml` (NON-NEGOTIABLE)
+
+**M1 — Pooled/batch VICReg is the anti-collapse mechanism, not a candidate.**
+The sml run was, in retrospect, a clean ablation of VICReg across iterations 2–7.
+Without it, every objective (reconstruction, JEPA, SFA, Hebbian) collapsed to
+~44–48% downstream accuracy (near random). With **pooled** VICReg, the same
+objectives reached 61–83%. VICReg applied **locally per timestep fails** due to
+gradient dilution: the per-step gradient is scaled by ~1/28000 versus ~1/64 at the
+pooled-representation level.
+
+**Status in current code: already satisfied.** `calc_var_loss` / `calc_cov_loss`
+in `models_dual_stream.py` are computed over the **batch dimension** on
+single-frame latents `(B, d_t)`, batch=32 — i.e. the pooled/batch regime, gradient
+~1/32, not diluted across timesteps. So M1 is a confirmation, not a code change.
+Therefore:
+- VICReg (variance term enforcing per-dimension std >= 1, plus covariance
+  decorrelation term) is **mandatory** wherever a representation is shaped, and
+  the current batch-level application is the correct form — keep it.
+- The dilution warning is a **forward-looking guard**: if any future variant
+  unfolds the representation over time and applies VICReg per-step, it must pool
+  first. Do not "fix" the current code by moving VICReg per-step.
+- This dilution mechanism is the suspected confound behind the cold-start
+  pathologies (Iter 016–018), whose per-step probationary error signals suffer it.
+
+**M2 — Primary representation objective is SFA + pooled VICReg, applied to the
+slow (identity) stream.**
+On tasks where the class is *temporally stable* (a moving blob stays a blob),
+sml measured SFA+VICReg at 82% and Reconstruction+VICReg at 83%, versus
+JEPA+VICReg at only 61% — a ~20pp gap. SFA is decoder-free and matches
+reconstruction, so it preserves this project's decoder-free principle.
+
+**Stream assignment (critical — do not apply SFA naively).** The encoder produces
+two streams per dimension: `z_coord` (soft-argmax centroid = *where*, position)
+and `z_dyn` (mean activation = *what*, identity/appearance). A naive slowness
+penalty `||z_t - z_{t-1}||^2` on `z_coord` would be **wrong** — object position
+changes legitimately as objects move, and penalizing it would suppress tracking.
+Therefore:
+- **SFA shapes `z_dyn`** (the slow identity/appearance stream): object color,
+  size, identity do not change frame-to-frame, so slowness is the right prior.
+- **`z_coord` stays the soft-argmax readout** (position is allowed to be fast and
+  is read out, not slowed).
+- **Hypothesis (to test in Phase 1, not assumed):** SFA on `z_dyn` may separate
+  slow identity from fast position *by construction*, which is exactly the
+  disentanglement the **Spatial Specialization Gap** (Phases 6–11) has been
+  chasing. If it holds, SFA addresses the gap structurally rather than via an
+  added bottleneck.
+- The slowness term partly exists already (`ccr_smooth_loss`); SFA-primary means
+  promoting a slowness term on `z_dyn` to the main shaper and demoting the JEPA
+  `sim_loss` to a readout.
+
+**JEPA is demoted** from primary objective to (a) Baseline B1 and (b) a dedicated
+comparison arm on *causal-sensitivity* tasks, where transition prediction may
+shape better representations than slowness (the one regime where JEPA could still
+win — test, do not assume).
+
+**The surprise / prediction-error signal survives** as a *readout* (drives
+attention and motor), not as the representation objective. See Pillar B (4.B).
+
+**Distinction from the failed DSDT (Iter 010) — read before implementing.** DSDT
+stop-gradient-decoupled the coordinate stream from the dynamics/prediction
+objective and it collapsed (semantic blindness, 100% collapse) because the
+decoupled stream had *no strong objective of its own*. M2 is different: the
+representation is shaped by **SFA + pooled VICReg**, a validated strong objective.
+The stop-gradient on the prediction-error readout therefore does **not** strand
+the representation — SFA grounds it. Do not pattern-match M2 onto DSDT and reject
+it; the failure mode does not apply here.
+
+**M3 — Fixed dimensionality first; GDASR logs growth points, does not recruit.**
+The cold-start trilemma (encoder cold-start Iter 017, predictor cold-start
+Iter 016, optimization-transient Iter 018) is fundamentally a *probationary
+recruitment evaluation* problem: it only exists because new dimensions must be
+judged during a warm-up window. sml validated the full architecture with **fixed
+dimensionality** and no recruitment, cleanly. Therefore, invoking the Manager
+Agent's scope-reduction authority (Section 2):
+- The working regime for Phases 0–4 **freezes the active dimension count `d_t`**
+  at its target (3 for N=3 objects, 4 for N=4). The CNN backbone is already fixed
+  (Section 4.A); only the recruitment of new active channels is disabled.
+- GDASR is retained but runs in **log-only mode**: it detects *where and when* a
+  recruitment trigger would fire (sustained residual prediction error / variance
+  unexplained by the existing subspace) and **logs these growth points** as data.
+  It does not modify `d_t` or the network.
+- The growth-point logs become the **empirical input** for a properly informed
+  recruitment design in the deferred Phase 5 — at which point the cold-start
+  evaluation can be designed against real data rather than guessed.
+
+**Semantic caution (derived, advisory not absolute).**
+sml Phase 5 found that for low-DOF binary inputs, coordinate semantics
+(Magnitude, Gradient) are largely *structural* — they emerge from random
+projection through tanh, and training adds little (+0.039 cross-layer
+consistency). Hand-designed **anchoring hurt** (0.714 -> 0.700): imposed semantics
+degraded the natural geometry. Implication for this project:
+- The Spatial Specialization Gap may be **partly fundamental** (bounded by input
+  degrees of freedom), not solely a training failure.
+- Structural priors that *impose* disentanglement (e.g. micro-columns,
+  Section 8.4) must be treated as **hypotheses to test, not fixes to assume**.
+  The rule is **measure-before-impose**: characterize the naturally emergent
+  geometry first; only add structural constraints if a measured gap remains.
+- RGB+position inputs carry more DOF than binary, so training *may* play a larger
+  role here than in sml — this is exactly what Phase 0 must measure.
+
+---
+
+## 2. Research Directives and Managerial Constraints
+
+- **Novelty over replication.** Existing paradigms (JEPA, Active Inference, NGC,
+  Subsumption, Growing Neural Gas, SFA) are conceptual starting points. The aim
+  is novel intersections, not verbatim rebuilds.
+- **Scientific rigor.** The Manager Agent suppresses hyperbolic language and
+  rejects results that overstate evidence. Claims are falsifiable and stated
+  relative to baselines (Section 5).
+- **Active scope management.** The Manager Agent is authorized to reduce scope
+  when a sub-problem threatens the whole project. **This authority has already
+  been exercised** for dynamic recruitment (M3): fixed dimensionality first,
+  growth-points logged.
+- **Incremental validation.** Planners decompose into isolated proofs and minimal
+  experiments before integration. Each mandate (M1–M3) carries forward a
+  *validated* result; re-deriving it from scratch is not required, but the
+  objective migration (Phase 0) must re-confirm non-collapse on the existing CNN
+  before building upward.
+
+---
+
+## 3. Test Environment: 1D Physics Sandbox
+
+- **State space:** 1D array of 128 RGB pixels.
+- **Entities:** 3 distinct objects (varying sizes, colors, gradient edges) under
+  physical laws (mass, velocity, elastic collision).
+- **Agent interaction:** 1D pointer with left/right acceleration and a "push"
+  action.
+- **Environmental variation (mandatory):** object counts, sizes, shapes, colors,
+  masses, and physics parameters are continuously varied. A static regime is
+  forbidden — it is the primary defense against dark-room collapse (Pillar B)
+  and the basis of the generalization metrics (Section 6).
+- **Input format (tested variant, Phase 0):** each pixel `i` in `[0,127]` may carry
+  `[R_i, G_i, B_i, pos_i]`, where `pos_i` is a normalized or sinusoidal position
+  encoding. Whether the explicit position channel narrows the Spatial
+  Specialization Gap is a Phase 0 measurement, not an assumption (semantic
+  caution, Section 1.1).
+
+---
+
+## 4. Architectural Pillars (revised under M1–M3)
+
+### A. Existing CNN Backbone, Frozen Dimensionality (was: dynamic node merging)
+
+The actual production encoder (`NonParametricJEPASpatial` in
+`models_dual_stream.py`) is retained unchanged:
+
+```
+Input:   (B, 3, 128)     RGB pixels (or (B, 4, 128) / (B, 7, 128) with pos-encoding)
+conv1:   Conv1d(C ->  16, k=5, s=2)   -> (B,  16, 64)
+conv2:   Conv1d(16 ->  32, k=5, s=2)  -> (B,  32, 32)
+conv3:   Conv1d(32 ->  64, k=5, s=2)  -> (B,  64, 16)
+conv4:   Conv1d(64 -> 128, k=5, s=2)  -> (B, 128,  8)
+conv_sp: Conv1d(128 -> d_max=8, k=1)  -> (B, d_max, 8)  -> interpolate -> (B, d_max, 128)
+heads:   soft-argmax over space -> z_coord (B, d_max)   [where / position]
+         mean over space        -> z_dyn   (B, d_max)   [what / identity]
+```
+
+- `d_max = 8` latent channels maximum; `d_t` active channels (2 -> 3 -> 4 via
+  recruitment historically). A "dimension" is an active latent channel, **not** a
+  hierarchical merge.
+- **Under M3, `d_t` is frozen** at the target (3 for N=3, 4 for N=4); GDASR
+  recruitment is disabled. The CNN itself is already fixed.
+- **GDASR runs in log-only mode** (M3): it computes the residual / EMA-error
+  signals that *would* trigger recruitment and logs them, without changing `d_t`.
+- The soft-argmax centroid head is **Arm F**, the non-parametric spatial readout
+  used for the centroid-decoding-MSE metric.
+- *Deferred (Phase 6, Section 8):* the contracting hierarchical pyramid
+  (`128x3 -> 32x8 -> 8x16 -> 2x32`) with similarity-driven node merging. This was
+  specified in prior planning but **never implemented**; it is a future
+  architecture, not the Phase 0 backbone.
+
+### B. Local SFA Representation + Surprise Readout (was: JEPA energy)
+
+Two cleanly separated signals (this is the core M2 change):
+
+1. **Representation objective (shapes the latent space):**
+   Local Slow Feature Analysis on the **`z_dyn` (identity) stream** under pooled
+   VICReg, applied to the active `d_t` channels:
+   `L_repr = ||z_dyn(t) - z_dyn(t-1)||^2 + lambda_var * VICReg_var(z_dyn) + lambda_cov * VICReg_cov(z_dyn)`
+   computed over the batch (the existing batch-level VICReg form, M1). The variance
+   term (target std >= 1) prevents the trivial constant solution; without it SFA
+   collapses. Start from the existing hyperparameters (`lambda = 25`) and sweep.
+   **`z_coord` is NOT slowed** — position legitimately changes as objects move and
+   is read out via the soft-argmax head (Arm F). Applying slowness to `z_coord`
+   would suppress tracking (M2).
+
+2. **Surprise / saliency readout (does NOT shape the representation):**
+   A lightweight next-latent predictor reads out of the (stop-gradient) SFA
+   representation; its prediction error is the **surprise** signal driving
+   attention (Pillar D) and motor (Pillar E) only. The stop-gradient is safe here
+   because SFA+VICReg already grounds the representation — this is the key
+   distinction from the failed DSDT decoupling (M2, Iter 010), where the decoupled
+   stream had no objective and collapsed.
+
+**Anti-dark-room:** mandatory environmental variation (Section 3). Planners
+decide whether an additional explicit epistemic-value term is warranted and
+justify it; default is to rely on variation + the surprise readout first.
+
+### C. Temporal Modeling
+
+Prediction operates in time. The existing predictor already consumes an `H=3`
+history `(z_{t-2}, z_{t-1}, z_t)` — structurally the same three-slot temporal
+context that sml validated (P2-D), where it beat locally-trained recurrent and
+feedback variants without explicit memory cells. Keep the `H=3` predictor as the
+saliency readout (Pillar B.2). The sml lesson that transfers is at the objective
+level: temporal context of three slots is sufficient; no recurrent state is
+needed. Note sml refuted *zero-shot* spatial->temporal weight transfer but
+validated *jointly trained* shared weights — relevant only if a future variant
+shares an encoder across both axes.
+
+### D. Thalamic Gating: Attention and Plasticity (dual-control)
+
+This pillar maps onto the M2 signal separation. The **Surprise Detector** already
+exists inside `CLTSMotorController` (`motor.py`); the **Categorizer** is the
+recruitment logic (now log-only, M3):
+
+- **Surprise Detector (fast, every step, all active channels):** per-channel
+  surprise `s_c = MSE(z_pred_coord_c, z_target_coord_c) + MSE(z_pred_dyn_c,
+  z_target_dyn_c)`, z-score normalized via an **online EMA mean/std per channel**
+  (`mu`, `sigma`, `ema_alpha=0.05`). The Attention Token routes to
+  `argmax(norm_surprise)` with a **15-step attention cooldown**. Does not modify
+  weights. (This is the existing implementation — keep it.)
+- **Categorizer (slow, attended locus only):** the GDASR growth-point logic
+  (log-only under M3) and, when recruitment is re-enabled (Phase 5), the
+  consistency-buffer acceptance test (MDL-style cross-scenario variance
+  reduction). Modifies structure only at the attended locus.
+- **Normalization:** the per-channel z-score above is the working scheme for the
+  flat backbone (all channels share one scale, so no cross-scale issue arises).
+  True cross-scale normalization becomes mandatory only if the hierarchical
+  pyramid (8.6) is built.
+- **Inter-layer coupling stability:** the per-channel EMA + attention cooldown +
+  the frozen-`d_t` regime (M3, which removes recruitment churn) are the current
+  stabilizers. Revisit only if a deeper hierarchy reintroduces drift.
+
+**Interaction with M2 (watch this):** the surprise above sums `z_coord` and
+`z_dyn` prediction error. Under M2, SFA makes `z_dyn` slow and therefore
+*easy to predict*, so `err_dyn` shrinks and the surprise signal becomes
+**`z_coord`-dominated** — i.e. attention/motor will increasingly track *positional
+unpredictability* (e.g. post-collision motion) rather than appearance change. This
+is plausibly desirable, but it is a behavioral shift the Phase 2 evaluation must
+measure, not assume.
+
+### E. Epistemic Motor Control (Subsumption / CLTS)
+
+Retained as Arm G (`CLTSMotorController`). Motor output is hierarchical:
+- *Reflexive (low):* PD tracking of the attended centroid (`Kp=2.0, Kd=0.5`).
+- *Predictive (mid):* velocity matching to the target's motion (`Kv=0.5`).
+- *Deliberate (high):* a push perturbation, currently triggered when the
+  attended channel's surprise exceeds `mu + sigma` **and** the pointer is within
+  `|error| <= 6.0` of the target — i.e. "probe the surprising object once reached."
+  Note the older `SubsumptionMotorController` triggered push on *boredom* (low
+  error + low ΔE) instead — the Schmidhuber artificial-curiosity framing. Which
+  trigger serves causal-sensitivity better (probe-when-surprised vs.
+  probe-when-bored) is an open comparison for Phase 3, not settled.
+
+Motor coupling is introduced **progressively**: decoupled random/fixed
+exploration early (the `ablation="random"` path exists), attached once a stable
+representation is detected. Arm F (soft-argmax centroid) remains the `z_coord`
+position readout and the centroid-MSE evaluation metric.
+
+---
+
+## 5. Mandatory Comparison Baselines
+
+Every architectural claim is validated against at least two baselines on the same
+environment:
+
+- **B1 — Standard JEPA** (fixed dimensionality, no gating, no motor). Per M2, B1
+  also serves as the **causal-probe arm**: the one regime where JEPA's
+  transition-prediction may beat SFA must be measured here.
+- **B2 — Predictive Coding (NGC-style)** of comparable parameter count.
+- **B3 (optional) — vanilla CNN + MSE pixel reconstruction.** Note: sml showed
+  Reconstruction+VICReg is strong (83%); if B3 is run, it must include pooled
+  VICReg to be a fair upper-bound reference rather than a strawman.
+
+The Manager Agent rejects performance claims not stated relative to these.
+
+---
+
+## 6. Evaluation Metrics
+
+- **Non-collapse check (gate for every trained model):** use the existing
+  `has_collapsed` criterion in `evaluate_branch` (`e_a_dim >= 0.1*e_a_all` and
+  `std_x_mean > 5.0`), augmented with the per-dimension std of the batch
+  representation staying clear of zero. A collapsed model is reported as failed,
+  not tuned silently.
+- **Sample efficiency** vs. baselines on identical environments.
+- **Generalization:** train with N=3 objects, introduce a 4th unseen object;
+  measure prediction accuracy on the novel object and (in log-only mode) whether
+  a growth point is logged at the right time.
+- **Causal sensitivity:** alter a hidden parameter (e.g. mass); measure whether
+  predictions adapt — probing genuine representation vs. spurious correlation.
+  This is the primary battleground for the JEPA-vs-SFA comparison (M2).
+- **Spatial specialization:** centroid decoding MSE via Arm F (Phase-12 reference
+  points: CLTS 85.85, WUP-MDL clean 57.34). Report whether explicit position
+  encoding (Section 3) narrows the gap.
+- **Compute / memory profile:** parameter count, FLOPs/step, and — in log-only
+  mode — the *count and timing* of logged growth points over training.
+- **Plasticity-token traces:** which layer holds the token over time; does a
+  curriculum emerge (lower layers stabilize before higher)?
+
+---
+
+## 7. Phased Implementation Scope
+
+**Phase 0 — Objective Migration and Non-Collapse Re-confirmation (bridge phase).**
+- On the **existing** `NonParametricJEPASpatial` CNN (Section 4.A), switch the
+  representation objective from JEPA to **SFA on `z_dyn` + batch VICReg**
+  (Pillar B), with `d_t` frozen at 3 (N=3) and GDASR in log-only mode.
+- Keep Arm F (soft-argmax) as the `z_coord` position readout unchanged.
+- **Gate:** representation must not collapse (Section 6 non-collapse check, which
+  already exists as `has_collapsed` in `evaluate_branch`) and must reach a
+  centroid-decoding MSE at least comparable to the JEPA baseline Arm P (~55.6).
+- Also run RGB-only vs. RGB+position (the `pos_encoding` already in the encoder)
+  as a measured comparison (semantic caution) — recall Iter 013 found position
+  encoding *hurt* under JEPA; re-test under SFA.
+- Deliverable: confirmation that SFA+VICReg trains the existing CNN without
+  collapse, plus a first characterization of whether SFA on `z_dyn` separates
+  identity from position (the Spatial-Gap hypothesis, M2).
+- The sml `P3-C` node may optionally be run as an alternative-encoder comparison
+  arm, but is **not** required and is not the default backbone.
+
+**Phase 1 — Frozen-Dim Representation Base (Pillars A, B, C; passive observation).**
+- No motor action. Validate non-collapsing SFA representation, log-only GDASR
+  growth points, sample efficiency vs. B1/B2.
+- Run the JEPA-vs-SFA causal-sensitivity comparison (M2) — this is where the
+  decision to demote JEPA gets empirically tested, not just assumed.
+
+**Phase 2 — Thalamic Gating (Pillar D).**
+- Add Detector/Categorizer dual-control, token routing, per-layer plasticity
+  gating, cross-scale normalization, inter-layer stability.
+- Start with externally primed attention queries; measure the transition to
+  self-generated queries (output-as-input loop).
+
+**Phase 3 — Motor and Closed Loop (Pillar E, CLTS).**
+- Attach progressive subsumption motor; measure curiosity-driven exploration vs.
+  random baseline; run the full causal-sensitivity battery.
+
+**Phase 4 — Generalization and Reporting.**
+- Full metric battery (Section 6) against all baselines; honest reporting of
+  failure modes and negative results.
+
+**Phase 5 — (DEFERRED) Reactivate Dynamic Recruitment.**
+- Using the Phase 0–4 growth-point logs as data, design a recruitment-evaluation
+  scheme that avoids the cold-start trilemma (Iter 016–018). Candidate directions
+  the trilemma analysis left open: warm-start predictors (eliminate Phase-A
+  transient by construction), Phase-B-only trend gating, pre-trained proposal
+  evaluators, or Bayesian model comparison. Only enter this phase once the
+  fixed-dim foundation is solid.
+
+**Phase 6 — (DEFERRED) Extensions, each gated on measure-before-impose.**
+See Section 8.
+
+---
+
+## 8. Deferred Extensions (preserved; gated)
+
+Each is retained from prior planning but sequenced after the validated
+foundation, and each carries the semantic-caution guardrail (Section 1.1):
+characterize the emergent baseline before adding the structural prior.
+
+**8.1 RGB + explicit position encoding.** Linear, sinusoidal, or learnable
+position channels. Already pulled forward into Phase 0 as a measured comparison.
+
+**8.2 Gaze direction / foveated attention.** A gaze pointer controlling a
+foveated receptive field (full resolution at fixation, downsampled periphery),
+making the externally-primed -> self-generated attention transition operational.
+Subsumption extension: reflexive saccade (low), smooth pursuit (mid), deliberate
+gaze shifts (high). Metrics: fixation stability, saccade efficiency, information
+gain under reduced bandwidth.
+
+**8.3 Graph topology of layer-nodes.** Replace the linear stack with a DAG:
+lateral connections within a level, top-down predictive-coding projections,
+surprise-modulated edges, skip connections. Initialize as the linear chain
+(backward compatible), recruit/prune edges by information contribution, cap
+fan-in (e.g. K=4), keep the forward pass acyclic (recurrence via t-1 delay).
+Motivated by Iter 004 (tracking lag) and Iter 010 (DSDT semantic blindness).
+
+**8.4 Micro-columns (treat as hypothesis, not fix).** Lightweight sub-networks
+per node specializing on color/texture, motion/velocity, position, each with its
+own surprise signal. **Caution (Section 1.1):** sml showed imposed anchoring
+degraded natural geometry. Micro-columns must be validated against the measured
+emergent baseline; if the monolithic layer already separates these aspects
+naturally, the added structure is rejected. Note that **M2's SFA-on-`z_dyn` is the
+first, cheaper attempt** at the same disentanglement (slow identity vs. fast
+position); micro-columns are only justified if SFA leaves a measured gap.
+
+**8.5 Interactive demo application.** Standalone Python app (PyGame / Matplotlib
+animation / lightweight web frontend) rendering the environment, per-layer latent
+state, attention-token trace, motor output, and prediction-vs-reality overlay in
+real time (>=10 fps). Human controls: add/remove objects, change properties,
+inject noise/Noisy-TV, pause/step/resume, toggle motor modes. Inspection via
+observer hooks only — no modification of core `src/thalamus.py` / `src/motor.py`.
+
+**8.6 Contracting hierarchical pyramid (future backbone).** The
+`128x3 -> 32x8 -> 8x16 -> 2x32` schedule with similarity-driven node merging,
+specified in prior planning (old Section 13.2) but never implemented. This is the
+long-term move toward V1->IT-style spatial contraction with rising feature
+dimensionality. Deferred until the frozen-dim flat backbone + SFA foundation is
+validated; introducing it earlier would confound the M2/M3 evaluation.
+
+---
+
+## 9. Reporting Standards
+
+- All quantitative results stated with run-to-run variance or confidence
+  intervals over >=5 seeds. Single-seed results are not evidence.
+- Failure modes and dead ends are **first-class deliverables**.
+- The Manager Agent rejects "we have shown / proven / discovered" phrasing unless
+  backed by reproducible quantitative evidence against the Section 5 baselines.
+- Where a result reproduces or contradicts an `rdf_thalamus_sml` finding, the
+  report states which and why — cross-project consistency is itself evidence.
+
+
+## All Iterations (overview)
+[ungrouped]
+  iter | status          | hypothesis
+  -----|-----------------|----------
+  002  | ok              | phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
+  003  | ok              | phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
+  004  | ok              | phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
+  005  | ok              | phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
+  006  | ok              | phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
+  007  | ok              | phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
+  008  | ok              | phase-8: evaluate unsupervised spatial bottlenecks and closed-loop output-as-input active probing
+  009  | ok              | phase-9: evaluate surprise-modulated adaptive bottleneck curriculum (DSMC) + rate-limiter stability
+  010  | ok              | phase-10: evaluation of DSDT dual-stream decoupling under active probing
+  011  | ok              | phase-11: audit the plasticity-adaptability conflict in Arm E and validate the non-parametric soft-argmax projection in Arm F
+  013  | ok              | phase-13: evaluate explicit input-level positional encodings under CLTS active control
+  014  | ok              | phase-14: evaluate Contrastive Coordinate Regularization (CCR) on the non-parametric soft-argmax bottleneck
+  015  | ok              | phase-15: evaluate surprise-adaptive covariance weights and structural dual control
+  016  | ok              | phase-16: resolve cold-start pathology in Dual Control via Probationary Warm-Up Period (WUP) and compare PVU vs MDL gating
+  020  | code_error      | strategy_error
+  020  | ok              | phase-021: CGIR partially improves semantic disentanglement (+0.124 shift) but fails the 0.10 threshold; spatial-mean is a contributing factor, not the primary cause
+  023  | ok              | phase-23: SFA weight sweep falsified — SFA gradient propagates but slowness does not produce identity encoding; C5 is structurally impossible due to z_coord metric artifact
+  024  | ok              | phase-24: Multi-step SFA (k=20,50,100) and temporal contrastive (NT-Xent) both fail to produce identity encoding; M2 definitively refuted across all slowness formulations
+  025  | experiment_failed| phase-25: corrected v2 ceiling probe is underpowered (30% control collapse); supervised probe worse than control; d_max=16 capacity effect confirmed as measured
+  026  | experiment_failed| phase-26: collapse-rate sweep produces measured null — no single-knob regime variation reduces z_dyn collapse below 10%
+  029  | ok              | phase-29: SFA+VICReg on separate backbone shows directional trend (ΔR²_color 0.27 vs 0.04) but fails pre-registered F1 gate (0.27 < 0.30); M2 mandate not supported by evidence
+
+[Thalamus] COMPLETED  (iter 012–021, 4 iterations)
+  The Thalamus project successfully designed, simulated, and evaluated a novel neural architecture that achieves hierarchical abstraction without generative decoders. Across 12 phases, we established non-parametric spatial bottlenecks (Arm F), developed an adaptive surprise-modulated thalamic gating mechanism (DSMC), and validated closed-loop thalamic subsumption motorics (CLTS) under active parameter shifts, showing massive gains in adaptation efficiency and spatial exploration.
+  → read_campaign("Thalamus") to see all iterations
+
+[collapse-elimination] active
+  iter | status          | hypothesis
+  -----|-----------------|----------
+  027  | ok              | phase-27: separate backbone is NOT the primary cause of z_dyn collapse (SECOND NULL); sim_loss_dyn is the causal driver (B-vs-C comparison, 30% vs 0%); VICReg-only z_dyn eliminates collapse and improves semantic encoding
+  028  | ok              | phase-28: mask_dyn_sim on shared backbone does NOT eliminate z_dyn collapse (F1 falsified); hard-seed pattern (seeds 53, 71) identified; separate-backbone architecture is load-bearing
+
+## Current State
+# Current Research State
+Phase: SFA+VICReg on separate backbone fails F1 gate; M2 mandate not supported
+
+## Goal
+Achieve a training regime where the NonParametricJEPASpatial encoder collapses on ≤10% of seeds over ≥10 seeds. Ultimately: build a decoder-free, curiosity-driven representation agent.
+
+## Confirmed (iter_029, agents 29.1 + 29.2)
+- SFA+VICReg (sfa_weight=5.0) on separate backbone shows ΔR²_color=0.2749, FAILS the
+  pre-registered F1 gate (0.30 threshold). The directional trend (6.2× over VICReg-only)
+  is present but not robust.
+- ZERO COLLAPSE across all 60 runs (3 arms × 20 seeds, union bank). SFA does not
+  destabilize the separate-backbone architecture (F2 PASS).
+- Centroid MSE is identical between SFA and VICReg-only (159.85 vs 159.83, F3 PASS).
+  SFA does not degrade spatial readout.
+- FRESH SEEDS: Arm B ΔR²_color = 0.3576 (above 0.30 threshold)
+- ORIGINAL SEEDS: Arm B ΔR²_color = 0.1921 (below 0.30 threshold)
+- HARD SEEDS 53, 71: Do not collapse under any arm, but show poor ΔR²_color
+  under Arm B (seed 53: -0.0484, seed 71: 0.0413). Higher SFA weight HURTS
+  hard seeds compared to conservative weight (1.0).
+- CONSERVATIVE ARM C (sfa=1.0): ΔR²_color=0.1428, centroid_mse=167.13. Lower
+  SFA weight produces weaker identity trend but better hard-seed behavior.
+- COORD VICREG FIX: All arms now use coord_vicreg=True, eliminating the
+  confound from iter_027 where SFA mode zeroed coord-stream VICReg.
+- SFA LOSS IS ACTIVE: Mean final sfa_loss = 0.1408 (Arm B), confirming the
+  slowness objective is optimized during training.
+
+## Confirmed (prior iterations, still valid)
+- SHARED BACKBONE: SFA falsified on shared backbone (iter_023-024), across all
+  slowness formulations (single-step, multi-step, temporal contrastive)
+- SEPARATE BACKBONE + VICReg-ONLY: 0% collapse (iter_027 Arm C)
+- SEPARATE BACKBONE IS LOAD-BEARING: mask_dyn_sim alone on shared backbone
+  insufficient (20% collapse on hard seeds, iter_028)
+- SIM_LOSS_DYN IS THE COLLAPSE DRIVER (iter_027 Arm B vs C comparison)
+
+## Refuted
+- HYPOTHESIS (pre-registered): SFA+VICReg on separate backbone achieves ΔR²_color ≥ 0.30.
+  FALSIFIED by Arm B mean ΔR²_color = 0.2749 (iter_029)
+- M2 MANDATE (goal document): "SFA+VICReg as the primary representation objective."
+  Not supported by evidence across either architecture.
+
+## Best Result
+- Arm B on fresh seeds only: ΔR²_color=0.3576, 0% collapse — but seed-dependent
+- VICReg-only on separate backbone: 0% collapse across all tested seed banks (iter_027, 029)
+- Centroid MSE ~160 across all arms (moderate; Phase-12 reference: CLTS 85.85, WUP-MDL clean 57.34)
+
+## NOT Established
+- Whether the SFA trend (0.27 vs 0.04) would reach significance with more seeds
+- Whether reconstruction+VICReg would perform better on this architecture
+- Whether the low ΔR²_color (0.04 for VICReg-only) indicates the representation
+  is too weak for downstream tasks (attention, motor)
+- Whether a higher sfa_weight (25.0+) would produce stronger effects or just
+  more variance
+
+## In Progress
+- None. iter_029 complete.
+
+## Open Questions (ordered by expected value)
+1. Should M2 be revised from "SFA+VICReg as primary" to "VICReg-only as primary, SFA as optional auxiliary"? This is the central architectural decision.
+2. Can the separate-backbone + VICReg-only architecture (0% collapse, but ΔR²_color=0.04) serve as the stable foundation for Phase 1 (passive observation), or is the identity encoding too weak?
+3. Would reconstruction+VICReg (sml: 83% accuracy) work on the separate-backbone architecture, and would it require accepting a lightweight decoder (breaking the decoder-free principle)?
+4. Is ΔR²_color the right metric? Many seeds show negative values (z_dyn encodes color WORSE than z_coord), suggesting the stream design may need fundamental revision.
+5. Why do fresh seeds show much better ΔR²_color under SFA? Is this a training dynamics difference or a seed-distribution artifact?
+6. Should the project accept that identity encoding in z_dyn is weak under all decoder-free objectives tested so far, and pivot to evaluating whether this matters for downstream tasks?
+7. Can a higher sfa_weight (25.0) or a different SFA formulation (e.g., SFA on concatenated [z_coord, z_dyn]) produce a stronger effect?
+
+
+## Recent Log (last 3 entries)
+```yaml
+cached_tokens: 604934
+campaign: collapse-elimination
+cost_usd: 4.06951
+hypothesis: 'phase-27: separate backbone is NOT the primary cause of z_dyn collapse
+  (SECOND NULL); sim_loss_dyn is the causal driver (B-vs-C comparison, 30% vs 0%);
+  VICReg-only z_dyn eliminates collapse and improves semantic encoding'
+input_tokens: 2247864
+iter: 27
+metrics:
+  arm_C_passes_gate: true
+  collapse_rate_A_shared_mean_readout: 0.4
+  collapse_rate_B_separate_jepa_vicreg: 0.3
+  collapse_rate_C_separate_vicreg_only: 0.0
+  collapse_rate_aprime_shared_centroid_gated: 0.3
+  delta_r2_color_arm_A: 0.1469
+  delta_r2_color_arm_C: 0.1812
+  mean_abs_corr_arm_B: 0.407
+  mean_abs_corr_arm_C: 0.21
+  params_A: 80336
+  params_B: 135608
+  params_C: 135608
+  params_aprime: 81368
+  pre_registered_outcome: SECOND_NULL
+  total_runs: 40
+output_tokens: 81992
+status: ok
+```
+
+## iter_027: phase-27: separate backbone is NOT the primary cause of z_dyn collapse (SECOND NULL); sim_loss_dyn is the causal driver (B-vs-C comparison, 30% vs 0%); VICReg-only z_dyn eliminates collapse and improves semantic encoding
+
+**Analysis:** The pre-registered hypothesis was that the shared CNN backbone causes z_dyn
+collapse due to gradient competition between z_coord's JEPA loss and z_dyn's
+VICReg loss. Arm B (separate backbone, full JEPA+VICReg) was designed to test
+this: if C_sep ≤ 10%, the hypothesis is supported.
+
+Arm B collapsed at 30% — NO improvement over shared backbone (30-40%). The
+shared backbone is NOT the primary cause. 
+
+**Status:** ok
+
+**Metrics:** `{'total_runs': 40, 'collapse_rate_aprime_shared_centroid_gated': 0.3, 'collapse_rate_A_shared_mean_readout': 0.4, 'collapse_rate_B_separate_jepa_vicreg': 0.3, 'collapse_rate_C_separate_vicreg_only': 0.0, 'params_aprime': 81368, 'params_A': 80336, 'params_B': 135608, 'params_C': 135608, 'delta_r2_color_arm_C': 0.1812, 'delta_r2_color_arm_A': 0.1469, 'mean_abs_corr_arm_C': 0.21, 'mean_abs_corr_arm_B': 0.407, 'pre_registered_outcome': 'SECOND_NULL', 'arm_C_passes_gate': True}`
+
+**Experimenter view:** All 40 runs completed (4 arms × 10 seeds, 8000 steps each). No early termination.
+
+PRE-REGISTERED OUTCOME: SECOND NULL. Arm B (separate backbone, JEPA+VICReg)
+collapsed at 30% (≥20% threshold), so the shared backbone is NOT the primary
+structural cause of collapse. Project pivots per Manager instruction.
+
+CRITICAL UNANTICIPATED FINDING: Arm C (separate backbone, mask_dyn_sim=True /
+VICReg-only on 
+
+**Notes:** Second Null confirmed for Arm B. Arm C breakthrough: sim_loss_dyn identified as collapse driver.
+
+
+---
+```yaml
+cached_tokens: 1589278
+campaign: collapse-elimination
+cost_usd: 2.57627
+hypothesis: 'phase-28: mask_dyn_sim on shared backbone does NOT eliminate z_dyn collapse
+  (F1 falsified); hard-seed pattern (seeds 53, 71) identified; separate-backbone architecture
+  is load-bearing'
+input_tokens: 2686770
+iter: 28
+metrics:
+  c1_collapse_rate_primary: 0.2
+  c1_delta_r2_color: 0.231
+  c1_mean_abs_corr: 0.521
+  c2_collapse_rate_primary: 0.0
+  c2_delta_r2_color: 0.514
+  c2_mean_abs_corr: 0.435
+  c3_collapse_rate_primary: 0.2
+  c3_delta_r2_color: 0.168
+  c3_mean_abs_corr: 0.474
+  collapsed_seeds_C1:
+  - 53
+  - 71
+  collapsed_seeds_C3:
+  - 53
+  - 71
+  collapsed_seeds_D0:
+  - 17
+  - 53
+  - 83
+  d0_collapse_rate_primary: 0.3
+  d0_delta_r2_color: 0.054
+  d0_mean_abs_corr: 0.999
+  existing_resumed: 13
+  f1_outcome: FALSIFIED
+  f2_outcome: NOT_TRIGGERED
+  f3_outcome: NOT_ROBUST
+  h2_relative_gate: PASS
+  new_completed: 27
+  param_count: 80336
+  timeouts: 0
+  total_seeds: 40
+output_tokens: 45579
+status: ok
+```
+
+## iter_028: phase-28: mask_dyn_sim on shared backbone does NOT eliminate z_dyn collapse (F1 falsified); hard-seed pattern (seeds 53, 71) identified; separate-backbone architecture is load-bearing
+
+**Analysis:** This phase completed the pre-registered iter_028 experiment: a 4-arm × 10-seed
+matrix testing whether mask_dyn_sim alone (on the shared backbone) prevents
+z_dyn collapse. The experiment was a direct continuation of iter_027, which
+identified sim_loss_dyn as the collapse driver on the separate backbone but
+could not isolate the loss-adjustment effect from the architecture effect.
+
+Sub-agent 28.1 mo
+
+**Status:** ok
+
+**Metrics:** `{'total_seeds': 40, 'existing_resumed': 13, 'new_completed': 27, 'timeouts': 0, 'd0_collapse_rate_primary': 0.3, 'c1_collapse_rate_primary': 0.2, 'c2_collapse_rate_primary': 0.0, 'c3_collapse_rate_primary': 0.2, 'd0_mean_abs_corr': 0.999, 'c1_mean_abs_corr': 0.521, 'c2_mean_abs_corr': 0.435, 'c3_mean_abs_corr': 0.474, 'd0_delta_r2_color': 0.054, 'c1_delta_r2_color': 0.231, 'c2_delta_r2_color': 0.514, 'c3_delta_r2_color': 0.168, 'h2_relative_gate': 'PASS', 'f1_outcome': 'FALSIFIED', 'f2_outcome': 'NOT_TRIGGERED', 'f3_outcome': 'NOT_ROBUST', 'param_count': 80336, 'collapsed_seeds_C1': [53, 71], 'collapsed_seeds_D0': [17, 53, 83], 'collapsed_seeds_C3': [53, 71]}`
+
+**Experimenter view:** The iter_028 experiment completed all 40 seeds (13 resumed + 27 new) with zero
+timeouts across all arms. Results are fully interpretable.
+
+PRE-REGISTERED OUTCOME: F1 FALSIFIED. C1 (shared backbone, mask_dyn_sim=True)
+showed 20% collapse (2/10: seeds 53 and 71), which exceeds the ≤10% gate
+threshold. The post-forward loss subtraction of sim_loss_dyn does not by itself
+prevent z_dyn collapse on the 
+
+**Notes:** F1 falsified; mask_dyn_sim on shared backbone insufficient. Hard-seed pattern identified. C2 at 0% reveals seed-dependence.
+
+
+---
+```yaml
+cached_tokens: 548611
+cost_usd: 5.03612
+hypothesis: 'phase-29: SFA+VICReg on separate backbone shows directional trend (ΔR²_color
+  0.27 vs 0.04) but fails pre-registered F1 gate (0.27 < 0.30); M2 mandate not supported
+  by evidence'
+input_tokens: 3012206
+iter: 29
+metrics:
+  arm_a_centroid_mse_mean: 159.83
+  arm_a_collapse_rate: 0.0
+  arm_a_delta_r2_color_mean: 0.0445
+  arm_a_delta_r2_color_std: 0.2108
+  arm_b_centroid_mse_mean: 159.85
+  arm_b_collapse_rate: 0.0
+  arm_b_delta_r2_color_mean: 0.2749
+  arm_b_delta_r2_color_std: 0.5772
+  arm_b_final_sfa_loss_mean: 0.1408
+  arm_b_fresh_seeds_delta_r2: 0.3576
+  arm_b_original_seeds_delta_r2: 0.1921
+  arm_c_centroid_mse_mean: 167.13
+  arm_c_collapse_rate: 0.0
+  arm_c_delta_r2_color_mean: 0.1428
+  arm_c_delta_r2_color_std: 0.2634
+  arm_c_final_sfa_loss_mean: 0.2052
+  completed_runs: 60
+  f1_gate_delta_r2_color: FAIL (0.2749 < 0.30)
+  f2_gate_collapse_rate: PASS (0.0 <= 0.10)
+  f3_gate_centroid_mse: PASS (159.85 <= 241.88)
+  failed_runs: 0
+  hard_seed_53_arm_b_delta_r2: -0.0484
+  hard_seed_71_arm_b_delta_r2: 0.0413
+  pre_registered_outcome: FALSIFIED
+  total_runs: 60
+output_tokens: 63487
+status: ok
+```
+
+## iter_029: phase-29: SFA+VICReg on separate backbone shows directional trend (ΔR²_color 0.27 vs 0.04) but fails pre-registered F1 gate (0.27 < 0.30); M2 mandate not supported by evidence
+
+**Analysis:** This phase tested whether adding an explicit SFA slowness term to the VICReg-only
+z_dyn objective on the separate-backbone architecture would improve identity encoding
+(ΔR²_color) above a practical-significance threshold of 0.30. The experiment was
+designed with three Manager-mandated structural fixes: (1) union seed bank including
+hard seeds 53 and 71, (2) coord_vicreg=True to eliminate the confo
+
+**Status:** ok
+
+**Metrics:** `{'total_runs': 60, 'completed_runs': 60, 'failed_runs': 0, 'arm_a_collapse_rate': 0.0, 'arm_a_delta_r2_color_mean': 0.0445, 'arm_a_delta_r2_color_std': 0.2108, 'arm_a_centroid_mse_mean': 159.83, 'arm_b_collapse_rate': 0.0, 'arm_b_delta_r2_color_mean': 0.2749, 'arm_b_delta_r2_color_std': 0.5772, 'arm_b_centroid_mse_mean': 159.85, 'arm_b_final_sfa_loss_mean': 0.1408, 'arm_c_collapse_rate': 0.0, 'arm_c_delta_r2_color_mean': 0.1428, 'arm_c_delta_r2_color_std': 0.2634, 'arm_c_centroid_mse_mean': 167.13, 'arm_c_final_sfa_loss_mean': 0.2052, 'f1_gate_delta_r2_color': 'FAIL (0.2749 < 0.30)', 'f2_gate_collapse_rate': 'PASS (0.0 <= 0.10)', 'f3_gate_centroid_mse': 'PASS (159.85 <= 241.88)', 'hard_seed_53_arm_b_delta_r2': -0.0484, 'hard_seed_71_arm_b_delta_r2': 0.0413, 'arm_b_fresh_seeds_delta_r2': 0.3576, 'arm_b_original_seeds_delta_r2': 0.1921, 'pre_registered_outcome': 'FALSIFIED'}`
+
+**Experimenter view:** The iter_029 experiment completed all 60 runs (3 arms × 20 seeds, union bank)
+with zero failures and zero timeouts.
+
+PRE-REGISTERED OUTCOME: F1 FALSIFIED. Arm B (SFA+VICReg, sfa_weight=5.0)
+mean ΔR²_color = 0.2749, narrowly missing the pre-registered 0.30 practical-
+significance threshold. The hypothesis that SFA+VICReg is consistent with M2's
+predicted mechanism for improving identity encoding is
+
+**Notes:** F1 falsified: ΔR²_color=0.2749<0.30; F2/F3 passed. Zero collapse across all 60 runs. Trend present but not robust.
+
+
+
+## Decompose and Execute
+Plan and execute the next research phase. Break it into sub-tasks:
+- run_agent(complexity='planner') — for sub-goals requiring multi-step analysis (the inner Planner can itself spawn sub-agents)
+- run_agent(complexity='medium'/'high') — for bounded, direct experiments
+Run sub-tasks sequentially. Each result informs the next. Synthesise all results into your final YAML report.
+
+## Research Manager Pre-Planning Hints
+Before you start planning this iteration, the Research Manager reviewed the previous iteration's RESEARCH-RESULT and produced these directional hints:
+
+# Manager's Pre-Planning Hints — Iteration 030
+
+**Hint 1 (directional, top priority — reframe before sweeping more objectives).** The user's reframing is correct and binds: ten iterations have optimized ΔR²_color ≥ 0.30 as a proxy whose necessity for the actual project goal (curiosity-driven agent with thalamic gating + motor) was never validated. The next iteration's **Arm 1 must be an integration smoke-test**, not another representation sweep. Freeze the best current representation (separate-backbone iter_027-ArmC topology, d_max=16, d_t=3, on non-hard seeds at ΔR²_color ≈ 0.25–0.27 and 0% collapse) and run it through Pillars D + E (CLTSMotorController attention routing + motor probing). Pre-declare a concrete behavioral pass/fail before running: e.g. centroid tracking error below an explicit threshold, post-collision probe latency, and a mass-change causal-sensitivity delta against a frozen-attention control. If downstream behavior is acceptable at ΔR² ≈ 0.25, the 0.30 threshold was a distraction and the project advances to Phase 2/3 integration; if it genuinely degrades, the objective hunt is justified and Arm 2 (contrastive vs. variance-ramped SFA, per the journal's iter_030 plan) earns the next slot.
+
+**Hint 2 (scientific discipline — guard against the proxy-metric trap and the construction caveat).** Arm 1 is itself a falsifiable claim ("ΔR² ≈ 0.25 representations are sufficient for downstream gating/motor") and must be pre-registered as such, with the integration test's behavioral thresholds declared **before** the freeze-and-run, not chosen post-hoc to validate whichever direction the data points. Equally important: the construction-vs-empirical caveat applies here too — do not report "the agent tracks" or "the agent probes" as evidence unless those behaviors are measured against a frozen-random-attention control on the *same* environment seeds, since reflexive PD tracking will produce a low centroid error even with a useless representation. The same variance-stability discipline iter_029 established applies: ≥5 seeds, report σ alongside mean, and flag hard seeds 53/71 separately rather than averaging them away.
+
+**Hint 3 (scope and preservation — keep Arm 2 in scope but subordinated).** If iter_030 runs both arms, Arm 1 (integration) is decisive and Arm 2 (contrastive D3 vs. variance-ramped SFA D2 on the union seed bank with hard seeds) is contingent — its result only matters if Arm 1 says identity encoding genuinely bottlenecks downstream behavior. Preserve: separate backbone + the iter_028 collapse-avoiding config (both interventions required for 0% collapse), d_t=3 frozen with GDASR log-only (M3), pooled batch VICReg (M1), buffer=4000, no positional encoding (consistently hurts across JEPA *and* SFA — iter_013 and iter_021 are now a cross-objective regularity, not a single-iteration finding). Whatever the verdict, the iteration's report must explicitly state whether M2 in goal.md remains, is salvaged via a variance-ramp protocol, is replaced by contrastive identity binding, or is **demoted to "not a bottleneck for the project goal"** — that mandate-level decision is the iteration's deliverable, not another delta on the proxy.
+
+## Approved Research Plan for this Iteration
+You previously proposed this plan during the planning phase:
+```yaml
+falsification_criterion: "ARM 1 falsified if ≤1 of 3 gates pass, meaning the current\
+  \ representation does not\nsupport meaningful downstream behavior and further objective\
+  \ optimization is justified.\nSpecifically:\n  G1 falsified: CLTS mean tracking\
+  \ error ≥ 20 pixels (centroid readout is too noisy\n    for functional tracking)\n\
+  \  G2 falsified: CLTS collision-switching rate ≤ CLTS-Random + 15pp (surprise signal\n\
+  \    is not informative for attention routing)\n  G3 falsified: CLTS post-perturbation\
+  \ attention switch ≤ CLTS-Random + 15pp\n    (representation does not support causal\
+  \ probing after mass change)\n\nARM 2 D1 falsified: mean ΔR²_color < 0.30 OR std/mean\
+  \ ≥ 2.0 on the 30-seed bank\nARM 2 D2 falsified: mean ΔR²_color < 0.30 OR std/mean\
+  \ ≥ 2.0 on the 30-seed bank\nBoth D1 and D2 falsified: the ΔR²_color ≥ 0.30 target\
+  \ is unachievable by any\ndecoder-free objective tested; the project accepts the\
+  \ current representation quality\nper ARM 1's verdict.\n"
+hypothesis: "ARM 1 (Integration Smoke-Test): A representation with ΔR²_color ≈ 0.27\
+  \ (SFA+VICReg\non separate backbone, 0% collapse, iter_029 Arm B) produces CLTS\
+  \ motor behavior\nthat is functionally adequate for Pillar D (thalamic gating) and\
+  \ Pillar E (motor\nprobing). Specifically, three pre-registered gates will be tested:\n\
+  \  G1 (Tracking Functionality): CLTS mean |pointer_pos - attended_centroid| < 20\
+  \ pixels\n    over a 2000-step closed-loop evaluation, demonstrating that the z_coord\
+  \ centroid\n    readout supports functional PD tracking.\n  G2 (Attention Validity):\
+  \ CLTS surprise-driven attention switches to the collision-\n    involved channel\
+  \ within 15 steps after a detected collision in >50% of events,\n    while CLTS-Random\
+  \ (uniform random attention selection) switches to the collision\n    channel in\
+  \ <35% of events (chance baseline for 3 objects). A difference >15pp\n    confirms\
+  \ the surprise signal is informative.\n  G3 (Causal Sensitivity): After a forced-probe\
+  \ mass perturbation (mass×3 + push on\n    object 0 at step 1000), CLTS attention\
+  \ switches to object 0's channel within\n    20 steps in >60% of perturbation events,\
+  \ while CLTS-Random does so in <33%.\n    A difference >15pp confirms the representation\
+  \ supports causal probing.\nIf ≥2 of 3 gates pass, the representation is sufficient\
+  \ for downstream tasks and the\nproject advances to Phase 2/3 integration without\
+  \ further objective optimization.\nIf 0-1 gates pass, the representation is insufficient\
+  \ and the objective hunt is\njustified.\n\nARM 2 (M2 Decisive Test): Temporal identity\
+  \ contrastive binding (D1) or variance-\nramped SFA (D2) achieves mean ΔR²_color\
+  \ ≥ 0.30 on a 30-seed union bank with\nvariance-stability (std/mean < 2.0). D1 uses\
+  \ same-object-across-time as positive\npairs and other-objects-as-negatives in an\
+  \ NT-Xent loss; D2 anneals sfa_weight\nfrom 0 to 5.0 over the first 4000 training\
+  \ steps. If D1 passes, M2 is revised to\n\"contrastive identity binding as primary\"\
+  \ (slowness underspecifies identity). If D2\npasses, M2 is revised to \"variance-ramped\
+  \ SFA as primary.\" If neither passes, the\nΔR²_color proxy is acknowledged as unachievable\
+  \ by any tested decoder-free objective\nand ARM 1's verdict governs the project\
+  \ direction.\n"
+pre_registration_file: src/pre_registration.md
+proposed_method: "ARM 1 (Integration Smoke-Test — highest priority, runs first):\n\
+  1. Load pre-trained SFA+VICReg checkpoints from iter_029 Arm B (10 seeds: 7, 17,\
+  \ 31,\n   83, 97, 113, 127, 149 + hard seeds 53, 71 reported separately).\n2. For\
+  \ each seed, run two 2000-step closed-loop evaluations:\n   a. CLTS: CLTSMotorController\
+  \ with surprise-driven attention + PD tracking +\n      push-when-surprised-and-near\
+  \ (existing probe-when-surprised logic)\n   b. CLTS-Rand: Same controller but token_locus\
+  \ selected uniformly at random\n      from d_t channels (replacing argmax of normalized\
+  \ surprise), keeping PD\n      tracking and push logic identical — controls for\
+  \ reflexive PD tracking\n3. Warm-up: first 200 steps with CLTS but no attention\
+  \ switching (fixed locus 0)\n   to let EMA surprise statistics converge; metrics\
+  \ start at step 200.\n4. Collision detection: at each step, compare object velocities\
+  \ before/after; flag\n   collision if |delta_v| > 2.0 for any pair of adjacent objects.\
+  \ Record whether\n   CLTS attention switches to a collision-involved channel within\
+  \ 15 steps.\n5. Mass perturbation: at step 1000, change object-0 mass to 3× current;\
+  \ immediately\n   force pointer near object 0 (set pointer_pos = object_0_pos ±\
+  \ 5) and push.\n   Measure whether attention switches to object 0's channel within\
+  \ 20 steps.\n6. Compute gate metrics and paired comparison (CLTS vs CLTS-Rand per\
+  \ seed).\n7. Decision: ≥2/3 gates pass → representation sufficient → project advances.\n\
+  \nFiles: src/run_phase0_integration.py (NEW)\n\nARM 2 (M2 Decisive Test — contingent\
+  \ on ARM 1):\n1. Expand union seed bank to 30 seeds (original 10 + fresh 10 + new:\
+  \ 173, 179,\n   181, 191, 193, 197, 199, 211, 223, 227).\n2. D1 (Temporal Identity\
+  \ Contrastive):\n   - New loss: NT-Xent where same-object-at-consecutive-timesteps\
+  \ = positive pair,\n     different-objects = negatives.\n   - Implementation: encode\
+  \ x_target and x_hist[:,-1] to get z_coord_t, z_dyn_t,\n     z_coord_{t-1}, z_dyn_{t-1}.\
+  \ Sort z_coord and positions to match channels to\n     objects (sorted matching,\
+  \ O(d_t log d_t) on GPU). For each object, z_dyn at\n     the matched channel at\
+  \ time t and t-1 form a positive pair; z_dyn from other\n     objects at t-1 are\
+  \ negatives. Uses existing id_contrastive_proj projection head.\n   - Loss computed\
+  \ in training loop (not in model forward), added to total loss with\n     weight\
+  \ temporal_contrastive_weight=5.0.\n   - Architecture: NonParametricJEPASpatialSeparateDyn,\
+  \ primary_objective=\"sfa\",\n     mask_dyn_sim=True, coord_vicreg=True, sfa_weight=0\
+  \ (SFA disabled; replaced\n     by temporal contrastive). d_t=3, d_max=8.\n3. D2\
+  \ (Variance-Ramped SFA):\n   - Same architecture as D1 but primary_objective=\"\
+  sfa\" with sfa_weight\n     linearly ramped from 0 to 5.0 over steps 0-4000, then\
+  \ constant at 5.0.\n   - Ramping prevents early-training SFA instability (gradient\
+  \ conflict with\n     VICReg variance term during representation bootstrapping).\n\
+  4. Train 2 arms × 30 seeds for 8000 steps each (separate backbone, mask_dyn_sim=True,\n\
+  \   coord_vicreg=True, d_t=3, d_max=8, buffer=4000, batch_size=32, lr=3e-4).\n5.\
+  \ Evaluate: ΔR²_color, collapse rate, centroid MSE (same protocol as iter_029).\n\
+  6. Gate: mean ΔR²_color ≥ 0.30 AND variance-stability std/mean < 2.0.\n7. Decision:\
+  \ D1 passes → M2 revised to contrastive identity binding; D2 passes →\n   M2 revised\
+  \ to variance-ramped SFA; neither passes → proxy acknowledged as\n   unachievable,\
+  \ ARM 1's verdict governs.\n\nFiles: src/run_phase0_m2_decisive.py (NEW)\n\nPRESERVE\
+  \ across both arms:\n- Separate backbone + collapse-avoiding config (mask_dyn_sim=True,\
+  \ coord_vicreg=True)\n- d_t=3 frozen, GDASR log-only (M3)\n- Pooled batch VICReg\
+  \ (M1)\n- No positional encoding (cross-objective regularity from iter_013 and iter_021)\n\
+  - Hard seeds 53/71 reported separately, not averaged away\n- Report σ alongside\
+  \ mean for all metrics (≥5 seeds minimum per condition)\n"
+
+```
+
+## Strategic Research Manager's Notes
+# Manager's Note — Iteration 030 (Plan Critique)
+
+**Endorsed direction, with three load-bearing corrections.** The two-arm structure (integration smoke-test first, M2 disambiguation second) correctly implements the reframe. But the Arm 1 protocol as drafted has a confound that would make any positive verdict uninterpretable, and Arm 2 quietly inflates statistical power. Fix these before pre-registration is committed.
+
+**1 (Arm 1 — kill the confound, or the smoke-test proves nothing).** Loading checkpoints *only* from iter_029 Arm B (SFA+VICReg) means Arm 1 cannot answer the question it was designed to ask. If the gates pass, you do not know whether the representation needed ΔR²≈0.27 or whether ΔR²≈0.04 (VICReg-only) would have sufficed — and the user hint's decision rule ("if downstream performs acceptably at dR2~0.25 then the 0.30 threshold was a distraction") requires a *contrast* against a weaker representation. **Mandatory addition:** a third frozen condition, **CLTS on VICReg-only z_dyn checkpoints** (iter_027 Arm C / iter_029 Arm A, ΔR²≈0.04–0.18, same seeds). The gate hierarchy then becomes informative: (a) both SFA-B and VICReg-only pass → identity decodability does not bottleneck downstream behavior, M2 demoted; (b) SFA-B passes, VICReg-only fails → identity encoding *does* matter and the 0.30 search is justified; (c) neither passes → representation truly insufficient; (d) VICReg-only passes but SFA-B doesn't → something else is going on, investigate. Without this contrast, Arm 1 is a one-armed test of "does any frozen model do anything," not the decision the user asked for.
+
+**2 (Arm 1 — gates G2/G3 are partly constructional; tighten the controls).** The "+15pp over CLTS-Random" bar treats random attention selection as the only baseline, but random attention on a controller that still does PD tracking and collision-correlated push has known structural advantages from the motor side — e.g. the pointer drifts toward whichever channel it's currently attending, which after a collision is more likely to be near a moving object regardless of representation quality. Two specific fixes: (a) Add a **frozen-attention control** (token_locus held at channel 0 throughout) alongside CLTS-Random — this isolates the contribution of *switching* from the contribution of *tracking*; G2/G3 must beat **both** baselines by 15pp, not just random. (b) The 15-step / 20-step / >50% / >60% / 15pp thresholds are currently unjustified numbers — state explicitly what each threshold corresponds to in expected events per seed and what the binomial null distribution looks like for n_seeds=10, or the "≥2 of 3 gates" rule is just three independent coin flips with unknown p. Without that, a 2/3 pass is not evidence — it is one favorable noise realization.
+
+**3 (Arm 2 — variance-stability gate and language hygiene).** The `std/mean < 2.0` criterion is too lax for the stated context: iter_029 Arm B had σ=0.577 over a mean of 0.27, i.e. std/mean ≈ 2.1, which would **almost pass** under the proposed gate. That re-admits exactly the instability the journal already flagged as disqualifying. Replace with the journal's prior, tighter formulation: **lower bound of the 95% CI must also exceed 0.18** (the iter_027 Arm C anchor). This is a meaningful gate; std/mean<2.0 is not. Separately, the plan's hypothesis text contains "demonstrating that the z_coord centroid readout supports functional PD tracking" — restate as "consistent with functional PD tracking" or "does not refute"; PD tracking will produce *some* low error regardless of representation, so "demonstrating" overclaims (and is exactly the construction-vs-empirical trap point 2 above is meant to catch).
+
+**Pre-registration mandate (process reminder).** The Orchestrator will automatically write `src/pre_registration.md` from the hypothesis and falsification fields above and commit it before execution; the Planner's sub-agents MUST read it and adhere strictly. The plan as currently drafted is **not yet allowed to proceed to execution** — the three corrections above must be incorporated into the pre-registered hypothesis and falsification criteria first. Specifically: Arm 1's frozen conditions must list all three (SFA-B / VICReg-only / frozen-attention), Arm 1's gate text must specify the "beat both baselines by 15pp" rule with a stated event-count null, and Arm 2's variance gate must read "lower 95% CI ≥ 0.18" not "std/mean < 2.0". After those edits, the plan is approvable.
+
+## User Hint
+Reframe the immediate priority before testing more representation objectives: the project has spent ~10 iterations (iter_020-029) optimizing a single proxy metric (delta_R2_color >= 0.30, linear identity decodability from z_dyn) that was never validated as NECESSARY for the actual end goal (curiosity-driven agent with thalamic gating + motor, goal.md Section 1) - it emerged only as a diagnostic of the Spatial Specialization Gap. ARM 1 (highest priority, NOT yet run, an integration smoke-test): take the best current representation FROZEN (separate-backbone iter_027-ArmC topology, d_max=16, d_t=3 frozen, using either the SFA+VICReg config from iter_029-ArmB or mask_dyn_sim, on non-hard seeds where dR2_color ~0.25-0.27 and collapse=0%) and run it through Pillar D + E (CLTSMotorController attention-token routing and motor probing); measure whether downstream behavior is sensible - centroid tracking error, post-collision probing, and causal sensitivity to a changed hidden parameter (mass); DECISION RULE: if downstream performs acceptably at dR2~0.25 then the 0.30 threshold was a distraction and the project ADVANCES to full Phase 2/3 integration instead of polishing the representation further; if downstream genuinely degrades because identity encoding is too weak, the objective hunt is justified and Arm 2 proceeds. ARM 2 (the M2 decisive test, as planned): compare contrastive identity binding (same object across time = same code, other objects = negatives) against weight-annealed/variance-ramped SFA on the SAME union seed bank (n>=30 including hard seeds 53/71); if contrastive reliably clears dR2 >= 0.30 and SFA does not, M2 is the wrong organizing prior and must be replaced by contrastive identity binding in goal.md (slowness underspecifies identity - it admits any slow non-degenerate representation, not necessarily an identity-encoding one); if neither clears it the metric/task is the problem and Arm 1's verdict governs; if both clear it either suffices. HYGIENE: report a VARIANCE-STABILITY gate alongside the mean (iter_029 sigma=0.577 means no single-seed result is interpretable - a usable objective must be reliable across seeds, not merely high-mean), and characterize the hard-seed failure mode (53/71 collapse under every objective tried so far, likely an init-basin issue) but do NOT let it block progress. PRESERVE: separate backbone + the collapse-avoiding config from iter_028 (both interventions are needed for 0% collapse), d_t=3 frozen with GDASR log-only (M3); do NOT re-introduce positional encoding (it hurts under both JEPA and SFA - a cross-objective regularity from iter_013 and iter_021).
