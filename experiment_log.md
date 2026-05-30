@@ -1,43 +1,6 @@
 
 ---
 ```yaml
-cached_tokens: 815942
-cost_usd: 0.52873
-hypothesis: 'phase-2: evaluate representation base and identify triggers for GDASR
-  failure and representation collapse'
-input_tokens: 1117195
-iter: 2
-metrics:
-  b1_large_mean_abs_corr: 0.89865
-  b1_large_mean_test_sim_loss: 0.07697
-  b1_mean_abs_corr: 0.9996
-  b1_mean_test_sim_loss: 0.06662
-  dynamic_mean_abs_corr: 0.9996
-  dynamic_mean_test_sim_loss: 0.06662
-  dynamic_recruitment_rate: 0.0
-  representation_collapse_rate: 1.0
-output_tokens: 7829
-status: ok
-```
-
-## iter_002: phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
-
-**Analysis:** Phase 2 (Thalamus Phase 1 integration and evaluation) successfully completed. The implementation of the 1D physics sandbox, JEPA architectures, and the GDASR dynamic recruitment mechanism was thoroughly validated through integration tests (2.1) before running the full 15-experiment evaluation suite (2.3). 
-The empirical findings cleanly falsified our pre-registered hypotheses. Rather than a failur
-
-**Status:** ok
-
-**Metrics:** `{'b1_mean_test_sim_loss': 0.06662, 'b1_large_mean_test_sim_loss': 0.07697, 'dynamic_mean_test_sim_loss': 0.06662, 'dynamic_recruitment_rate': 0.0, 'b1_mean_abs_corr': 0.9996, 'b1_large_mean_abs_corr': 0.89865, 'dynamic_mean_abs_corr': 0.9996, 'representation_collapse_rate': 1.0}`
-
-**Experimenter view:** The Phase 1 evaluation of Thalamus successfully executed 15 experiments (3 models x 5 seeds) under strict deterministic conditions.
-All three pre-registered hypotheses were falsified:
-1. The dynamic model (GDASR) failed to recruit a 3rd dimension in any run (recruitment rate = 0.0). This was caused by threshold inflation: the historical error buffer included high errors from the early random initi
-
-**Notes:** All 15 experiments successfully completed; hypotheses were cleanly falsified due to error-threshold inflation and representation collapse.
-
-
----
-```yaml
 cached_tokens: 778778
 cost_usd: 0.52208
 hypothesis: 'phase-3: representation base stabilized; 100% unassisted dimension recruitment
@@ -1481,4 +1444,52 @@ collapse. E2 (K=4) collapsed 100% (20/20 seeds), E3 (K=4) collapsed 100%
 (mean-pool) maintained 0% collapse — th
 
 **Notes:** Centroid-gated readout causes 100% collapse. Branch (b) hard-pivot triggered.
+
+
+---
+```yaml
+cached_tokens: 1677062
+cost_usd: 5.74085
+hypothesis: 'phase-33: Branch (c) confirmed — the behavioral-pivot protocol (N=2,
+  post-collision selectivity V-B, CLTSMotorController) does not discriminate perception
+  quality; ORACLE ≈ RANDOM (gap 0.0001); motor protocol is the bottleneck, not representation'
+input_tokens: 4024584
+iter: 33
+metrics:
+  branch_c_fired: true
+  oracle_random_gap: 0.0001
+  ordering_sanity_check: true
+  total_runs: 48
+  v3_learned_sfa_selectivity_vb: 0.4993
+  v3_learned_sfa_surprise_coord_mean: 3.32
+  v3_learned_sfa_tracking_error: 45.71
+  v3_learned_vicreg_selectivity_vb: 0.4708
+  v3_learned_vicreg_surprise_coord_mean: 1.3
+  v3_learned_vicreg_tracking_error: 33.26
+  v3_oracle_selectivity_vb: 0.5044
+  v3_oracle_surprise_coord_mean: 309.51
+  v3_oracle_tracking_error: 58.08
+  v3_random_selectivity_vb: 0.5043
+  v3_random_surprise_coord_mean: 4106.98
+  v3_random_tracking_error: 32.86
+output_tokens: 216500
+status: ok
+```
+
+## iter_033: phase-33: Branch (c) confirmed — the behavioral-pivot protocol (N=2, post-collision selectivity V-B, CLTSMotorController) does not discriminate perception quality; ORACLE ≈ RANDOM (gap 0.0001); motor protocol is the bottleneck, not representation
+
+**Analysis:** This phase executed the pre-registered three-condition oracle bracket experiment to determine whether the learned representation limits surprise-driven behavior (branch b), is sufficient for it (branch a), or whether the task/protocol itself is the bottleneck (branch c).
+
+The ORACLE predictor required three iterations to get right:
+1. v1 had a timing bug + linear extrapolation → surprise ~146k, OR
+
+**Status:** ok
+
+**Metrics:** `{'v3_random_selectivity_vb': 0.5043, 'v3_oracle_selectivity_vb': 0.5044, 'v3_learned_sfa_selectivity_vb': 0.4993, 'v3_learned_vicreg_selectivity_vb': 0.4708, 'oracle_random_gap': 0.0001, 'branch_c_fired': True, 'ordering_sanity_check': True, 'v3_oracle_surprise_coord_mean': 309.51, 'v3_random_surprise_coord_mean': 4106.98, 'v3_learned_sfa_surprise_coord_mean': 3.32, 'v3_learned_vicreg_surprise_coord_mean': 1.3, 'v3_oracle_tracking_error': 58.08, 'v3_random_tracking_error': 32.86, 'v3_learned_sfa_tracking_error': 45.71, 'v3_learned_vicreg_tracking_error': 33.26, 'total_runs': 48}`
+
+**Experimenter view:** The three-condition oracle bracket experiment (4 conditions × 12 seeds = 48 runs) was executed in three iterations due to an ORACLE predictor bug discovered during analysis.
+
+**v1 Bug:** The ORACLE predictor had a timing error where prev_positions was updated AFTER env.step(), making z_pred_coord = current_pos + current_vel (one-step-ahead) rather than a genuine prediction of the current state fro
+
+**Notes:** Branch (c) definitively confirmed across three ORACLE implementations. Motor protocol is bottleneck.
 

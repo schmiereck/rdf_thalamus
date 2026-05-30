@@ -1,51 +1,44 @@
 # Current Research State
-Phase: Branch (b) triggered — hard-pivot to behavioral evaluation
+Phase: Branch (c) confirmed — behavioral-pivot protocol invalidated
 
 ## Goal
-Achieve a training regime where the encoder collapses on ≤10% of seeds. Build a decoder-free, curiosity-driven representation agent with thalamic gating and motor. Currently: the representation quality is insufficient for ΔR²_color ≥ 0.30 regardless of objective or readout architecture; pivot to evaluating the agent on behavioral metrics directly.
+Achieve a training regime where the encoder collapses on ≤10% of seeds. Build a decoder-free, curiosity-driven representation agent with thalamic gating and motor. Currently: the behavioral-pivot strategy is invalidated because the primary metric (post-collision selectivity V-B on N=2) does not discriminate perception quality.
 
-## Confirmed (iter_032, agents 32.1 + 32.2)
-- **CENTROID-GATED READOUT CAUSES CATASTROPHIC COLLAPSE**: Cross-backbone attention coupling (using p_c from coord backbone to gate dyn backbone readout) produces 100% collapse for K=4 (both E2 and E3, 20/20 seeds each) and 10% collapse for K=1 (E1.5, 2/20 seeds). Mean-pool baseline (E1) remains 0% collapse. This is a distinct failure mode from the sim_loss_dyn driver (iter_027) or mean-pool bottleneck (iter_031).
-- **PREDICTION FALSIFIED**: The pre-registered prediction that scalar centroid-sampling (E1.5) would yield ~+0.10 partial gain was falsified. E1.5 performed WORSE than E1 (ΔR²=0.078 vs 0.131) and introduced collapse.
-- **ALL 6 GATES FAILED**: F1 (E2 ΔR²≥0.30 on non-collapsed): FAIL (all collapsed). F2 (lower CI≥0.18): FAIL. F3 (collapse≤10%): FAIL (max=1.0). F4 (E2−E1≥0.10): FAIL (-0.015). F5 (E2−E1.5≥0.10): FAIL (0.038). F6: 0.021 (informational only).
-- **BRANCH (b) TRIGGERED**: Third convergent signal received → hard-pivot to behavioral evaluation.
-- **NOVEL COLLAPSE MECHANISM**: Peaked softmax attention from the coord backbone creates an optimization bottleneck in the dyn backbone — only attended spatial positions receive strong VICReg gradient, leading to degenerate convergence with per_dim_std ~0.3-0.6.
+## Confirmed (iter_033, agents 33.5 + 33.6)
+- **BRANCH (c) FIRED (definitive, v3 full-physics ORACLE):** ORACLE selectivity_vb = 0.5044, RANDOM = 0.5043, gap = 0.0001 (< 0.10 threshold). Perfect perception with a near-perfect physics predictor does NOT improve post-collision attention selectivity over random locus selection.
+- **ORACLE PREDICTOR BUG (v1/v2):** The original linear-extrapolation ORACLE predictor had (a) a timing bug where prev_positions was set from current info rather than saved before the step, and (b) cannot model wall bounces or elastic collisions, producing surprise ~146k-164k vs ~1-3 for LEARNED. Fixed in v3 with a full physics simulator.
+- **METRIC CEILING FOR N=2:** With 2 objects, every collision involves both objects, so random attention has ~50% chance of matching the max-velocity-change object. The metric's random baseline IS its ceiling.
+- **ORACLE TRACKING PARADOX:** ORACLE has HIGHER tracking error (58.08 px) than LEARNED-VICReg (33.26 px), despite perfect perception. The surprise distribution mismatch (clean zero between collisions for ORACLE vs. noisy baseline for LEARNED) causes different EMA calibration and attention switching.
+- **VICReg PERTURBATION SELECTIVITY:** LEARNED-VICReg has the best perturbation selectivity (0.6075 vs 0.4308 for ORACLE, 0.4658 for RANDOM), suggesting noisy perception can provide useful behavioral signals for this secondary metric.
+- **SFA STABILITY:** LEARNED-SFA has the most stable selectivity across seeds (std=0.011 vs 0.131 for VICReg, 0.068 for RANDOM, 0.015 for ORACLE).
 
 ## Confirmed (prior iterations, still valid)
 - ΔR²_color ≥ 0.30 NOT achieved by ANY objective or architecture tested (iter_020-032)
 - Best ΔR²_color = 0.275 (iter_029 Arm B, SFA+VICReg sfa=5.0, separate backbone)
-- VICReg-only mean-pool = ΔR²≈0.045, 0% collapse (iter_029 Arm A)
-- Reconstruction+VICReg mean-pool = ΔR²=0.063 (iter_031) — even supervised reconstruction fails through mean-pool
 - Mean-pooling z_dyn readout is a structural bottleneck for identity encoding (iter_031)
-- Cross-backbone attention coupling is ALSO a structural bottleneck — introduces collapse (iter_032)
+- Cross-backbone attention coupling causes collapse (iter_032)
 - SIM_LOSS_DYN IS THE COLLAPSE DRIVER (iter_027); SEPARATE BACKBONE IS LOAD-BEARING (iter_028)
 
 ## Refuted
-- Hypothesis that centroid-gated readout would fix the spatial bottleneck: FALSIFIED (iter_032) — it causes collapse instead
-- Hypothesis that scalar centroid-sampling would yield partial ~+0.10 gain: FALSIFIED (iter_032, E1.5 ΔR²=0.078 < E1 ΔR²=0.131)
-- M2 MANDATE (goal document): "SFA+VICReg as primary representation objective." Comprehensively falsified iter_023-030.
-- Reconstruction+VICReg as ceiling for identity encoding via mean-readout: falsified at ΔR²=0.063 (iter_031)
+- M2 MANDATE: comprehensively falsified iter_023-030
+- Behavioral-pivot strategy with current protocol: INVALIDATED by branch (c) (iter_033)
+- Reconstruction+VICReg ceiling for identity encoding via mean-readout: falsified (iter_031)
+- Centroid-gated readout: FALSIFIED — causes collapse (iter_032)
 
 ## Best Available Representations
 - **Stable baseline**: VICReg-only, mean-pool, separate backbone (ΔR²≈0.045, 0% collapse)
-- **Strongest identity**: SFA+VICReg sfa_weight=5.0, mean-pool, separate backbone (ΔR²≈0.275, 0% collapse, iter_029 Arm B)
-- Centroid MSE ~160 across all arms (moderate; Phase-12 reference: CLTS 85.85, WUP-MDL 57.34)
+- **Strongest identity**: SFA+VICReg sfa_weight=5.0, mean-pool, separate backbone (ΔR²≈0.275, 0% collapse)
 
-## In Progress
-- None. iter_032 complete. Branch (b) triggered.
-
-## Next: Behavioral Pivot Protocol (iter_033, pre-registered)
-Per the iter_032 pre-registration Section 6, the behavioral-pivot protocol uses:
-- G1 — Tracking: surprise-driven mean tracking error ≤ 0.75 × random baseline (38.75px → threshold = 29.06px)
-- G2 — Collision selectivity: surprise-driven ≥ random × 1.5 (ratio) OR surprise-driven − random ≥ 0.20 (absolute Δ)
-- G3 — Perturbation selectivity: surprise-driven ≥ random baseline + 0.10 (absolute)
-- Environment: N=2 collision-sparse, calibrated in iter_031 Part B
-- Representation: best available from iter_029 (SFA+VICReg sfa=5.0)
+## Next Steps
+The behavioral-pivot protocol must be redesigned before another attempt. Options:
+1. Increase N to 3+ objects so collisions don't involve all objects
+2. Change primary metric (time-to-attend, surprise-ratio, or tracking-error differential)
+3. Shorten attention cooldown (15→5 steps) to allow faster attention switching
+4. Use a different environment or protocol entirely
 
 ## Open Questions
-1. Which representation should the behavioral pivot use? SFA+VICReg (ΔR²≈0.275) or VICReg-only (ΔR²≈0.045)?
-2. Can the behavioral gates (G1-G3) pass with any existing representation?
-3. Is the cross-backbone attention collapse inherent to all gating mechanisms, or specific to softmax-gated einsum?
-4. Could gradient scaling or warm-up stabilize the centroid-gated readout?
-5. Should the project revise its architecture away from the separate-backbone design toward something that natively supports per-object feature extraction?
-6. Does increasing spatial resolution (8→16+) help either readout approach?
+1. Can a redesigned behavioral metric discriminate perception quality?
+2. Is the CLTSMotorController's 15-step attention cooldown appropriate?
+3. Why does ORACLE have worse tracking error than LEARNED-VICReg?
+4. Does noisy perception provide useful behavioral signals (perturbation selectivity)?
+5. Should the project redesign the motor protocol or try a different environment (N=3)?
