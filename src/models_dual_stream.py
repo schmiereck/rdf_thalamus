@@ -719,7 +719,8 @@ class NonParametricEncoder(nn.Module):
 class NonParametricJEPASpatial(nn.Module):
     def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100, pos_encoding="none",
                  primary_objective="jepa", sfa_weight=25.0, gdasr_log_only=True, dyn_readout="mean",
-                 sub_features=1, dyn_source="spatial", contrastive_weight=25.0, temperature=0.1):
+                 sub_features=1, dyn_source="spatial", contrastive_weight=25.0, temperature=0.1,
+                 coord_vicreg=True):
         super().__init__()
         self.d_max = d_max
         self.h = h
@@ -735,6 +736,7 @@ class NonParametricJEPASpatial(nn.Module):
         self.dyn_source = dyn_source
         self.contrastive_weight = contrastive_weight
         self.temperature = temperature
+        self.coord_vicreg = coord_vicreg
         
         self.encoder = NonParametricEncoder(
             d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout,
@@ -813,12 +815,20 @@ class NonParametricJEPASpatial(nn.Module):
                 return (off_diag ** 2).sum() / d
 
             var_loss_dyn = calc_var_loss(z_target_dyn_active)
-            var_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
-            var_loss = var_loss_dyn
+            if self.coord_vicreg:
+                z_target_coord_active = z_target_coord[:, :self.d_t]
+                var_loss_coord = calc_var_loss(z_target_coord_active)
+            else:
+                var_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            var_loss = var_loss_dyn + var_loss_coord
 
             cov_loss_dyn = calc_cov_loss(z_target_dyn_active)
-            cov_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
-            cov_loss = cov_loss_dyn
+            if self.coord_vicreg:
+                z_target_coord_active_cov = z_target_coord[:, :self.d_t]
+                cov_loss_coord = calc_cov_loss(z_target_coord_active_cov)
+            else:
+                cov_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            cov_loss = cov_loss_dyn + cov_loss_coord
 
             # JEPA readout with stop-gradient
             z_target_sfa_dyn = z_target_dyn_active.detach()
@@ -1287,7 +1297,8 @@ class NonParametricJEPASpatial(nn.Module):
             sub_features=self.sub_features,
             dyn_source=self.dyn_source,
             contrastive_weight=self.contrastive_weight,
-            temperature=self.temperature
+            temperature=self.temperature,
+            coord_vicreg=self.coord_vicreg
         )
         cloned.d_t = self.d_t
         cloned.load_state_dict(self.state_dict())

@@ -130,7 +130,7 @@ class NonParametricJEPASpatialSeparateDyn(NonParametricJEPASpatial):
                  pos_encoding="none", primary_objective="jepa", sfa_weight=25.0,
                  gdasr_log_only=True, dyn_readout="mean", sub_features=1,
                  dyn_source="spatial", contrastive_weight=25.0, temperature=0.1,
-                 mask_dyn_sim=False):
+                 mask_dyn_sim=False, coord_vicreg=True):
         # Call grandparent (nn.Module) init to avoid creating the default encoder
         # We need to manually set up everything that NonParametricJEPASpatial sets up
         nn.Module.__init__(self)
@@ -149,6 +149,7 @@ class NonParametricJEPASpatialSeparateDyn(NonParametricJEPASpatial):
         self.contrastive_weight = contrastive_weight
         self.temperature = temperature
         self.mask_dyn_sim = mask_dyn_sim
+        self.coord_vicreg = coord_vicreg
 
         # Use SeparateDynEncoder instead of NonParametricEncoder
         self.encoder = SeparateDynEncoder(
@@ -228,6 +229,7 @@ class NonParametricJEPASpatialSeparateDyn(NonParametricJEPASpatial):
             contrastive_weight=self.contrastive_weight,
             temperature=self.temperature,
             mask_dyn_sim=self.mask_dyn_sim,
+            coord_vicreg=self.coord_vicreg
         )
         cloned.d_t = self.d_t
         cloned.load_state_dict(self.state_dict())
