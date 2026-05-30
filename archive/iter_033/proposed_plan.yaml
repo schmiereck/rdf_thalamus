@@ -1,0 +1,111 @@
+falsification_criterion: 'F1 FAIL: g <= 0.20 — the learned representation accounts
+  for less than 20% of the
+
+  oracle-random gap, meaning the representation PROVABLY limits behavior and
+
+  constraint-relaxation (decoder, higher d_t, or the VICReg-upstream-of-gate fix
+
+  for the iter_032 cross-backbone collapse) is justified.
+
+
+  Additionally, if branch (c) fires — (ORACLE - RANDOM) is itself small (|difference|
+  < 0.10
+
+  on primary metric) — the task or motor protocol is the bottleneck, NOT perception,
+
+  and the behavioral-pivot strategy itself is invalidated for this protocol/environment.
+
+
+  The lower 95% CI of g (bootstrapped across seeds) must be reported; if it excludes
+
+  the boundary between adjacent branches, the branch assignment is confident; if not,
+
+  both branches are reported as possible.
+
+  '
+hypothesis: 'The best available mean-pool representation (SFA+VICReg sfa_weight=5.0,
+  separate backbone,
+
+  ΔR²≈0.275, 0% collapse, iter_029 Arm B) supports functional surprise-driven behavior
+
+  that accounts for at least 20% of the gap between random (lower bound) and oracle
+
+  (perfect-perception upper bound) baselines, as measured by post-collision attention
+
+  selectivity on N=2 collision-sparse environments. Specifically, the normalized gap
+
+  g = (LEARNED - RANDOM) / (ORACLE - RANDOM) on post-collision attention selectivity
+
+  (version B: attended object matches max-velocity-change object) will be > 0.20,
+
+  with the four-branch decision rule determining project direction.
+
+  '
+pre_registration_file: src/pre_registration.md
+proposed_method: "## Three-Condition Oracle Bracket Experiment\n\n### Conditions (all\
+  \ sharing identical environment, seed bank, and CLTSMotorController logic)\n\n1.\
+  \ **RANDOM (lower bound):** CLTSMotorController with random token_locus selection\n\
+  \   each step (no encoder, no prediction). The controller's attention_cooldown is\n\
+  \   set to 0 so locus is re-randomized every step, and all surprise EMA values are\n\
+  \   zeroed to prevent any learned structure from influencing behavior.\n\n2. **LEARNED\
+  \ (test condition):** Load iter_029 Arm B checkpoints (SFA+VICReg,\n   sfa_weight=5.0,\
+  \ separate backbone, mean-pool readout, d_max=8, d_t=3 trained).\n   Evaluate with\
+  \ d_t=2 (first 2 channels active for N=2 objects). Run encoder +\n   predictor forward\
+  \ pass, feed z_pred_coord, z_target_coord, z_pred_dyn,\n   z_target_dyn to the standard\
+  \ CLTSMotorController.get_action().\n\n3. **ORACLE (upper bound):** Feed ground-truth\
+  \ positions (info['positions'][:d_t])\n   as z_coord, ground-truth mean-color (np.mean(info['colors'][:d_t],\
+  \ axis=1))\n   as z_dyn, linear-extrapolation predicted positions (prev_pos + prev_vel\
+  \ * dt)\n   as z_pred_coord, and z_dyn as z_pred_dyn (identity is constant). Feed\
+  \ these\n   tensors to the SAME CLTSMotorController.get_action() method — identical\n\
+  \   surprise computation (per-channel MSE + EMA normalization + attention cooldown),\n\
+  \   identical PD tracking, identical push logic.\n\n### Environment\nPhysicsSandbox(N=2)\
+  \ — collision-sparse by design. Mass perturbation at step 1000:\nmultiply object\
+  \ 0's mass by 1.5× (same as iter_031 Part B). 2000 evaluation steps\nper seed.\n\
+  \n### Seed Bank\n12 seeds: [7, 17, 31, 53, 71, 83, 97, 101, 107, 113, 137, 163]\n\
+  Includes hard seeds 53 and 71 (mandated by user/manager).\n\n### Primary Behavioral\
+  \ Metric\nPost-collision attention selectivity (version B): for each collision event,\n\
+  within POST_COLLISION_WINDOW=15 steps after the collision, the fraction of steps\n\
+  where the attended object (token_locus mapped to object index via closest-centroid)\n\
+  matches the max-velocity-change object. This is the same metric as iter_031 Part\
+  \ B,\ndirectly calibrating the 0.59-vs-0.44 signal.\n\n### Secondary Metrics (reported\
+  \ but do NOT drive the gate)\n- Mean tracking error (pointer position vs attended\
+  \ centroid, in pixels)\n- Perturbation selectivity (fraction of steps 1000-1099\
+  \ where attended object = object 0)\n\n### Decision Rule (PRE-COMMITTED, VERBATIM\
+  \ from manager/user)\ng = (LEARNED_primary - RANDOM_primary) / (ORACLE_primary -\
+  \ RANDOM_primary)\n\n(a) g >= 0.70 AND lower bootstrapped 95% CI >= 0.50: representation\
+  \ is SUFFICIENT\n    for the behavior. ΔR²_color >= 0.30 was a distraction. Project\
+  \ ADVANCES to\n    Phase 2/3 integration on the mean-pool representation.\n\n(b)\
+  \ g <= 0.20: representation PROVABLY limits behavior. ONLY THEN is\n    constraint-relaxation\
+  \ justified (iter_034+: decoder, higher d_t, or the\n    deferred VICReg-upstream-of-gate\
+  \ fix for iter_032 cross-backbone collapse),\n    with the concrete target set by\
+  \ the measured (ORACLE - RANDOM) gap.\n\n(c) |ORACLE_primary - RANDOM_primary| <\
+  \ 0.10: the TASK or MOTOR PROTOCOL is the\n    bottleneck, NOT perception. Fix the\
+  \ protocol/environment. Do NOT touch the\n    representation. This branch invalidates\
+  \ the behavioral-pivot strategy for\n    this specific protocol.\n\n(d) 0.20 < g\
+  \ < 0.70: partial sufficiency. Advance to Phase 2/3 but flag perception\n    as\
+  \ a known secondary limiter to revisit.\n\n### Implementation Details\n\n**File:\
+  \ src/run_iter033.py** (new script)\n\n1. OraclePhysicsPredictor class: predicts\
+  \ next-step positions via linear\n   extrapolation (pos + vel * dt). Surprised at\
+  \ collisions (velocity changes)\n   but correct for constant-velocity motion. This\
+  \ is \"known dynamics\" — the\n   predictor knows about constant-velocity physics\
+  \ but is genuinely surprised\n   by collision events (which change velocities unpredictably).\n\
+  \n2. OracleController class: wraps ground-truth perception into the CLTSMotorController\n\
+  \   interface. Constructs z_coord (1, d_max) tensor from info['positions'],\n  \
+  \ z_dyn (1, d_max) from mean color values, z_pred_coord from physics predictor,\n\
+  \   z_pred_dyn = z_dyn. Calls CLTSMotorController.get_action() with these tensors.\n\
+  \   This ensures IDENTICAL motor code across all three conditions.\n\n3. For the\
+  \ RANDOM condition: uses CLTSMotorController but overrides token_locus\n   to random\
+  \ each step and zeroes all EMA statistics, so no learned surprise\n   structure\
+  \ influences behavior. Equivalent to the \"random\" condition from\n   iter_031\
+  \ Part B.\n\n4. For the LEARNED condition: loads iter_029 Arm B checkpoints\n  \
+  \ (archive/iter_029/results/checkpoints/b_sfavicreg,_sfa_5.0_seed{N}.pt),\n   sets\
+  \ d_t=2 for evaluation, runs standard encoder+predictor forward pass,\n   feeds\
+  \ outputs to CLTSMotorController.\n\n5. Collision detection: same as iter_031 Part\
+  \ B (COLLISION_DIST_THRESHOLD=4.0,\n   COLLISION_VELOCITY_CHANGE_THRESHOLD=1.0,\
+  \ POST_COLLISION_WINDOW=15).\n\n6. Channel-to-object mapping: use closest-centroid\
+  \ matching (same as iter_031).\n\n7. Bootstrap CI for g: resample seeds 10000 times,\
+  \ compute g for each resample,\n   report 95% percentile CI.\n\n### Preserved Constraints\n\
+  - Separate backbone + iter_029 config (SFA+VICReg, sfa_weight=5.0)\n- d_t=2 frozen\
+  \ for N=2 (GDASR log-only, M3)\n- Decoder-free (no reconstruction)\n- No positional\
+  \ encoding\n- M2 mandate stays \"untestable\" until constraint-relaxation phase\n\
+  - No new representation-side ΔR² gate alongside the behavioral gate\n"
