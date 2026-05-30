@@ -1,0 +1,1 @@
+Create the file `src/models_recon.py` with the ReconVICRegSeparateDyn class as described, and write a quick test script to verify it can be imported and runs a forward pass successfully. Make sure to implement the deconv decoder architecture correctly.
