@@ -1,0 +1,89 @@
+falsification_criterion: "ARM 1 falsified if ≤1 of 3 gates pass, meaning the current\
+  \ representation does not\nsupport meaningful downstream behavior and further objective\
+  \ optimization is justified.\nSpecifically:\n  G1 falsified: CLTS mean tracking\
+  \ error ≥ 20 pixels (centroid readout is too noisy\n    for functional tracking)\n\
+  \  G2 falsified: CLTS collision-switching rate ≤ CLTS-Random + 15pp (surprise signal\n\
+  \    is not informative for attention routing)\n  G3 falsified: CLTS post-perturbation\
+  \ attention switch ≤ CLTS-Random + 15pp\n    (representation does not support causal\
+  \ probing after mass change)\n\nARM 2 D1 falsified: mean ΔR²_color < 0.30 OR std/mean\
+  \ ≥ 2.0 on the 30-seed bank\nARM 2 D2 falsified: mean ΔR²_color < 0.30 OR std/mean\
+  \ ≥ 2.0 on the 30-seed bank\nBoth D1 and D2 falsified: the ΔR²_color ≥ 0.30 target\
+  \ is unachievable by any\ndecoder-free objective tested; the project accepts the\
+  \ current representation quality\nper ARM 1's verdict.\n"
+hypothesis: "ARM 1 (Integration Smoke-Test): A representation with ΔR²_color ≈ 0.27\
+  \ (SFA+VICReg\non separate backbone, 0% collapse, iter_029 Arm B) produces CLTS\
+  \ motor behavior\nthat is functionally adequate for Pillar D (thalamic gating) and\
+  \ Pillar E (motor\nprobing). Specifically, three pre-registered gates will be tested:\n\
+  \  G1 (Tracking Functionality): CLTS mean |pointer_pos - attended_centroid| < 20\
+  \ pixels\n    over a 2000-step closed-loop evaluation, demonstrating that the z_coord\
+  \ centroid\n    readout supports functional PD tracking.\n  G2 (Attention Validity):\
+  \ CLTS surprise-driven attention switches to the collision-\n    involved channel\
+  \ within 15 steps after a detected collision in >50% of events,\n    while CLTS-Random\
+  \ (uniform random attention selection) switches to the collision\n    channel in\
+  \ <35% of events (chance baseline for 3 objects). A difference >15pp\n    confirms\
+  \ the surprise signal is informative.\n  G3 (Causal Sensitivity): After a forced-probe\
+  \ mass perturbation (mass×3 + push on\n    object 0 at step 1000), CLTS attention\
+  \ switches to object 0's channel within\n    20 steps in >60% of perturbation events,\
+  \ while CLTS-Random does so in <33%.\n    A difference >15pp confirms the representation\
+  \ supports causal probing.\nIf ≥2 of 3 gates pass, the representation is sufficient\
+  \ for downstream tasks and the\nproject advances to Phase 2/3 integration without\
+  \ further objective optimization.\nIf 0-1 gates pass, the representation is insufficient\
+  \ and the objective hunt is\njustified.\n\nARM 2 (M2 Decisive Test): Temporal identity\
+  \ contrastive binding (D1) or variance-\nramped SFA (D2) achieves mean ΔR²_color\
+  \ ≥ 0.30 on a 30-seed union bank with\nvariance-stability (std/mean < 2.0). D1 uses\
+  \ same-object-across-time as positive\npairs and other-objects-as-negatives in an\
+  \ NT-Xent loss; D2 anneals sfa_weight\nfrom 0 to 5.0 over the first 4000 training\
+  \ steps. If D1 passes, M2 is revised to\n\"contrastive identity binding as primary\"\
+  \ (slowness underspecifies identity). If D2\npasses, M2 is revised to \"variance-ramped\
+  \ SFA as primary.\" If neither passes, the\nΔR²_color proxy is acknowledged as unachievable\
+  \ by any tested decoder-free objective\nand ARM 1's verdict governs the project\
+  \ direction.\n"
+pre_registration_file: src/pre_registration.md
+proposed_method: "ARM 1 (Integration Smoke-Test — highest priority, runs first):\n\
+  1. Load pre-trained SFA+VICReg checkpoints from iter_029 Arm B (10 seeds: 7, 17,\
+  \ 31,\n   83, 97, 113, 127, 149 + hard seeds 53, 71 reported separately).\n2. For\
+  \ each seed, run two 2000-step closed-loop evaluations:\n   a. CLTS: CLTSMotorController\
+  \ with surprise-driven attention + PD tracking +\n      push-when-surprised-and-near\
+  \ (existing probe-when-surprised logic)\n   b. CLTS-Rand: Same controller but token_locus\
+  \ selected uniformly at random\n      from d_t channels (replacing argmax of normalized\
+  \ surprise), keeping PD\n      tracking and push logic identical — controls for\
+  \ reflexive PD tracking\n3. Warm-up: first 200 steps with CLTS but no attention\
+  \ switching (fixed locus 0)\n   to let EMA surprise statistics converge; metrics\
+  \ start at step 200.\n4. Collision detection: at each step, compare object velocities\
+  \ before/after; flag\n   collision if |delta_v| > 2.0 for any pair of adjacent objects.\
+  \ Record whether\n   CLTS attention switches to a collision-involved channel within\
+  \ 15 steps.\n5. Mass perturbation: at step 1000, change object-0 mass to 3× current;\
+  \ immediately\n   force pointer near object 0 (set pointer_pos = object_0_pos ±\
+  \ 5) and push.\n   Measure whether attention switches to object 0's channel within\
+  \ 20 steps.\n6. Compute gate metrics and paired comparison (CLTS vs CLTS-Rand per\
+  \ seed).\n7. Decision: ≥2/3 gates pass → representation sufficient → project advances.\n\
+  \nFiles: src/run_phase0_integration.py (NEW)\n\nARM 2 (M2 Decisive Test — contingent\
+  \ on ARM 1):\n1. Expand union seed bank to 30 seeds (original 10 + fresh 10 + new:\
+  \ 173, 179,\n   181, 191, 193, 197, 199, 211, 223, 227).\n2. D1 (Temporal Identity\
+  \ Contrastive):\n   - New loss: NT-Xent where same-object-at-consecutive-timesteps\
+  \ = positive pair,\n     different-objects = negatives.\n   - Implementation: encode\
+  \ x_target and x_hist[:,-1] to get z_coord_t, z_dyn_t,\n     z_coord_{t-1}, z_dyn_{t-1}.\
+  \ Sort z_coord and positions to match channels to\n     objects (sorted matching,\
+  \ O(d_t log d_t) on GPU). For each object, z_dyn at\n     the matched channel at\
+  \ time t and t-1 form a positive pair; z_dyn from other\n     objects at t-1 are\
+  \ negatives. Uses existing id_contrastive_proj projection head.\n   - Loss computed\
+  \ in training loop (not in model forward), added to total loss with\n     weight\
+  \ temporal_contrastive_weight=5.0.\n   - Architecture: NonParametricJEPASpatialSeparateDyn,\
+  \ primary_objective=\"sfa\",\n     mask_dyn_sim=True, coord_vicreg=True, sfa_weight=0\
+  \ (SFA disabled; replaced\n     by temporal contrastive). d_t=3, d_max=8.\n3. D2\
+  \ (Variance-Ramped SFA):\n   - Same architecture as D1 but primary_objective=\"\
+  sfa\" with sfa_weight\n     linearly ramped from 0 to 5.0 over steps 0-4000, then\
+  \ constant at 5.0.\n   - Ramping prevents early-training SFA instability (gradient\
+  \ conflict with\n     VICReg variance term during representation bootstrapping).\n\
+  4. Train 2 arms × 30 seeds for 8000 steps each (separate backbone, mask_dyn_sim=True,\n\
+  \   coord_vicreg=True, d_t=3, d_max=8, buffer=4000, batch_size=32, lr=3e-4).\n5.\
+  \ Evaluate: ΔR²_color, collapse rate, centroid MSE (same protocol as iter_029).\n\
+  6. Gate: mean ΔR²_color ≥ 0.30 AND variance-stability std/mean < 2.0.\n7. Decision:\
+  \ D1 passes → M2 revised to contrastive identity binding; D2 passes →\n   M2 revised\
+  \ to variance-ramped SFA; neither passes → proxy acknowledged as\n   unachievable,\
+  \ ARM 1's verdict governs.\n\nFiles: src/run_phase0_m2_decisive.py (NEW)\n\nPRESERVE\
+  \ across both arms:\n- Separate backbone + collapse-avoiding config (mask_dyn_sim=True,\
+  \ coord_vicreg=True)\n- d_t=3 frozen, GDASR log-only (M3)\n- Pooled batch VICReg\
+  \ (M1)\n- No positional encoding (cross-objective regularity from iter_013 and iter_021)\n\
+  - Hard seeds 53/71 reported separately, not averaged away\n- Report σ alongside\
+  \ mean for all metrics (≥5 seeds minimum per condition)\n"

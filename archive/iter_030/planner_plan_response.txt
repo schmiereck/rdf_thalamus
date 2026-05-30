@@ -1,0 +1,592 @@
+I'll start by thoroughly exploring the codebase and recent iteration details to understand what's needed for the integration smoke-test and the contrastive identity binding experiment.
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_mask_dyn_sim_shared.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_multistep.py
+      run_phase0_sfa_recovery.py
+      run_phase0_sfa_separate_backbone.py
+      run_phase0_sfa_sweep.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4...]
+
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: iter | status          | hypothesis
+-----|-----------------|----------
+002  | ok              | phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
+003  | ok              | phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
+004  | ok              | phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
+005  | ok              | phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
+006  | ok              | phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
+007  | ok              | phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
+008  | ok              | phase-8: evaluate unsupervised spatial bottlenecks and close...]
+
+
+[Tool Call: read_file({'path': 'src/motor.py'})]
+
+[Tool Result: import numpy as np
+import torch
+
+class SubsumptionMotorController:
+    def __init__(self, Kp=1.0, Kd=0.1, Kv=0.5, error_thresh=4.0, stability_thresh=0.05, 
+                 push_cooldown=15, push_magnitude=20.0, dt=1.0, ablation=None):
+        """
+        Subsumption Motor Controller with 3 hierarchical layers.
+        
+        Args:
+            Kp (float): Proportional gain for reflexive PD tracking.
+            Kd (float): Derivative gain for reflexive PD tracking.
+            Kv (float): Velocity gain for predictive kinematics.
+            error_thresh (float): Threshold under which the pointer is close enough to target to trigger boredom.
+            stability_thresh (float): Threshold under which surprise change is stable.
+            push_cooldown (int): Cooldown steps after a push is triggered.
+            push_magnitude (float): Override acceleration magnitude during a deliberate push.
+            dt (float): Control loop time step.
+            ablation (str, optional): "random...]
+
+
+[Tool Call: read_file({'path': 'src/models_separate_dyn.py'})]
+
+[Tool Result: """
+Separate z_dyn Encoder Architecture for Iteration 027.
+
+Provides two classes:
+  - SeparateDynEncoder: Two independent CNN backbones (coord + dyn)
+  - NonParametricJEPASpatialSeparateDyn: JEPA model using SeparateDynEncoder
+"""
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+from src.models_dual_stream import (
+    calculate_centroid_and_variance,
+    add_positional_encoding,
+    DualStreamPredictor,
+    NonParametricJEPASpatial,
+)
+
+
+class SeparateDynEncoder(nn.Module):
+    """
+    Encoder with TWO independent CNN backbones:
+      (a) coord_backbone: conv1->conv2->conv3->conv4->conv_spatial
+          Produces z_coord via soft-argmax centroid from spatial feature map.
+      (b) dyn_backbone: conv1_dyn->conv2_dyn->conv3_dyn->conv4_dyn->conv_identity_dyn
+          Same architecture, SEPARATE parameters.
+          Produces z_dyn via mean pooling over the spatial dimension.
+
+    Both backbones process the SAME RGB input independe...]
+
+
+[Tool Call: read_file({'path': 'src/thalamus.py'})]
+
+[Tool Result: import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+
+class SegmentEncoder(nn.Module):
+    def __init__(self, d_max=8, pos_encoding="none"):
+        """
+        Maps visual segment of shape (B, 3, 32) to latent space of shape (B, d_max).
+        Uses 1D convolution layers.
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.pos_encoding = pos_encoding
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Li...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_...]
+
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_b...]
+
+
+[Tool Call: read_file({'path': 'src/train.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import time
+import random
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Ensure src directory is in the path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import FixedJEPA, DynamicJEPA
+
+# Replay Buffer storing (x_hist, x_target)
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        x_hist_batch, x_target_bat...]
+
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa_separate_backbone.py'})]
+
+[Tool Result: #!/usr/bin/env python3
+"""
+Iter_029: SFA+VICReg on Separate Backbone with coord_vicreg.
+
+Three-arm experiment on a union seed bank (20 seeds) testing whether
+explicit SFA slowness on z_dyn improves identity encoding (ΔR²_color).
+
+Arms:
+  A — VICReg-only control (separate backbone, mask_dyn_sim=True)
+  B — SFA+VICReg, sfa_weight=5.0
+  C — SFA+VICReg, sfa_weight=1.0
+"""
+
+import os, sys, json, random, argparse, collections, warnings, concurrent.futures
+import numpy as np, pandas as pd, torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
+from scipy.optimize import linear_sum_assignment
+warnings.filterwarnings("ignore", category=UserWarning)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.environment import PhysicsSandbox
+from src.models_separate_dyn import NonParametricJEPASpatialSeparateDyn
+
+
+class ExtendedReplayBuffer:
+    def __init__(self, capacity=4000):
+        self.capacity = capacity; self.buffer = []; self.position = 0
+   ...]
+
+
+[Tool Call: read_file({'path': 'src/train_eval_closed_loop.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import json
+import random
+import collections
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import concurrent.futures
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.environment import PhysicsSandbox
+from src.thalamus import ThalamusNet
+from src.motor import SubsumptionMotorController
+
+class ReplayBuffer:
+    def __init__(self, capacity=2000, seed=42):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+        self.rng = random.Random(seed)
+
+    def push(self, x_hist, x_target, color_0, pos_0):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target, color_0, pos_0)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = self.rng.sample(self.buffer, batch_size)
+...]
+
+
+[Tool Call: read_iteration({'iter_num': 29})]
+
+[Tool Result: ```yaml
+cached_tokens: 548611
+cost_usd: 5.03612
+hypothesis: 'phase-29: SFA+VICReg on separate backbone shows directional trend (ΔR²_color
+  0.27 vs 0.04) but fails pre-registered F1 gate (0.27 < 0.30); M2 mandate not supported
+  by evidence'
+input_tokens: 3012206
+iter: 29
+metrics:
+  arm_a_centroid_mse_mean: 159.83
+  arm_a_collapse_rate: 0.0
+  arm_a_delta_r2_color_mean: 0.0445
+  arm_a_delta_r2_color_std: 0.2108
+  arm_b_centroid_mse_mean: 159.85
+  arm_b_collapse_rate: 0.0
+  arm_b_delta_r2_color_mean: 0.2749
+  arm_b_delta_r2_color_std: 0.5772
+  arm_b_final_sfa_loss_mean: 0.1408
+  arm_b_fresh_seeds_delta_r2: 0.3576
+  arm_b_original_seeds_delta_r2: 0.1921
+  arm_c_centroid_mse_mean: 167.13
+  arm_c_collapse_rate: 0.0
+  arm_c_delta_r2_color_mean: 0.1428
+  arm_c_delta_r2_color_std: 0.2634
+  arm_c_final_sfa_loss_mean: 0.2052
+  completed_runs: 60
+  f1_gate_delta_r2_color: FAIL (0.2749 < 0.30)
+  f2_gate_collapse_rate: PASS (0.0 <= 0.10)
+  f3_gate_centroid_mse: PASS (159.85 <= 241.88)
+  failed_runs...]
+
+Let me look at the most recent closed-loop experiment code to understand how CLTSMotorController integrates with the current model architecture.
+
+[Tool Call: read_file({'path': 'src/test_closed_loop.py'})]
+
+[Tool Result: import torch
+import numpy as np
+from environment import PhysicsSandbox
+from thalamus import ThalamusNet
+from motor import SubsumptionMotorController
+
+def run_closed_loop_test():
+    print("==================================================")
+    print("Starting closed-loop integration test (Phase 3)...")
+    print("==================================================")
+
+    # 1. Initialize Sandbox Environment
+    sandbox = PhysicsSandbox(N=2, substeps=10, seed=42)
+    obs = sandbox.render()
+    print(f"Environment initialized. Initial pointer pos: {sandbox.pointer_pos:.3f}, vel: {sandbox.pointer_vel:.3f}")
+
+    # 2. Initialize Model (ThalamusNet)
+    # We will use d_max=8, history h=3, and a small cooldown for testing token switching
+    d_max = 8
+    h = 3
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = ThalamusNet(d_max=d_max, h=h, cooldown=5).to(device)
+    model.eval() # Eval mode since we don't need grad update in this integration test
+    print...]
+
+
+[Tool Call: read_iteration({'iter_num': 12})]
+
+[Tool Result: ```yaml
+cached_tokens: 989313
+campaign: Thalamus
+campaign_status: completed
+campaign_summary: The Thalamus project successfully designed, simulated, and evaluated
+  a novel neural architecture that achieves hierarchical abstraction without generative
+  decoders. Across 12 phases, we established non-parametric spatial bottlenecks (Arm
+  F), developed an adaptive surprise-modulated thalamic gating mechanism (DSMC), and
+  validated closed-loop thalamic subsumption motorics (CLTS) under active parameter
+  shifts, showing massive gains in adaptation efficiency and spatial exploration.
+cost_usd: 0.59712
+hypothesis: 'phase-12: validate closed-loop thalamic subsumption (CLTS) motorics under
+  a 5-seed sweep'
+input_tokens: 1292819
+iter: 12
+metrics:
+  auc_reduction_pct: 28.25
+  clts_centroid_decoding_mse: 85.8466
+  clts_pointer_entropy: 3.9551
+  clts_soft_spatial_variance: 8.6726
+  clts_test_sim_loss: 0.048329
+  loss_reduction_pct: 47.68
+  passive_test_sim_loss: 0.163344
+  random_pointer_entropy...]
+
+Now let me check the checkpoint files from iter_029 to verify they can be loaded for ARM 1.
+
+[Tool Call: read_result_file({'filename': 'results/runs/b_sfavicreg,_sfa_5.0_seed7.json', 'iter_num': 29})]
+
+[Tool Result: {
+  "arm": "B (SFA+VICReg, sfa=5.0)",
+  "seed": 7,
+  "collapsed_eval": false,
+  "per_dim_std": [
+    1.383201241493225,
+    0.9745151400566101,
+    1.0626932382583618
+  ],
+  "vicreg_per_dim_std": [
+    1.383201241493225,
+    0.9745151400566101,
+    1.0626932382583618
+  ],
+  "vicreg_mean_abs_corr": 0.39647568039631936,
+  "centroid_mse_mean": 71.78086871726269,
+  "centroid_r_mean": 0.06456697364276859,
+  "delta_r2_color": 0.7727784438243037,
+  "r2_dyn_color": -0.348165392787154,
+  "r2_coord_color": -1.1209438366114577,
+  "r2_dyn_pos": -0.13204755314582273,
+  "r2_coord_pos": -0.00611500306798433,
+  "r2_dyn_identity": 0.02278284423600374,
+  "r2_coord_identity": 0.02355940019479404,
+  "delta_r2_identity": -0.0007765559587902988,
+  "dim_to_obj": {
+    "0": 1,
+    "1": 2,
+    "2": 0
+  },
+  "final_train_loss": 2.2982864379882812,
+  "final_sim_loss": 101.42540740966797,
+  "final_var_loss": 0.005522529128938913,
+  "final_cov_loss": 0.06546100974082947,
+  "final_...]
+
+
+[Tool Call: read_file({'end_line': 60, 'path': 'src/pre_registration.md'})]
+
+[Tool Result: --- lines 1 to 60 of 76 ---
+# RDF Scientific Pre-Registration
+
+*   **Iteration:** 029
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+On the separate-backbone architecture (SeparateDynEncoder via NonParametricJEPASpatialSeparateDyn),
+adding an explicit SFA slowness term ||z_dyn(t) - z_dyn(t-1)||² to the VICReg-only z_dyn objective
+is consistent with M2's predicted mechanism for improving identity encoding as measured by ΔR²_color
+from a held-out linear probe, without introducing collapse on the union seed bank.
+
+Specifically: Arm B (SFA+VICReg, sfa_weight=5.0, mask_dyn_sim=True, coord_vicreg=True) will show
+ΔR²_color ≥ 0.30 (practical-significance threshold) when computed over non-collapsed seeds, AND will
+show collapse rate ≤ 10% on the union seed bank.
+
+NOTE: "0% collapse" under SFA+VICReg is expected (SFA + VICReg both encourage high std) and is NOT
+the headline metric. The headline is ΔR²_color improvement above the practical-significance threshold.
+
+## 2. ...]
+
+Now I have a thorough understanding of the codebase, the current state, and what's needed. Let me formulate the plan.
+
+Key observations from the exploration:
+
+1. **ARM 1 is feasible with existing checkpoints**: The iter_029 checkpoints for `NonParametricJEPASpatialSeparateDyn` (both Arm A VICReg-only and Arm B SFA+VICReg) exist and are loadable. The `CLTSMotorController` interface (`z_pred_coord`, `z_target_coord`, `z_pred_dyn`, `z_target_dyn`, `d_t`, `centroids`) is compatible with the model's forward pass output.
+
+2. **The surprise signal under SFA becomes z_coord-dominated** (per goal.md Section 4.D): SFA makes z_dyn slow/predictable, so surprise is driven by positional unpredictability (post-collision motion). The integration test must measure this behavioral shift.
+
+3. **ARM 2 requires new training**: Temporal identity contrastive binding and variance-ramped SFA are new objectives that need fresh training runs. The existing `primary_objective="contrastive"` uses batch-level NT-Xent (wrong axis); temporal identity contrastive needs a new implementation using object matching across timesteps.
+
+4. **The collision detection and mass-perturbation protocols** need to be implemented in the evaluation loop. Collision detection via velocity sign change is straightforward. Mass perturbation requires a forced-probe mechanism to make the change observable.
+
+5. **The CLTSMotorController's EMA statistics** need warm-up time before the attention signal is meaningful. A 200-step warm-up period should suffice.
+
+```yaml
+hypothesis: |
+  ARM 1 (Integration Smoke-Test): A representation with ΔR²_color ≈ 0.27 (SFA+VICReg
+  on separate backbone, 0% collapse, iter_029 Arm B) produces CLTS motor behavior
+  that is functionally adequate for Pillar D (thalamic gating) and Pillar E (motor
+  probing). Specifically, three pre-registered gates will be tested:
+    G1 (Tracking Functionality): CLTS mean |pointer_pos - attended_centroid| < 20 pixels
+      over a 2000-step closed-loop evaluation, demonstrating that the z_coord centroid
+      readout supports functional PD tracking.
+    G2 (Attention Validity): CLTS surprise-driven attention switches to the collision-
+      involved channel within 15 steps after a detected collision in >50% of events,
+      while CLTS-Random (uniform random attention selection) switches to the collision
+      channel in <35% of events (chance baseline for 3 objects). A difference >15pp
+      confirms the surprise signal is informative.
+    G3 (Causal Sensitivity): After a forced-probe mass perturbation (mass×3 + push on
+      object 0 at step 1000), CLTS attention switches to object 0's channel within
+      20 steps in >60% of perturbation events, while CLTS-Random does so in <33%.
+      A difference >15pp confirms the representation supports causal probing.
+  If ≥2 of 3 gates pass, the representation is sufficient for downstream tasks and the
+  project advances to Phase 2/3 integration without further objective optimization.
+  If 0-1 gates pass, the representation is insufficient and the objective hunt is
+  justified.
+
+  ARM 2 (M2 Decisive Test): Temporal identity contrastive binding (D1) or variance-
+  ramped SFA (D2) achieves mean ΔR²_color ≥ 0.30 on a 30-seed union bank with
+  variance-stability (std/mean < 2.0). D1 uses same-object-across-time as positive
+  pairs and other-objects-as-negatives in an NT-Xent loss; D2 anneals sfa_weight
+  from 0 to 5.0 over the first 4000 training steps. If D1 passes, M2 is revised to
+  "contrastive identity binding as primary" (slowness underspecifies identity). If D2
+  passes, M2 is revised to "variance-ramped SFA as primary." If neither passes, the
+  ΔR²_color proxy is acknowledged as unachievable by any tested decoder-free objective
+  and ARM 1's verdict governs the project direction.
+
+falsification_criterion: |
+  ARM 1 falsified if ≤1 of 3 gates pass, meaning the current representation does not
+  support meaningful downstream behavior and further objective optimization is justified.
+  Specifically:
+    G1 falsified: CLTS mean tracking error ≥ 20 pixels (centroid readout is too noisy
+      for functional tracking)
+    G2 falsified: CLTS collision-switching rate ≤ CLTS-Random + 15pp (surprise signal
+      is not informative for attention routing)
+    G3 falsified: CLTS post-perturbation attention switch ≤ CLTS-Random + 15pp
+      (representation does not support causal probing after mass change)
+
+  ARM 2 D1 falsified: mean ΔR²_color < 0.30 OR std/mean ≥ 2.0 on the 30-seed bank
+  ARM 2 D2 falsified: mean ΔR²_color < 0.30 OR std/mean ≥ 2.0 on the 30-seed bank
+  Both D1 and D2 falsified: the ΔR²_color ≥ 0.30 target is unachievable by any
+  decoder-free objective tested; the project accepts the current representation quality
+  per ARM 1's verdict.
+
+proposed_method: |
+  ARM 1 (Integration Smoke-Test — highest priority, runs first):
+  1. Load pre-trained SFA+VICReg checkpoints from iter_029 Arm B (10 seeds: 7, 17, 31,
+     83, 97, 113, 127, 149 + hard seeds 53, 71 reported separately).
+  2. For each seed, run two 2000-step closed-loop evaluations:
+     a. CLTS: CLTSMotorController with surprise-driven attention + PD tracking +
+        push-when-surprised-and-near (existing probe-when-surprised logic)
+     b. CLTS-Rand: Same controller but token_locus selected uniformly at random
+        from d_t channels (replacing argmax of normalized surprise), keeping PD
+        tracking and push logic identical — controls for reflexive PD tracking
+  3. Warm-up: first 200 steps with CLTS but no attention switching (fixed locus 0)
+     to let EMA surprise statistics converge; metrics start at step 200.
+  4. Collision detection: at each step, compare object velocities before/after; flag
+     collision if |delta_v| > 2.0 for any pair of adjacent objects. Record whether
+     CLTS attention switches to a collision-involved channel within 15 steps.
+  5. Mass perturbation: at step 1000, change object-0 mass to 3× current; immediately
+     force pointer near object 0 (set pointer_pos = object_0_pos ± 5) and push.
+     Measure whether attention switches to object 0's channel within 20 steps.
+  6. Compute gate metrics and paired comparison (CLTS vs CLTS-Rand per seed).
+  7. Decision: ≥2/3 gates pass → representation sufficient → project advances.
+  
+  Files: src/run_phase0_integration.py (NEW)
+
+  ARM 2 (M2 Decisive Test — contingent on ARM 1):
+  1. Expand union seed bank to 30 seeds (original 10 + fresh 10 + new: 173, 179,
+     181, 191, 193, 197, 199, 211, 223, 227).
+  2. D1 (Temporal Identity Contrastive):
+     - New loss: NT-Xent where same-object-at-consecutive-timesteps = positive pair,
+       different-objects = negatives.
+     - Implementation: encode x_target and x_hist[:,-1] to get z_coord_t, z_dyn_t,
+       z_coord_{t-1}, z_dyn_{t-1}. Sort z_coord and positions to match channels to
+       objects (sorted matching, O(d_t log d_t) on GPU). For each object, z_dyn at
+       the matched channel at time t and t-1 form a positive pair; z_dyn from other
+       objects at t-1 are negatives. Uses existing id_contrastive_proj projection head.
+     - Loss computed in training loop (not in model forward), added to total loss with
+       weight temporal_contrastive_weight=5.0.
+     - Architecture: NonParametricJEPASpatialSeparateDyn, primary_objective="sfa",
+       mask_dyn_sim=True, coord_vicreg=True, sfa_weight=0 (SFA disabled; replaced
+       by temporal contrastive). d_t=3, d_max=8.
+  3. D2 (Variance-Ramped SFA):
+     - Same architecture as D1 but primary_objective="sfa" with sfa_weight
+       linearly ramped from 0 to 5.0 over steps 0-4000, then constant at 5.0.
+     - Ramping prevents early-training SFA instability (gradient conflict with
+       VICReg variance term during representation bootstrapping).
+  4. Train 2 arms × 30 seeds for 8000 steps each (separate backbone, mask_dyn_sim=True,
+     coord_vicreg=True, d_t=3, d_max=8, buffer=4000, batch_size=32, lr=3e-4).
+  5. Evaluate: ΔR²_color, collapse rate, centroid MSE (same protocol as iter_029).
+  6. Gate: mean ΔR²_color ≥ 0.30 AND variance-stability std/mean < 2.0.
+  7. Decision: D1 passes → M2 revised to contrastive identity binding; D2 passes →
+     M2 revised to variance-ramped SFA; neither passes → proxy acknowledged as
+     unachievable, ARM 1's verdict governs.
+
+  Files: src/run_phase0_m2_decisive.py (NEW)
+
+  PRESERVE across both arms:
+  - Separate backbone + collapse-avoiding config (mask_dyn_sim=True, coord_vicreg=True)
+  - d_t=3 frozen, GDASR log-only (M3)
+  - Pooled batch VICReg (M1)
+  - No positional encoding (cross-objective regularity from iter_013 and iter_021)
+  - Hard seeds 53/71 reported separately, not averaged away
+  - Report σ alongside mean for all metrics (≥5 seeds minimum per condition)
+
+pre_registration_file: "src/pre_registration.md"
+```
