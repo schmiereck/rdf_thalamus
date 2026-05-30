@@ -1,0 +1,1 @@
+Run the dry-run command `python src/run_iter031_partA.py --dry-run` and report whether it executes perfectly without any errors or crashes.
