@@ -1421,3 +1421,64 @@ pixe
 
 **Notes:** Fundamental architectural finding: mean-pooling z_dyn readout destroys color identity even under supervised reconstruction. CLTS protocol calibration shows directional collision-sensitivity signal but insufficient for pre-registered gates.
 
+
+---
+```yaml
+cached_tokens: 6212385
+campaign: collapse-elimination
+cost_usd: 6.89456
+hypothesis: 'phase-32: centroid-gated readout causes catastrophic collapse (100% for
+  K=4, 10% for K=1); cross-backbone attention coupling is the novel failure mode;
+  branch (b) hard-pivot to behavioral evaluation triggered'
+input_tokens: 8485464
+iter: 32
+metrics:
+  E1_5_collapse_rate: 0.1
+  E1_5_mean_delta_r2_color: 0.078
+  E1_collapse_rate: 0.0
+  E1_mean_delta_r2_color: 0.131
+  E1_param_count: 135608
+  E2_collapse_rate: 1.0
+  E2_mean_delta_r2_color: 0.116
+  E2_param_count: 151016
+  E3_collapse_rate: 1.0
+  E3_mean_delta_r2_color: 0.138
+  F1_gate: FAIL
+  F2_gate: FAIL
+  F3_gate: FAIL
+  F4_E2_minus_E1_paired_diff: -0.015
+  F4_gate: FAIL
+  F5_E2_minus_E1_5_paired_diff: 0.038
+  F5_gate: FAIL
+  F6_E3_minus_E2_paired_diff: 0.021
+  binding_decision: branch_b_hard_pivot
+  completed_runs: 80
+  pre_registered_outcome: FALSIFIED
+  total_runs: 80
+output_tokens: 101040
+status: ok
+```
+
+## iter_032: phase-32: centroid-gated readout causes catastrophic collapse (100% for K=4, 10% for K=1); cross-backbone attention coupling is the novel failure mode; branch (b) hard-pivot to behavioral evaluation triggered
+
+**Analysis:** The core hypothesis of iter_032 — that replacing mean-pool z_dyn with
+attention-pooled multi-dimensional feature vectors gated by the coord
+backbone's soft-argmax attention would achieve ΔR²_color ≥ 0.30 — is
+definitively falsified, but for a different reason than expected: not
+because the rich readout fails to encode identity, but because the
+cross-backbone attention coupling causes catastrophic 
+
+**Status:** ok
+
+**Metrics:** `{'E1_mean_delta_r2_color': 0.131, 'E1_collapse_rate': 0.0, 'E1_param_count': 135608, 'E1_5_mean_delta_r2_color': 0.078, 'E1_5_collapse_rate': 0.1, 'E2_mean_delta_r2_color': 0.116, 'E2_collapse_rate': 1.0, 'E2_param_count': 151016, 'E3_mean_delta_r2_color': 0.138, 'E3_collapse_rate': 1.0, 'F1_gate': 'FAIL', 'F2_gate': 'FAIL', 'F3_gate': 'FAIL', 'F4_gate': 'FAIL', 'F4_E2_minus_E1_paired_diff': -0.015, 'F5_gate': 'FAIL', 'F5_E2_minus_E1_5_paired_diff': 0.038, 'F6_E3_minus_E2_paired_diff': 0.021, 'pre_registered_outcome': 'FALSIFIED', 'binding_decision': 'branch_b_hard_pivot', 'total_runs': 80, 'completed_runs': 80}`
+
+**Experimenter view:** The 4-arm experiment (80 runs: 4 arms × 20 seeds) produced a decisive
+falsification of the rich attention-pooled readout hypothesis.
+
+COLLAPSE FINDING: The centroid-gated readout caused catastrophic representation
+collapse. E2 (K=4) collapsed 100% (20/20 seeds), E3 (K=4) collapsed 100%
+(20/20), and even E1.5 (K=1 scalar) collapsed 10% (2/20). In contrast, E1
+(mean-pool) maintained 0% collapse — th
+
+**Notes:** Centroid-gated readout causes 100% collapse. Branch (b) hard-pivot triggered.
+
