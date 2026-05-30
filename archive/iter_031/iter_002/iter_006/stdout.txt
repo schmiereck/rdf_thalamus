@@ -1,0 +1,1242 @@
+
+[Tool Call: list_dir({'path': 'src'})]
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_recon.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_arm1_integration_smoke_test.py
+      run_iter030_arm2.py
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_mask_dyn_sim_shared.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_multistep.py
+      run_phase0_sfa_recovery.py
+      run_phase0_sfa_separate_backbone.py
+      run_phase0_sfa_sweep.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4_sweeps.py
+      run_phase7_experiments.py
+      run_phase8_experiments.py
+      run_phase9_experiments.py
+      run_sweep.py
+      test_closed_loop.py
+      test_env_noise.py
+      test_integration.py
+      test_models_dual_stream.py
+      test_write.py
+      thalamus.py
+      train.py
+      train_eval_closed_loop.py
+      train_thalamus.py]
+
+[Tool Call: list_dir({'path': '.'})]
+[Tool Result: [DIR] -p
+[DIR] .antigravitycli
+[DIR] .git
+      .gitignore
+[DIR] .pytest_cache
+[DIR] .venv
+[DIR] __pycache__
+      apply_fix.py
+[DIR] archive
+[DIR] cache
+      config.toml
+      crash.log
+      current_state.md
+      debug_arm1.py
+      experiment.log
+      experiment_log.md
+      find_files.py
+      fix_theta.py
+      goal.md
+      hello.py
+      manager_log.md
+      patch_thalamus.py
+      patch_thalamus_sync.py
+[DIR] pictures
+      print_summary.py
+      README.md
+      RESEARCH-RESULT-002.md
+      RESEARCH-RESULT-003.md
+      RESEARCH-RESULT-004.md
+      RESEARCH-RESULT-005.md
+      RESEARCH-RESULT-006.md
+      RESEARCH-RESULT-007.md
+      RESEARCH-RESULT-008.md
+      RESEARCH-RESULT-009.md
+      RESEARCH-RESULT-010.md
+      RESEARCH-RESULT-011.md
+      RESEARCH-RESULT-012.md
+      RESEARCH-RESULT-013.md
+      RESEARCH-RESULT-014.md
+      RESEARCH-RESULT-015.md
+      RESEARCH-RESULT-016.md
+      RESEARCH-RESULT-017.md
+      RESEARCH-RESULT-018.md
+      RESEARCH-RESULT-020.md
+      RESEARCH-RESULT-023.md
+      RESEARCH-RESULT-024.md
+      RESEARCH-RESULT-025.md
+      RESEARCH-RESULT-026.md
+      RESEARCH-RESULT-027.md
+      RESEARCH-RESULT-028.md
+      RESEARCH-RESULT-029.md
+      RESEARCH-RESULT-030.md
+      research_journal.md
+[DIR] scripts
+[DIR] src
+      summary_output.txt
+      test_models_spatial.py
+      verify_results.py]
+
+[Tool Call: read_file({'path': 'src/models_recon.py'})]
+[Tool Result: """
+Reconstruction + VICReg architecture using SeparateDynEncoder.
+
+Provides:
+  - ReconVICRegSeparateDyn: Encoder (SeparateDynEncoder) + Decoder (deconv head)
+    with VICReg losses and JEPA predictor readout.
+"""
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+from src.models_separate_dyn import SeparateDynEncoder
+from src.models_dual_stream import (
+    calculate_centroid_and_variance,
+    add_positional_encoding,
+    DualStreamPredictor,
+)
+
+
+def calc_var_loss(x, gamma=1.0, eps=1e-4):
+    mean = x.mean(dim=0)
+    var = torch.mean((x - mean) ** 2, dim=0)
+    std = torch.sqrt(var + eps)
+    return torch.mean(F.relu(gamma - std))
+
+
+def calc_cov_loss(x):
+    B, d = x.shape
+    if B <= 1 or d <= 1:
+        return torch.tensor(0.0, device=x.device, dtype=x.dtype)
+    mean = x.mean(dim=0, keepdim=True)
+    x_centered = x - mean
+    cov = (x_centered.T @ x_centered) / (B - 1)
+    diag = torch.diagonal(cov)
+    off_diag = cov - torch.diag(diag)
+    return (off_diag ** 2).sum() / d
+
+
+class ReconDecoder(nn.Module):
+    """
+    Deconvolutional decoder head mapping (B, d_max, 8) -> (B, 3, 128).
+    """
+
+    def __init__(self, d_max=8):
+        super().__init__()
+        self.d_max = d_max
+        self.deconv1 = nn.ConvTranspose1d(d_max, 128, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.deconv2 = nn.ConvTranspose1d(128, 64, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.deconv3 = nn.ConvTranspose1d(64, 32, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.deconv4 = nn.ConvTranspose1d(32, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
+
+    def forward(self, a_dyn):
+        """
+        Args:
+            a_dyn (Tensor): shape (B, d_max, 8)
+        Returns:
+            x_recon (Tensor): shape (B, 3, 128)
+        """
+        x = F.relu(self.deconv1(a_dyn))   # (B, 128, 16)
+        x = F.relu(self.deconv2(x))       # (B, 64, 32)
+        x = F.relu(self.deconv3(x))       # (B, 32, 64)
+        x = self.deconv4(x)               # (B, 3, 128)
+        return x
+
+
+class ReconVICRegSeparateDyn(nn.Module):
+    """
+    Reconstruction + VICReg architecture with SeparateDynEncoder.
+
+    Forward pass:
+      1. Encode x_target -> z_coord, z_dyn (manual encoder steps)
+      2. Decode a_dyn spatial features -> x_recon
+      3. Recon loss: MSE(x_recon, x_target)
+      4. VICReg: var_loss + cov_loss on active dims
+      5. JEPA readout: predictor with stop-gradient (surprise only)
+      6. Total: recon_weight * recon_loss + var_weight * var_loss +
+                 cov_weight * cov_loss + sim_weight * sim_loss
+    """
+
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100,
+                 pos_encoding="none", dyn_readout="mean", sub_features=1,
+                 dyn_source="spatial", coord_vicreg=True,
+                 recon_weight=1.0, var_weight=25.0, cov_weight=25.0, sim_weight=1.0):
+        super().__init__()
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        self.pos_encoding = pos_encoding
+        self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
+        self.coord_vicreg = coord_vicreg
+        self.recon_weight = recon_weight
+        self.var_weight = var_weight
+        self.cov_weight = cov_weight
+        self.sim_weight = sim_weight
+
+        # Encoder
+        self.encoder = SeparateDynEncoder(
+            d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout,
+            sub_features=sub_features, dyn_source=dyn_source
+        )
+
+        # Decoder
+        self.decoder = ReconDecoder(d_max=d_max)
+
+        # Predictor (JEPA readout)
+        self.predictor = DualStreamPredictor(d_max=d_max, d_dyn=self.encoder.d_dyn, h=h)
+
+        # Color probe head (for supervised color regression)
+        self.color_probe_weight = nn.Parameter(torch.randn(d_max, 3) * 0.01)
+        self.color_probe_bias = nn.Parameter(torch.zeros(d_max, 3))
+
+        # ID contrastive projection head (scalar channel -> 8D embedding)
+        self.id_contrastive_proj = nn.Sequential(
+            nn.Linear(1, 16),
+            nn.ReLU(),
+            nn.Linear(16, 8)
+        )
+
+        # Dynamic state tracking
+        self.d_t = 2
+        self.steps_since_recruitment = cooldown
+        self.error_buffer = collections.deque(maxlen=500)
+        self.ema_error = None
+        self.ema_alpha = 0.05
+        self.gdasr_growth_points = []
+
+    @property
+    def d_dyn(self):
+        return self.encoder.d_dyn
+
+    def forward(self, x_hist, x_target):
+        """
+        Args:
+            x_hist (Tensor): shape (B, H, 3, 128)
+            x_target (Tensor): shape (B, 3, 128)
+        Returns:
+            loss_dict (dict): containing all loss terms
+            (z_pred_coord, z_pred_dyn): predictor outputs
+            (z_target_coord, z_target_dyn): target encoder outputs
+        """
+        B, H, C, W = x_hist.shape
+        x_hist_flat = x_hist.reshape(B * H, C, W)
+
+        # --- Encode target manually ---
+        coord_features = self.encoder._forward_coord_backbone(x_target)
+        a_spatial = self.encoder.conv_spatial(coord_features)
+        a_spatial = F.interpolate(a_spatial, size=128, mode='linear', align_corners=False)
+        z_target_coord, _ = calculate_centroid_and_variance(a_spatial)
+
+        dyn_features = self.encoder._forward_dyn_backbone(x_target)
+        a_dyn = self.encoder.conv_identity_dyn(dyn_features)  # (B, d_max, 8)
+        z_target_dyn = a_dyn.mean(dim=-1)                     # (B, d_max)
+
+        # --- Decode ---
+        x_recon = self.decoder(a_dyn)  # (B, 3, 128)
+        recon_loss = F.mse_loss(x_recon, x_target)
+
+        # --- VICReg on target representations ---
+        d_t_dyn = self.d_t * self.sub_features
+        z_target_dyn_active = z_target_dyn[:, :d_t_dyn]
+        var_loss_dyn = calc_var_loss(z_target_dyn_active)
+        cov_loss_dyn = calc_cov_loss(z_target_dyn_active)
+
+        if self.coord_vicreg:
+            z_target_coord_active = z_target_coord[:, :self.d_t]
+            var_loss_coord = calc_var_loss(z_target_coord_active)
+            cov_loss_coord = calc_cov_loss(z_target_coord_active)
+        else:
+            var_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+            cov_loss_coord = torch.tensor(0.0, device=x_target.device, dtype=x_target.dtype)
+
+        var_loss = var_loss_dyn + var_loss_coord
+        cov_loss = cov_loss_dyn + cov_loss_coord
+
+        # --- JEPA readout with stop-gradient (surprise only) ---
+        # Encode history
+        z_hist_coord_flat, z_hist_dyn_flat = self.encoder(x_hist_flat)
+        z_hist_coord = z_hist_coord_flat.reshape(B, H, self.d_max)
+        z_hist_dyn = z_hist_dyn_flat.reshape(B, H, self.d_dyn)
+
+        # Detach encoder outputs to prevent guidance of encoder
+        z_hist_coord_sg = z_hist_coord.detach()
+        z_hist_dyn_sg = z_hist_dyn.detach()
+        z_target_coord_sg = z_target_coord.detach()
+        z_target_dyn_sg = z_target_dyn.detach()
+
+        z_pred_coord, z_pred_dyn = self.predictor(
+            z_hist_coord_sg,
+            z_hist_dyn_sg,
+            self.d_t,
+            d_t_dyn=d_t_dyn
+        )
+
+        # Similarity loss on active dims (surprise readout only)
+        z_pred_coord_active = z_pred_coord[:, :self.d_t]
+        z_target_coord_active_sg = z_target_coord_sg[:, :self.d_t]
+        z_pred_dyn_active = z_pred_dyn[:, :d_t_dyn]
+        z_target_dyn_active_sg = z_target_dyn_sg[:, :d_t_dyn]
+
+        sim_loss_coord = F.mse_loss(z_pred_coord_active, z_target_coord_active_sg)
+        sim_loss_dyn = F.mse_loss(z_pred_dyn_active, z_target_dyn_active_sg)
+        sim_loss = sim_loss_coord + sim_loss_dyn
+
+        # --- Total loss ---
+        loss = (
+            self.recon_weight * recon_loss
+            + self.var_weight * var_loss
+            + self.cov_weight * cov_loss
+            + self.sim_weight * sim_loss
+        )
+
+        loss_dict = {
+            "loss": loss,
+            "recon_loss": recon_loss,
+            "var_loss": var_loss,
+            "var_loss_dyn": var_loss_dyn,
+            "var_loss_coord": var_loss_coord,
+            "cov_loss": cov_loss,
+            "cov_loss_dyn": cov_loss_dyn,
+            "cov_loss_coord": cov_loss_coord,
+            "sim_loss": sim_loss,
+            "sim_loss_coord": sim_loss_coord,
+            "sim_loss_dyn": sim_loss_dyn,
+        }
+
+        return loss_dict, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn)
+
+    def update_recruitment_logic(self, error_val, target_dim=None, step=None):
+        if target_dim is None:
+            target_dim = self.d_t
+
+        if self.ema_error is None:
+            self.ema_error = error_val
+        else:
+            self.ema_error = self.ema_alpha * error_val + (1.0 - self.ema_alpha) * self.ema_error
+
+        self.steps_since_recruitment += 1
+
+        if self.d_t == target_dim:
+            self.error_buffer.append(self.ema_error)
+
+        if self.d_t == target_dim and self.steps_since_recruitment > self.cooldown:
+            if len(self.error_buffer) >= 200:
+                mean = np.mean(self.error_buffer)
+                std = np.std(self.error_buffer)
+                if self.ema_error > mean + self.k * std:
+                    self.d_t = target_dim + 1
+                    self.steps_since_recruitment = 0
+                    print(f"[GDASR] Recruited dimension! d_t increased to {self.d_t} "
+                          f"at error {self.ema_error:.4f} (baseline mean={mean:.4f}, std={std:.4f})")
+
+    def clone(self):
+        import copy
+        cloned = ReconVICRegSeparateDyn(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period,
+            pos_encoding=self.pos_encoding,
+            dyn_readout=self.dyn_readout,
+            sub_features=self.sub_features,
+            dyn_source=self.dyn_source,
+            coord_vicreg=self.coord_vicreg,
+            recon_weight=self.recon_weight,
+            var_weight=self.var_weight,
+            cov_weight=self.cov_weight,
+            sim_weight=self.sim_weight,
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
+        return cloned
+]
+
+[Tool Call: read_file({'path': 'src/environment.py', 'start_line': 1, 'end_line': 50})]
+[Tool Result: --- lines 1 to 50 of 341 ---
+import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_blur = sigma_blur
+        self.seed = seed
+        self.pixel_noise_std = pixel_noise_std
+        self.noisy_tv = noisy_tv
+        self.structured_distractor = structured_distractor
+        
+        # State variables for standard objects
+        self.positions = np.zeros(N)
+        self.velocities = np.zeros(N)
+        self.radii = np.zeros(N)
+        self.masses = np.zeros(N)
+        self.colors = np.zeros((N, 3))
+        
+        # State variables for Noisy-TV entity
+        self.noisy_tv_pos = 64.0
+        self.noisy_tv_radius = 5.0
+        self.noisy_tv_color = np.array([0.5, 0.5, 0.5])
+        
+        # State variables for Structured Distractor (Sinusoidal Oscillator)
+        self.sd_center = 64.0
+        self.sd_amplitude = 10.0
+        self.sd_omega = 0.03
+        self.sd_phase = 0.0
+        self.sd_color = np.array([0.5, 0.5, 0.5])
+        self.sd_radius = 5.0
+        self.sd_t = 0
+        self.sd_pos = 64.0
+        
+        # Pointer state variables
+        self.pointer_pos = 64.0
+        self.pointer_vel = 0.0]
+
+[Tool Call: read_file({'path': 'src/models_separate_dyn.py'})]
+[Tool Result: """
+Separate z_dyn Encoder Architecture for Iteration 027.
+
+Provides two classes:
+  - SeparateDynEncoder: Two independent CNN backbones (coord + dyn)
+  - NonParametricJEPASpatialSeparateDyn: JEPA model using SeparateDynEncoder
+"""
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+from src.models_dual_stream import (
+    calculate_centroid_and_variance,
+    add_positional_encoding,
+    DualStreamPredictor,
+    NonParametricJEPASpatial,
+)
+
+
+class SeparateDynEncoder(nn.Module):
+    """
+    Encoder with TWO independent CNN backbones:
+      (a) coord_backbone: conv1->conv2->conv3->conv4->conv_spatial
+          Produces z_coord via soft-argmax centroid from spatial feature map.
+      (b) dyn_backbone: conv1_dyn->conv2_dyn->conv3_dyn->conv4_dyn->conv_identity_dyn
+          Same architecture, SEPARATE parameters.
+          Produces z_dyn via mean pooling over the spatial dimension.
+
+    Both backbones process the SAME RGB input independently.
+    Each backbone adds positional encoding independently.
+    """
+
+    def __init__(self, d_max=8, pos_encoding="none", dyn_readout="mean",
+                 sub_features=1, dyn_source="spatial"):
+        super().__init__()
+        self.d_max = d_max
+        self.pos_encoding = pos_encoding
+        # dyn_readout and sub_features accepted for interface compatibility,
+        # but this encoder always uses mean readout on the dyn backbone.
+        self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
+
+        if pos_encoding == "none":
+            in_channels = 3
+        elif pos_encoding == "linear":
+            in_channels = 4
+        elif pos_encoding == "sinusoidal":
+            in_channels = 7
+        else:
+            raise ValueError(f"Unknown pos_encoding: {pos_encoding}")
+
+        # --- Coord backbone ---
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+        self.conv_spatial = nn.Conv1d(128, d_max, kernel_size=1)
+
+        # --- Dyn backbone (independent parameters) ---
+        self.conv1_dyn = nn.Conv1d(in_channels, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2_dyn = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3_dyn = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4_dyn = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+        self.conv_identity_dyn = nn.Conv1d(128, d_max, kernel_size=1)
+
+    @property
+    def d_dyn(self):
+        return self.d_max * self.sub_features
+
+    def _forward_coord_backbone(self, x):
+        """Returns backbone features (B, 128, 8) for coord stream."""
+        x = add_positional_encoding(x, self.pos_encoding)
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        return x
+
+    def _forward_dyn_backbone(self, x):
+        """Returns backbone features (B, 128, 8) for dyn stream."""
+        x = add_positional_encoding(x, self.pos_encoding)
+        x = F.relu(self.conv1_dyn(x))
+        x = F.relu(self.conv2_dyn(x))
+        x = F.relu(self.conv3_dyn(x))
+        x = F.relu(self.conv4_dyn(x))
+        return x
+
+    def forward_spatial(self, x):
+        """
+        Returns spatial feature map of shape (B, d_max, 128) from coord backbone.
+        """
+        features = self._forward_coord_backbone(x)
+        x = self.conv_spatial(features)
+        x = F.interpolate(x, size=128, mode='linear', align_corners=False)
+        return x
+
+    def forward(self, x):
+        """
+        Returns both streams:
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations, shape (B, d_dyn)
+        """
+        # Coord stream
+        coord_features = self._forward_coord_backbone(x)
+        a_spatial = self.conv_spatial(coord_features)
+        a_spatial = F.interpolate(a_spatial, size=128, mode='linear', align_corners=False)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+
+        # Dyn stream (independent backbone)
+        dyn_features = self._forward_dyn_backbone(x)          # (B, 128, 8)
+        a_dyn = self.conv_identity_dyn(dyn_features)           # (B, d_max, 8)
+        z_dyn = a_dyn.mean(dim=-1)                             # (B, d_max)
+
+        return z_coord, z_dyn
+
+
+class NonParametricJEPASpatialSeparateDyn(NonParametricJEPASpatial):
+    """
+    NonParametricJEPASpatial using SeparateDynEncoder.
+
+    Adds `mask_dyn_sim` parameter: when True, the JEPA sim_loss_dyn term
+    is zeroed out in the total loss (kept in the dict for logging).
+    """
+
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100,
+                 pos_encoding="none", primary_objective="jepa", sfa_weight=25.0,
+                 gdasr_log_only=True, dyn_readout="mean", sub_features=1,
+                 dyn_source="spatial", contrastive_weight=25.0, temperature=0.1,
+                 mask_dyn_sim=False, coord_vicreg=True):
+        # Call grandparent (nn.Module) init to avoid creating the default encoder
+        # We need to manually set up everything that NonParametricJEPASpatial sets up
+        nn.Module.__init__(self)
+        self.d_max = d_max
+        self.h = h
+        self.k = k
+        self.cooldown = cooldown
+        self.stabilization_period = stabilization_period
+        self.pos_encoding = pos_encoding
+        self.primary_objective = primary_objective
+        self.sfa_weight = sfa_weight
+        self.gdasr_log_only = gdasr_log_only
+        self.dyn_readout = dyn_readout
+        self.sub_features = sub_features
+        self.dyn_source = dyn_source
+        self.contrastive_weight = contrastive_weight
+        self.temperature = temperature
+        self.mask_dyn_sim = mask_dyn_sim
+        self.coord_vicreg = coord_vicreg
+
+        # Use SeparateDynEncoder instead of NonParametricEncoder
+        self.encoder = SeparateDynEncoder(
+            d_max=d_max, pos_encoding=pos_encoding, dyn_readout=dyn_readout,
+            sub_features=sub_features, dyn_source=dyn_source
+        )
+        self.predictor = DualStreamPredictor(d_max=d_max, d_dyn=self.encoder.d_dyn, h=h)
+
+        # Color probe head (for supervised color regression)
+        self.color_probe_weight = nn.Parameter(torch.randn(d_max, 3) * 0.01)
+        self.color_probe_bias = nn.Parameter(torch.zeros(d_max, 3))
+
+        # ID contrastive projection head (scalar channel -> 8D embedding)
+        self.id_contrastive_proj = nn.Sequential(
+            nn.Linear(1, 16),
+            nn.ReLU(),
+            nn.Linear(16, 8)
+        )
+
+        # Dynamic state tracking
+        self.d_t = 2
+        self.steps_since_recruitment = cooldown
+        self.error_buffer = collections.deque(maxlen=500)
+        self.ema_error = None
+        self.ema_alpha = 0.05
+        self.gdasr_growth_points = []
+
+    def forward(self, x_hist, x_target, sim_weight=25.0, var_weight=25.0,
+                cov_weight=25.0, lambda_spatial=0.0, k_chan=None,
+                mask_coord=False, ccr_mode='none', ccr_smooth_weight=10.0,
+                ccr_spatial_weight=10.0, d_t_predict=None, sfa_weight=None,
+                contrastive_weight=None, temperature=None):
+        """
+        Override forward to handle mask_dyn_sim.
+        Delegates to NonParametricJEPASpatial.forward, then optionally
+        subtracts sim_loss_dyn from the total loss.
+        """
+        result = super().forward(
+            x_hist, x_target,
+            sim_weight=sim_weight,
+            var_weight=var_weight,
+            cov_weight=cov_weight,
+            lambda_spatial=lambda_spatial,
+            k_chan=k_chan,
+            mask_coord=mask_coord,
+            ccr_mode=ccr_mode,
+            ccr_smooth_weight=ccr_smooth_weight,
+            ccr_spatial_weight=ccr_spatial_weight,
+            d_t_predict=d_t_predict,
+            sfa_weight=sfa_weight,
+            contrastive_weight=contrastive_weight,
+            temperature=temperature,
+        )
+
+        loss_dict = result[0]
+        if self.mask_dyn_sim:
+            # Remove sim_loss_dyn contribution from total loss (keep for logging)
+            loss_dict["loss"] = loss_dict["loss"] - sim_weight * loss_dict["sim_loss_dyn"]
+
+        return result
+
+    def clone(self):
+        import copy
+        cloned = NonParametricJEPASpatialSeparateDyn(
+            d_max=self.d_max,
+            h=self.h,
+            k=self.k,
+            cooldown=self.cooldown,
+            stabilization_period=self.stabilization_period,
+            pos_encoding=self.pos_encoding,
+            primary_objective=self.primary_objective,
+            sfa_weight=self.sfa_weight,
+            gdasr_log_only=self.gdasr_log_only,
+            dyn_readout=self.dyn_readout,
+            sub_features=self.sub_features,
+            dyn_source=self.dyn_source,
+            contrastive_weight=self.contrastive_weight,
+            temperature=self.temperature,
+            mask_dyn_sim=self.mask_dyn_sim,
+            coord_vicreg=self.coord_vicreg
+        )
+        cloned.d_t = self.d_t
+        cloned.load_state_dict(self.state_dict())
+        cloned.steps_since_recruitment = self.steps_since_recruitment
+        cloned.error_buffer = copy.deepcopy(self.error_buffer)
+        cloned.ema_error = self.ema_error
+        cloned.gdasr_growth_points = copy.deepcopy(self.gdasr_growth_points)
+        return cloned
+]
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py', 'start_line': 1, 'end_line': 100})]
+[Tool Result: --- lines 1 to 100 of 1309 ---
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_linear = coords / max(1.0, float(W - 1))
+        pos_linear = pos_linear.unsqueeze(0).unsqueeze(0).expand(B, 1, -1)
+        return torch.cat([x, pos_linear], dim=1)
+    elif pos_encoding == "sinusoidal":
+        pos_sin_10 = torch.sin(coords / 10.0)
+        pos_cos_10 = torch.cos(coords / 10.0)
+        pos_sin_100 = torch.sin(coords / 100.0)
+        pos_cos_100 = torch.cos(coords / 100.0)
+        pos_embeds = torch.stack([pos_sin_10, pos_cos_10, pos_sin_100, pos_cos_100], dim=0)
+        pos_embeds = pos_embeds.unsqueeze(0).expand(B, -1, -1)
+        return torch.cat([x, pos_embeds], dim=1)
+    return x
+
+class DualStreamEncoder(nn.Module):
+    def __init__(self, d_max=8):
+        """
+        1D CNN mapping input of shape (B, 3, 128) to decoupled coordinate and dynamics streams.
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.conv1 = nn.Conv1d(3, 16, kernel_size=5, stride=2, padding=2)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=5, stride=2, padding=2)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=5, stride=2, padding=2)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=5, stride=2, padding=2)
+        
+        # Dual stream heads
+        self.conv_spatial_coord = nn.Conv1d(128, d_max, kernel_size=1)
+        self.conv_spatial_dyn = nn.Conv1d(128, d_max, kernel_size=1)
+        
+    def forward_spatial(self, x):
+        """
+        Returns spatial feature map of shape (B, d_max, 128) for the coordinate stream.
+        To ensure backprop through loss_spatial only flows to conv_spatial_coord,
+        we detach the output of conv4 before passing to conv_spatial_coord.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        # Detach before conv_spatial_coord to stop gradients flowing to conv1-4
+        x_coord = self.conv_spatial_coord(x.detach())  # (B, d_max, 8)
+        x_coord = F.interpolate(x_coord, size=128, mode='linear', align_corners=False) # (B, d_max, 128)
+        return x_coord
+
+    def forward_dynamics(self, x):
+        """
+        Returns the dynamics representation of shape (B, d_max).
+        Gradients on this stream flow back to conv_spatial_dyn and conv1-4.
+        """
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x)) # (B, 128, 8)
+        
+        x_dyn = self.conv_spatial_dyn(x) # (B, d_max, 8)
+        return x_dyn.mean(dim=-1) # (B, d_max)
+
+    def forward(self, x):
+        """
+        Returns both streams:
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations, shape (B, d_max)
+        """
+        a_spatial = self.forward_spatial(x)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        z_dyn = self.forward_dynamics(x)
+        return z_coord, z_dyn
+
+
+class DualStreamPredictor(nn.Module):
+    def __init__(self, d_max=8, d_dyn=None, h=3):]
+Let me check the archive directory structure and the DualStreamPredictor details:
+
+
+[Tool Call: bash({'command': 'if exist "archive\\iter_031" (echo EXISTS) else (echo NOT EXISTS)'})]
+[Tool Result: exit_code: 0
+stdout: EXISTS
+
+stderr: ]
+
+[Tool Call: grep_search({'pattern': 'class DualStreamPredictor', 'include_pattern': '*.py'})]
+[Tool Result: src\models_dual_stream.py:99: class DualStreamPredictor(nn.Module):]
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py', 'start_line': 85, 'end_line': 140})]
+[Tool Result: --- lines 85 to 140 of 1309 ---
+        return x_dyn.mean(dim=-1) # (B, d_max)
+
+    def forward(self, x):
+        """
+        Returns both streams:
+        z_coord: soft centroids, shape (B, d_max)
+        z_dyn: dynamics representations, shape (B, d_max)
+        """
+        a_spatial = self.forward_spatial(x)
+        z_coord, _ = calculate_centroid_and_variance(a_spatial)
+        z_dyn = self.forward_dynamics(x)
+        return z_coord, z_dyn
+
+
+class DualStreamPredictor(nn.Module):
+    def __init__(self, d_max=8, d_dyn=None, h=3):
+        """
+        MLP forecasting target z_{t+1} of size (B, d_max + d_dyn)
+        from history of active latent states (B, H * (d_max + d_dyn)).
+        """
+        super().__init__()
+        self.d_max = d_max
+        self.d_dyn = d_dyn if d_dyn is not None else d_max
+        self.h = h
+        total_in = h * (d_max + self.d_dyn)
+        total_out = d_max + self.d_dyn
+        self.net = nn.Sequential(
+            nn.Linear(total_in, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, total_out)
+        )
+        
+    def forward(self, z_coord_history, z_dyn_history, d_t, mask_coord=False, d_t_dyn=None):
+        """
+        Args:
+            z_coord_history (Tensor): Shape (B, H, D_max)
+            z_dyn_history (Tensor): Shape (B, H, D_dyn)
+            d_t (int): Current active latent dimension for coord stream.
+            mask_coord (bool): If True, zero out the coordinate input.
+            d_t_dyn (int or None): Current active latent dimension for dyn stream.
+                                   Defaults to d_t if None.
+        """
+        if d_t_dyn is None:
+            d_t_dyn = d_t
+            
+        # Option to zero out coordinate input completely
+        if mask_coord:
+            z_coord_history = torch.zeros_like(z_coord_history)
+            
+        # Zero out inactive dimensions (index >= d_t for coord, >= d_t_dyn for dyn)
+        mask_c = torch.zeros_like(z_coord_history)
+        mask_c[:, :, :d_t] = 1.0
+        z_coord_active = z_coord_history * mask_c
+        ]
+Now I understand the architecture. Let me also check the `archive/iter_031` structure:
+
+
+[Tool Call: bash({'command': 'dir archive\\iter_031 /s /b 2>nul || echo EMPTY'})]
+[Tool Result: exit_code: 0
+stdout: C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_001
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\manager_log.md
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\manager_pre_planning_hints.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\planner_plan_prompt.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\planner_plan_response.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\planner_prompt.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\planner_prompt_turn_1.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\proposed_plan.yaml
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_001\result.yaml
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_001\stderr.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_001\stdout.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_001\task.md
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\checkpoint.yaml
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_001
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_002
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_003
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_004
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_005
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_006
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\planner_prompt.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\task.md
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_001\result.yaml
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_001\stderr.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_001\stdout.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_001\task.md
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_002\result.yaml
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_002\stderr.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_002\stdout.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_002\task.md
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_003\result.yaml
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_003\stderr.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_003\stdout.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_003\task.md
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_004\result.yaml
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_004\stderr.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_004\stdout.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_004\task.md
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_005\result.yaml
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_005\stderr.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_005\stdout.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_005\task.md
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_006\checkpoint.yaml
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_006\stdout.txt
+C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031\iter_002\iter_006\task.md
+
+stderr: ]
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py', 'start_line': 140, 'end_line': 170})]
+[Tool Result: --- lines 140 to 170 of 1309 ---
+        
+        mask_d = torch.zeros_like(z_dyn_history)
+        mask_d[:, :, :d_t_dyn] = 1.0
+        z_dyn_active = z_dyn_history * mask_d
+        
+        # Concatenate coordinate and dynamics histories along feature dimension: (B, H, d_max + d_dyn)
+        z_history = torch.cat([z_coord_active, z_dyn_active], dim=-1)
+        
+        # Flatten history: (B, H * (d_max + d_dyn))
+        z_history_flat = z_history.reshape(-1, self.h * (self.d_max + self.d_dyn))
+        
+        # Predict both streams
+        pred = self.net(z_history_flat) # (B, d_max + d_dyn)
+        
+        # Split into coord and dyn predictions
+        pred_coord, pred_dyn = torch.split(pred, [self.d_max, self.d_dyn], dim=-1)
+        
+        # Zero out inactive dimensions in the outputs
+        out_mask_coord = torch.zeros_like(pred_coord)
+        out_mask_coord[:, :d_t] = 1.0
+        pred_coord_active = pred_coord * out_mask_coord
+        
+        out_mask_dyn = torch.zeros_like(pred_dyn)
+        out_mask_dyn[:, :d_t_dyn] = 1.0
+        pred_dyn_active = pred_dyn * out_mask_dyn
+        
+        return pred_coord_active, pred_dyn_active
+
+
+class DualStreamJEPASpatial(nn.Module):
+    def __init__(self, d_max=8, h=3, k=4, cooldown=300, stabilization_period=100):]
+
+[Tool Call: bash({'command': 'dir archive\\iter_031\\results 2>nul || echo NOT EXISTS'})]
+[Tool Result: exit_code: 0
+stdout:  Volume in Laufwerk C: hat keine Bezeichnung.
+ Volumeseriennummer: F4E9-4E77
+
+ Verzeichnis von C:\Users\thomas\Projekte\rdf_thalamus\archive\iter_031
+
+NOT EXISTS
+
+stderr: ]
+
+[Tool Call: grep_search({'include_pattern': 'environment.py', 'pattern': 'def step'})]
+[Tool Result: src\environment.py:151: def step(self, action=None):]
+
+[Tool Call: read_file({'end_line': 220, 'path': 'src/environment.py', 'start_line': 151})]
+[Tool Result: --- lines 151 to 220 of 341 ---
+    def step(self, action=None):
+        """
+        Step the environment by 1.0 time unit using self.substeps, incorporating optional actions.
+        
+        Args:
+            action (dict, optional): containing continuous acceleration 'acc' (float) and boolean 'push'.
+        Returns:
+            observation (np.ndarray): Shape (3, 128)
+            info (dict): Useful diagnostic info
+        """
+        if action is not None:
+            acc = action.get('acc', 0.0)
+            push = action.get('push', False)
+        else:
+            acc = 0.0
+            push = False
+            
+        if push:
+            if len(self.positions) > 0:
+                dists = self.positions - self.pointer_pos
+                nearest_idx = np.argmin(np.abs(dists))
+                diff = dists[nearest_idx]
+                direction = 1.0 if diff >= 0 else -1.0
+                self.pointer_vel = direction * 5.0
+                
+        dt = 1.0 / self.substeps
+        
+        for _ in range(self.substeps):
+            # Apply acceleration
+            self.pointer_vel += acc * dt
+            
+            # Pack all N+1 objects
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_velocities = np.concatenate([self.velocities, [self.pointer_vel]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_masses = np.concatenate([self.masses, [self.pointer_mass]])
+            
+            # 1. Update positions
+            temp_positions += temp_velocities * dt
+            
+            # 2. Boundary bounces & position correction
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                    if temp_velocities[i] < 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+                    if temp_velocities[i] > 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+            
+            # 3. Resolve elastic collisions between adjacent objects
+            sort_idx = np.argsort(temp_positions)
+            for idx_in_sort in range(len(temp_positions) - 1):
+                i = sort_idx[idx_in_sort]
+                j = sort_idx[idx_in_sort + 1]
+                
+                dist = temp_positions[j] - temp_positions[i]
+                min_dist = temp_radii[i] + temp_radii[j]
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    m_inv_i = 1.0 / temp_masses[i]
+                    m_inv_j = 1.0 / temp_masses[j]
+                    sum_inv_m = m_inv_i + m_inv_j
+                    
+                    # Resolve overlap proportionally to inverse masses
+                    temp_positions[i] -= overlap * (m_inv_i / sum_inv_m)
+                    temp_positions[j] += overlap * (m_inv_j / sum_inv_m)
+                    
+                    # Conserve momentum and kinetic energy if moving towards each other]
+
+[Tool Call: read_file({'end_line': 280, 'path': 'src/environment.py', 'start_line': 220})]
+[Tool Result: --- lines 220 to 280 of 341 ---
+                    # Conserve momentum and kinetic energy if moving towards each other
+                    if temp_velocities[i] > temp_velocities[j]:
+                        v1 = temp_velocities[i]
+                        v2 = temp_velocities[j]
+                        m1 = temp_masses[i]
+                        m2 = temp_masses[j]
+                        
+                        temp_velocities[i] = (v1 * (m1 - m2) + 2.0 * m2 * v2) / (m1 + m2)
+                        temp_velocities[j] = (v2 * (m2 - m1) + 2.0 * m1 * v1) / (m1 + m2)
+                        
+            # Additional boundary check after collision resolution to ensure no object is pushed out
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                    if temp_velocities[i] < 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+                    if temp_velocities[i] > 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                        
+            # Unpack back to state variables
+            self.positions = temp_positions[:-1]
+            self.velocities = temp_velocities[:-1]
+            self.pointer_pos = temp_positions[-1]
+            self.pointer_vel = temp_velocities[-1]
+
+        # Update Noisy-TV state if active
+        if self.noisy_tv:
+            # Random walk motion: Gaussian step with std 2.0
+            step_noise = np.random.normal(0.0, 2.0)
+            self.noisy_tv_pos += step_noise
+            # Keep inside environment boundaries [radius, 128 - radius]
+            self.noisy_tv_pos = np.clip(self.noisy_tv_pos, self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            # Flicker with maximum entropy: color randomly sampled from [0.3, 1.0]
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+
+        # Update Structured Distractor state if active
+        if self.structured_distractor:
+            self.sd_t += 1
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_omega * self.sd_t + self.sd_phase)
+
+        obs = self.render()
+        
+        info = {
+            "positions": self.positions.copy(),
+            "velocities": self.velocities.copy(),
+            "radii": self.radii.copy(),
+            "masses": self.masses.copy(),
+            "colors": self.colors.copy(),
+            "pointer_pos": self.pointer_pos,
+            "pointer_vel": self.pointer_vel,
+            "pointer_radius": self.pointer_radius,
+            "pointer_mass": self.pointer_mass,
+            "pointer_color": self.pointer_color.copy(),
+        }
+        
+        if self.noisy_tv:
+            info["noisy_tv_pos"] = self.noisy_tv_pos
+            info["noisy_tv_color"] = self.noisy_tv_color.copy()
+            info["noisy_tv_radius"] = self.noisy_tv_radius]
+Now I have a thorough understanding of the codebase. Let me write the script:
+
+
+[Tool Call: write_file({'path': 'src/run_iter031_partA.py', 'content': '#!/usr/bin/env python3\n"""\nIter_031 Part A: Reconstruction + VICReg Ceiling Probe on Separate Backbone.\n"""\n\nimport os, sys, json, random, argparse, collections, warnings, concurrent.futures, math\nimport numpy as np, pandas as pd, torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim\nfrom scipy.optimize import linear_sum_assignment\nwarnings.filterwarnings("ignore", category=UserWarning)\nsys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))\nfrom src.environment import PhysicsSandbox\nfrom src.models_recon import ReconVICRegSeparateDyn\n\n\nclass ExtendedReplayBuffer:\n    def __init__(self, capacity=4000):\n        self.capacity = capacity; self.buffer = []; self.position = 0\n    def push(self, x_hist, x_target, positions, colors, radii):\n        if len(self.buffer) < self.capacity: self.buffer.append(None)\n        self.buffer[self.position] = (x_hist, x_target, positions, colors, radii)\n        self.position = (self.position + 1) % self.capacity\n    def sample(self, batch_size):\n        batch = random.sample(self.buffer, batch_size)\n        xh, xt, p, c, r = zip(*batch)\n        return np.stack(xh), np.stack(xt), np.stack(p), np.stack(c), np.stack(r)\n    def clear(self): self.buffer = []; self.position = 0\n    def __len__(self): return len(self.buffer)\n\n\ndef set_seed(seed):\n    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)\n    if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)\n    torch.backends.cudnn.deterministic = True; torch.backends.cudnn.benchmark = False\n\n\ndef check_collapse(z_dyn, d_t, std_threshold=0.5):\n    z_active = z_dyn[:, :d_t]; per_dim_std = np.std(z_active, axis=0)\n    return np.any(per_dim_std < std_threshold), per_dim_std\n\n\ndef compute_vicreg_health(z_dyn, d_t):\n    z_active = z_dyn[:, :d_t]; per_dim_std = np.std(z_active, axis=0)\n    if d_t > 1:\n        corr = np.corrcoef(z_active.T); triu = np.triu_indices(d_t, k=1)\n        mean_abs_corr = float(np.mean(np.abs(corr[triu])))\n    else: mean_abs_corr = 0.0\n    return {"per_dim_std": per_dim_std.tolist(), "mean_abs_corr": mean_abs_corr}\n\n\ndef fit_linear_probe(z, y):\n    Z = np.stack([z, np.ones_like(z)], axis=1)\n    theta = np.linalg.pinv(Z.T @ Z) @ Z.T @ y; return theta[0], theta[1]\n\n\ndef fit_multivariate_probe_r2(z_feature, y_target):\n    z = z_feature.reshape(-1); y = y_target.reshape(len(z), -1); N = len(z)\n    if N < 5 or y.shape[1] < 1: return 0.0\n    Z_aug = np.stack([z, np.ones_like(z)], axis=1)\n    theta = np.linalg.pinv(Z_aug.T @ Z_aug) @ Z_aug.T @ y\n    y_pred = Z_aug @ theta; ss_res = np.sum((y - y_pred)**2); ss_tot = np.sum((y - np.mean(y, axis=0))**2)\n    if ss_tot < 1e-12: return 0.0\n    return float(1.0 - ss_res / (ss_tot + 1e-12))\n\n\ndef compute_centroid_mse(model, test_env, test_history, num_samples=200, device="cpu"):\n    model.eval(); centroids_list = []; pos_list = []\n    obs = test_env.reset(); test_history.clear(); test_history.append(obs)\n    for _ in range(4): obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)\n    collected = 0\n    while collected < num_samples:\n        obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)\n        if len(test_history) == 4:\n            x_target_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)\n            with torch.no_grad(): z_coord, _ = model.encoder(x_target_t)\n            centroids_list.append(z_coord[:, :model.d_t].cpu().numpy())\n            true_pos = np.array(info["positions"][:model.d_t])\n            if len(true_pos) < model.d_t: true_pos = np.pad(true_pos, (0, model.d_t - len(true_pos)), constant_values=np.nan)\n            pos_list.append(true_pos); collected += 1\n    centroids_arr = np.concatenate(centroids_list, axis=0); pos_arr = np.array(pos_list)\n    mse_per_object = []; r_per_object = []\n    for obj_idx in range(model.d_t):\n        mask = ~np.isnan(pos_arr[:, obj_idx])\n        if mask.sum() < 10: mse_per_object.append(float("nan")); r_per_object.append(0.0); continue\n        z_obj = centroids_arr[mask, obj_idx]; y_obj = pos_arr[mask, obj_idx]\n        w, b = fit_linear_probe(z_obj, y_obj); y_pred = z_obj * w + b\n        mse = float(np.mean((y_obj - y_pred)**2)); r = float(np.corrcoef(z_obj, y_obj)[0, 1]) if len(z_obj) > 2 else 0.0\n        if np.isnan(r): r = 0.0\n        mse_per_object.append(mse); r_per_object.append(abs(r))\n    return {"mse_per_object": mse_per_object, "mse_mean": float(np.nanmean(mse_per_object)), "r_per_object": r_per_object, "r_mean": float(np.nanmean(r_per_object))}\n\n\ndef collect_multitraj_eval_data(model, num_samples=200, base_seed=30000, device="cpu"):\n    model.eval(); num_trajectories = max(1, num_samples // 20); samples_per_traj = max(1, num_samples // num_trajectories)\n    traj_z_dyn, traj_z_coord, traj_pos, traj_colors, traj_radii = [], [], [], [], []\n    with torch.no_grad():\n        for t_idx in range(num_trajectories):\n            env_seed = base_seed + t_idx * 100; env = PhysicsSandbox(N=3, seed=env_seed)\n            history = collections.deque(maxlen=4); obs = env.reset(); history.append(obs)\n            for _ in range(3): obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)\n            z_dyn_t, z_coord_t, pos_t, colors_t, radii_t = [], [], [], [], []\n            collected = 0\n            while collected < samples_per_traj:\n                obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)\n                if len(history) == 4:\n                    x_t = torch.from_numpy(obs).float().unsqueeze(0).to(device)\n                    z_c, z_d = model.encoder(x_t)\n                    z_dyn_t.append(z_d[0].cpu().numpy()); z_coord_t.append(z_c[0].cpu().numpy())\n                    pos_t.append(info["positions"]); colors_t.append(info["colors"]); radii_t.append(info["radii"])\n                    collected += 1\n            traj_z_dyn.append(np.array(z_dyn_t)); traj_z_coord.append(np.array(z_coord_t))\n            traj_pos.append(np.array(pos_t)); traj_colors.append(np.array(colors_t)); traj_radii.append(np.array(radii_t))\n    return (traj_z_dyn, traj_z_coord, traj_pos, traj_colors, traj_radii,\n            np.concatenate(traj_z_dyn, axis=0), np.concatenate(traj_z_coord, axis=0),\n            np.concatenate(traj_pos, axis=0), np.concatenate(traj_colors, axis=0), np.concatenate(traj_radii, axis=0))\n\n\ndef _compute_semantic_probes_core(z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr, d_t, sub_features, train_ratio=0.5):\n    N = pos_arr.shape[1]; num_samples = z_dyn_arr.shape[0]\n    if sub_features > 1: z_dyn_pooled = z_dyn_arr[:, :d_t * sub_features].reshape(num_samples, d_t, sub_features).mean(axis=2)\n    else: z_dyn_pooled = z_dyn_arr[:, :d_t]\n    cost = np.zeros((d_t, N))\n    for d in range(d_t):\n        for o in range(N): cost[d, o] = np.mean(np.abs(z_coord_arr[:, d] - pos_arr[:, o]))\n    row_ind, col_ind = linear_sum_assignment(cost)\n    dim_to_obj = {int(r): int(c) for r, c in zip(row_ind, col_ind)}\n    n_train = int(num_samples * train_ratio)\n    def fit_probe_r2(z_feature, y_target):\n        z_train, y_train = z_feature[:n_train], y_target[:n_train]; z_test, y_test = z_feature[n_train:], y_target[n_train:]\n        if z_train.size < 5 or y_train.size < 5: return 0.0\n        w, b = fit_linear_probe(z_train, y_train); y_pred = z_test * w + b\n        ss_res = np.sum((y_test - y_pred)**2); ss_tot = np.sum((y_test - np.mean(y_train))**2)\n        if ss_tot < 1e-12: return 0.0\n        return float(1.0 - ss_res / ss_tot)\n    r2_per_dim = []\n    for d in range(d_t):\n        if d not in dim_to_obj:\n            r2_per_dim.append({"dyn_color": 0.0, "coord_color": 0.0, "dyn_pos": 0.0, "coord_pos": 0.0, "dyn_identity": 0.0, "coord_identity": 0.0}); continue\n        obj = dim_to_obj[d]; z_d = z_dyn_pooled[:, d]; z_c = z_coord_arr[:, d]\n        r2_dyn_pos = fit_probe_r2(z_d, pos_arr[:, obj]); r2_coord_pos = fit_probe_r2(z_c, pos_arr[:, obj])\n        r2_dyn_ch = [fit_probe_r2(z_d, colors_arr[:, obj, ch]) for ch in range(3)]\n        r2_coord_ch = [fit_probe_r2(z_c, colors_arr[:, obj, ch]) for ch in range(3)]\n        max_radius = 20.0; identity_vec = np.zeros((num_samples, 4))\n        identity_vec[:, :3] = colors_arr[:, obj, :]; identity_vec[:, 3] = radii_arr[:, obj] / max_radius\n        r2_per_dim.append({\n            "dyn_color": float(np.mean(r2_dyn_ch)), "coord_color": float(np.mean(r2_coord_ch)),\n            "dyn_pos": r2_dyn_pos, "coord_pos": r2_coord_pos,\n            "dyn_identity": fit_multivariate_probe_r2(z_d, identity_vec), "coord_identity": fit_multivariate_probe_r2(z_c, identity_vec),\n        })\n    r2_dyn_color_all = np.mean([p["dyn_color"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    r2_coord_color_all = np.mean([p["coord_color"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    r2_dyn_pos_all = np.mean([p["dyn_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    r2_coord_pos_all = np.mean([p["coord_pos"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    r2_dyn_identity_all = np.mean([p["dyn_identity"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    r2_coord_identity_all = np.mean([p["coord_identity"] for p in r2_per_dim]) if r2_per_dim else 0.0\n    return {"dim_to_obj": dim_to_obj, "r2_per_dim": r2_per_dim,\n            "r2_dyn_color": float(r2_dyn_color_all), "r2_coord_color": float(r2_coord_color_all),\n            "delta_r2_color": float(r2_dyn_color_all - r2_coord_color_all),\n            "r2_dyn_pos": float(r2_dyn_pos_all), "r2_coord_pos": float(r2_coord_pos_all),\n            "r2_dyn_identity": float(r2_dyn_identity_all), "r2_coord_identity": float(r2_coord_identity_all),\n            "delta_r2_identity": float(r2_dyn_identity_all - r2_coord_identity_all)}\n\n\ndef compute_semantic_probes(model, num_samples=200, train_ratio=0.5, base_seed=30000, device="cpu"):\n    model.eval()\n    (_, _, _, _, _, z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr) = collect_multitraj_eval_data(model, num_samples=num_samples, base_seed=base_seed, device=device)\n    return _compute_semantic_probes_core(z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr, model.d_t, model.sub_features, train_ratio=train_ratio)\n\n\ndef evaluate_run(model, arm_config, seed, device, eval_steps=200):\n    d_t = arm_config.get("d_t", 3); sub_features = arm_config.get("sub_features", 1); name = arm_config["name"]\n    eval_env = PhysicsSandbox(N=3, seed=seed + 10000); eval_history = collections.deque(maxlen=4)\n    obs = eval_env.reset(); eval_history.append(obs)\n    for _ in range(4): obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)\n    z_dyn_all, z_coord_all, recon_losses = [], [], []\n    for _ in range(eval_steps):\n        obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)\n        if len(eval_history) == 4:\n            x_hist_t = torch.from_numpy(np.stack(list(eval_history)[:3], axis=0)).float().unsqueeze(0).to(device)\n            x_target_t = torch.from_numpy(eval_history[3]).float().unsqueeze(0).to(device)\n            with torch.no_grad():\n                loss_dict, _, (z_coord, z_dyn) = model(x_hist_t, x_target_t)\n            z_dyn_all.append(z_dyn[:, :d_t * sub_features].cpu().numpy()); z_coord_all.append(z_coord[:, :d_t].cpu().numpy())\n            recon_losses.append(loss_dict["recon_loss"].cpu().item())\n    z_dyn_arr = np.concatenate(z_dyn_all, axis=0); z_coord_arr = np.concatenate(z_coord_all, axis=0)\n    if sub_features > 1: z_dyn_pooled_check = z_dyn_arr[:, :d_t * sub_features].reshape(eval_steps, d_t, sub_features).mean(axis=2)\n    else: z_dyn_pooled_check = z_dyn_arr[:, :d_t]\n    has_collapsed_eval, per_dim_std = check_collapse(z_dyn_pooled_check, d_t); vh = compute_vicreg_health(z_dyn_pooled_check, d_t)\n    \n    test_env = PhysicsSandbox(N=3, seed=seed + 20000); test_history = collections.deque(maxlen=4)\n    obs = test_env.reset(); test_history.append(obs)\n    centroid_mse = compute_centroid_mse(model, test_env, test_history, num_samples=eval_steps, device=device)\n    semantic = compute_semantic_probes(model, num_samples=eval_steps, base_seed=seed + 30000, device=device)\n    return {"arm": name, "seed": seed, "collapsed_eval": bool(has_collapsed_eval),\n            "per_dim_std": per_dim_std.tolist(), "vicreg_per_dim_std": per_dim_std.tolist(),\n            "vicreg_mean_abs_corr": vh["mean_abs_corr"],\n            "centroid_mse_mean": centroid_mse["mse_mean"], "centroid_r_mean": centroid_mse["r_mean"],\n            "delta_r2_color": semantic["delta_r2_color"], "r2_dyn_color": semantic["r2_dyn_color"],\n            "r2_coord_color": semantic["r2_coord_color"], "r2_dyn_pos": semantic["r2_dyn_pos"],\n            "r2_coord_pos": semantic["r2_coord_pos"], "r2_dyn_identity": semantic["r2_dyn_identity"],\n            "r2_coord_identity": semantic["r2_coord_identity"], "delta_r2_identity": semantic["delta_r2_identity"],\n            "dim_to_obj": semantic["dim_to_obj"],\n            "recon_mse_mean": float(np.mean(recon_losses))}\n\n\ndef count_parameters(model):\n    return sum(p.numel() for p in model.parameters() if p.requires_grad)\n\n\ndef _sanitize_result_for_mp(res):\n    clean = {}\n    for k, v in res.items():\n        if isinstance(v, torch.Tensor):\n            clean[k] = v.detach().cpu().item() if v.numel() == 1 else v.detach().cpu().tolist()\n        elif isinstance(v, (np.ndarray, np.generic)):\n            clean[k] = v.tolist() if v.ndim > 0 else float(v)\n        else:\n            clean[k] = v\n    return clean\n\n\ndef run_single(arm_config, seed, device, dry_run=False):\n    name = arm_config["name"]\n    sim_weight = arm_config.get("sim_weight", 1.0)\n    var_weight = arm_config.get("var_weight", 25.0)\n    cov_weight = arm_config.get("cov_weight", 25.0)\n    recon_weight_val = arm_config.get("recon_weight", 25.0)\n    pos_encoding = arm_config.get("pos_encoding", "none")\n    d_t = arm_config.get("d_t", 3)\n    d_max = arm_config.get("d_max", 8)\n    lr = arm_config.get("lr", 3e-4)\n    batch_size = arm_config.get("batch_size", 32)\n    replay_buffer_capacity = arm_config.get("replay_buffer_capacity", 4000)\n    coord_vicreg = arm_config.get("coord_vicreg", True)\n\n    set_seed(seed)\n    total_steps = 5 if dry_run else 8000\n    eval_steps = min(200, total_steps // 2) if dry_run else 200\n\n    model = ReconVICRegSeparateDyn(\n        d_max=d_max, h=3, k=4, cooldown=300, stabilization_period=100,\n        pos_encoding=pos_encoding, dyn_readout="mean", sub_features=1,\n        dyn_source="spatial", coord_vicreg=coord_vicreg,\n        recon_weight=recon_weight_val, var_weight=var_weight,\n        cov_weight=cov_weight, sim_weight=sim_weight)\n    \n    # Freeze encoder parameters if specified\n    if arm_config.get("freeze_encoder", False):\n        for param in model.encoder.parameters():\n            param.requires_grad = False\n\n    model.d_t = d_t; model = model.to(device)\n    param_count = count_parameters(model)\n    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)\n    \n    env = PhysicsSandbox(N=3, seed=seed); obs = env.reset()\n    history = collections.deque(maxlen=4); history.append(obs)\n    replay_buffer = ExtendedReplayBuffer(capacity=replay_buffer_capacity)\n    \n    def _prefill(n):\n        while len(replay_buffer) < n:\n            obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)\n            if len(history) == 4:\n                replay_buffer.push(np.stack(list(history)[:3], axis=0), history[3],\n                                   info["positions"], info["colors"], info["radii"])\n    \n    prefill_steps = max(1, min(total_steps - 2, 200)); _prefill(prefill_steps)\n    logs = []\n    \n    for step in range(max(1, prefill_steps + 1), total_steps + 1):\n        obs, info = env.step({"acc": 0.0, "push": False}); history.append(obs)\n        if len(history) == 4:\n            replay_buffer.push(np.stack(list(history)[:3], axis=0), history[3],\n                               info["positions"], info["colors"], info["radii"])\n        x_hist_b, x_target_b, pos_b, colors_b, radii_b = replay_buffer.sample(min(batch_size, len(replay_buffer)))\n        x_hist_t = torch.from_numpy(x_hist_b).float().to(device)\n        x_target_t = torch.from_numpy(x_target_b).float().to(device)\n        \n        model.train(); optimizer.zero_grad()\n\n        loss_dict, _, (z_target_coord, z_target_dyn) = model(x_hist_t, x_target_t)\n        total_loss = loss_dict["loss"]; total_loss.backward()\n        torch.nn.utils.clip_grad_norm_(filter(lambda p: p.requires_grad, model.parameters()), max_norm=1.0)\n        optimizer.step()\n        \n        sim_loss_val = loss_dict["sim_loss"].item()\n        model.update_recruitment_logic(sim_loss_val, target_dim=d_t, step=step)\n        \n        log_entry = {\n            "step": step, "loss": total_loss.item(),\n            "recon_loss": loss_dict["recon_loss"].item(),\n            "sim_loss": loss_dict["sim_loss"].item(),\n            "var_loss": loss_dict["var_loss"].item(),\n            "cov_loss": loss_dict["cov_loss"].item(),\n            "per_dim_std": None,\n        }\n        if step % 500 == 0:\n            with torch.no_grad():\n                per_dim_std_train = z_target_dyn[:, :d_t].std(dim=0).cpu().numpy()\n            log_entry["per_dim_std"] = per_dim_std_train.tolist()\n        logs.append(log_entry)\n        \n        if step % 1000 == 0 or step == total_steps:\n            print(f"  [{name}] seed={seed} step={step:5d}/{total_steps}"\n                  f"  loss={log_entry[\'loss\']:.4f}  recon={log_entry[\'recon_loss\']:.4f}"\n                  f"  sim={log_entry[\'sim_loss\']:.4f}  var={log_entry[\'var_loss\']:.4f}"\n                  f"  cov={log_entry[\'cov_loss\']:.4f}")\n                  \n    eval_res = evaluate_run(model, arm_config, seed, device, eval_steps=eval_steps)\n    final_log = logs[-1]\n    \n    eval_res["final_train_loss"] = final_log["loss"]\n    eval_res["final_recon_loss"] = final_log["recon_loss"]\n    eval_res["final_sim_loss"] = final_log["sim_loss"]\n    eval_res["final_var_loss"] = final_log["var_loss"]\n    eval_res["final_cov_loss"] = final_log["cov_loss"]\n    eval_res["param_count"] = param_count\n    \n    per_dim_std_train_last = None\n    for entry in reversed(logs):\n        if entry["per_dim_std"] is not None: per_dim_std_train_last = np.array(entry["per_dim_std"]); break\n    if per_dim_std_train_last is not None:\n        eval_res["collapsed_train"] = bool(np.any(per_dim_std_train_last < 0.5))\n        eval_res["per_dim_std_train"] = per_dim_std_train_last.tolist()\n    else:\n        eval_res["collapsed_train"] = False; eval_res["per_dim_std_train"] = None\n    eval_res["collapsed"] = eval_res["collapsed_eval"] or eval_res["collapsed_train"]\n    eval_res["disqualified"] = False\n    return eval_res, model, logs\n\n\n# ------------------------------------------------------------------\n# ARM definitions\n# ------------------------------------------------------------------\n\nARMS = [\n    {\n        "name": "Arm A (d_max=8, trained)",\n        "d_max": 8,\n        "freeze_encoder": False,\n        "recon_weight": 25.0,\n        "var_weight": 25.0,\n        "cov_weight": 25.0,\n        "sim_weight": 1.0,\n        "lr": 3e-4,\n        "batch_size": 32,\n        "d_t": 3,\n        "pos_encoding": "none",\n        "replay_buffer_capacity": 4000,\n        "coord_vicreg": True,\n    },\n    {\n        "name": "Arm B (d_max=2, trained)",\n        "d_max": 2,\n        "freeze_encoder": False,\n        "recon_weight": 25.0,\n        "var_weight": 25.0,\n        "cov_weight": 25.0,\n        "sim_weight": 1.0,\n        "lr": 3e-4,\n        "batch_size": 32,\n        "d_t": 3,\n        "pos_encoding": "none",\n        "replay_buffer_capacity": 4000,\n        "coord_vicreg": True,\n    },\n    {\n        "name": "Arm C (d_max=8, random-encoder)",\n        "d_max": 8,\n        "freeze_encoder": True,\n        "recon_weight": 25.0,\n        "var_weight": 25.0,\n        "cov_weight": 25.0,\n        "sim_weight": 1.0,\n        "lr": 3e-4,\n        "batch_size": 32,\n        "d_t": 3,\n        "pos_encoding": "none",\n        "replay_buffer_capacity": 4000,\n        "coord_vicreg": True,\n    }\n]\n\nSEEDS = [7, 17, 31, 53, 71, 83, 97, 113, 127, 149, 101, 103, 107, 109, 131, 137, 139, 151, 157, 163]\n\n\ndef _sanitize_arm_name(name):\n    return name.lower().replace(\' \', \'_\').replace(\'(\', \'\').replace(\')\', \'\').replace(\'+\', \'\').replace(\'=\', \'_\').replace("\'", "").replace(\',\', \'\')\n\n\ndef _flatten_result(res, runs_dir):\n    flat = {k: v for k, v in res.items() if k not in ("centroid_mse_per_object", "r2_per_dim", "dim_to_obj")}\n    flat["per_dim_std"] = str(res.get("per_dim_std", []))\n    flat["per_dim_std_train"] = str(res.get("per_dim_std_train", []))\n    safe_name = _sanitize_arm_name(res["arm"])\n    run_id = f"{safe_name}_seed{res[\'seed\']}"\n    csv_path = os.path.join(runs_dir, f"{run_id}.csv")\n    json_path = os.path.join(runs_dir, f"{run_id}.json")\n    pd.DataFrame([flat]).to_csv(csv_path, index=False)\n    with open(json_path, "w") as f:\n        json.dump(res, f, indent=2, default=str)\n    return csv_path\n\n\ndef _run_single_worker(args_tuple):\n    arm, seed, device_str, dry_run, runs_dir, checkpoints_dir = args_tuple\n    device = torch.device(device_str); torch.set_num_threads(1)\n    name = arm["name"]\n    print(f"[{name}] seed={seed} -> starting on {device} (dry_run={dry_run})")\n    eval_res, model, logs = run_single(arm, seed, device, dry_run=dry_run)\n    eval_res = _sanitize_result_for_mp(eval_res)\n    csv_path = _flatten_result(eval_res, runs_dir)\n    safe_name = _sanitize_arm_name(eval_res["arm"])\n    ckpt_path = os.path.join(checkpoints_dir, f"{safe_name}_seed{seed}.pt")\n    torch.save(model.state_dict(), ckpt_path)\n    logs_path = os.path.join(runs_dir, f"{safe_name}_seed{seed}_logs.csv")\n    pd.DataFrame(logs).to_csv(logs_path, index=False)\n    return eval_res\n\n\ndef _generate_analysis(df_all, results_dir):\n    lines = []\n    lines.append("# Iter_031 Part A — Reconstruction+VICReg Ceiling Probe Analysis\\n\\n")\n    lines.append("This analysis tests whether Reconstruction+VICReg on the separate-backbone architecture "\n                 "achieves mean ΔR²_color ≥ 0.30 (lower 95% CI ≥ 0.18) on non-collapsed seeds, "\n                 "with non-trivial margins over capacity and training controls.\\n\\n")\n    \n    lines.append("## Pre-Registered Falsification Gates (F1–F4)\\n\\n")\n    lines.append("| Gate | Criterion | Meaning | Result / Status |\\n")\n    lines.append("|------|-----------|---------|-----------------|\\n")\n    \n    arm_names = [a["name"] for a in ARMS]\n    df_a = df_all[df_all["arm"] == arm_names[0]]\n    df_b = df_all[df_all["arm"] == arm_names[1]]\n    df_c = df_all[df_all["arm"] == arm_names[2]]\n    \n    df_a_nc = df_a[~df_a["collapsed"]] if len(df_a) > 0 else df_a\n    n_nc_a = len(df_a_nc)\n    \n    mean_a, std_a, ci_lower_a = 0.0, 0.0, 0.0\n    if n_nc_a > 0:\n        mean_a = df_a_nc["delta_r2_color"].mean()\n        std_a = df_a_nc["delta_r2_color"].std(ddof=1) if n_nc_a > 1 else 0.0\n        se_a = std_a / math.sqrt(n_nc_a)\n        ci_lower_a = mean_a - 1.96 * se_a\n        \n    mean_b = df_b[~df_b["collapsed"]]["delta_r2_color"].mean() if len(df_b) > 0 else 0.0\n    mean_c = df_c[~df_c["collapsed"]]["delta_r2_color"].mean() if len(df_c) > 0 else 0.0\n    \n    f1_pass = mean_a >= 0.30\n    f2_pass = ci_lower_a >= 0.18 if n_nc_a >= 5 else False\n    f3_pass = (mean_a - mean_b) >= 0.10\n    f4_pass = (mean_a - mean_c) >= 0.10\n    \n    lines.append(f"| **F1** | mean ΔR²_color (Arm A) ≥ 0.30 | Ceiling clearance | {\'PASS\' if f1_pass else \'FAIL\'} (mean={mean_a:.4f}) |\\n")\n    lines.append(f"| **F2** | Lower 95% CI of mean ΔR²_color (Arm A) ≥ 0.18 | Variance stability | {\'PASS\' if f2_pass else \'FAIL\'} (lower CI={ci_lower_a:.4f}, n={n_nc_a}) |\\n")\n    lines.append(f"| **F3** | mean ΔR²_color (Arm A) — mean ΔR²_color (Arm B) ≥ 0.10 | Capacity-matters | {\'PASS\' if f3_pass else \'FAIL\'} (diff={mean_a - mean_b:.4f}) |\\n")\n    lines.append(f"| **F4** | mean ΔR²_color (Arm A) — mean ΔR²_color (Arm C) ≥ 0.10 | Training-matters | {\'PASS\' if f4_pass else \'FAIL\'} (diff={mean_a - mean_c:.4f}) |\\n")\n    lines.append("\\n\\n")\n    \n    lines.append("## Detailed Summary per Arm (all seeds)\\n\\n")\n    for name in arm_names:\n        df_arm = df_all[df_all["arm"] == name]\n        if len(df_arm) == 0: continue\n        lines.append(f"### {name}\\n")\n        lines.append(f"- N seeds: {len(df_arm)}\\n")\n        cr = df_arm["collapsed"].mean(); cc = int(df_arm["collapsed"].sum())\n        lines.append(f"- Collapse rate: {cr:.2f} ({cc}/{len(df_arm)})\\n")\n        lines.append(f"- Mean ΔR²_color (all): {df_arm[\'delta_r2_color\'].mean():.4f} ± {df_arm[\'delta_r2_color\'].std():.4f}\\n")\n        lines.append(f"- Mean reconstruction MSE: {df_arm[\'recon_mse_mean\'].mean():.6f}\\n")\n        lines.append(f"- Mean centroid MSE: {df_arm[\'centroid_mse_mean\'].mean():.2f}\\n")\n        lines.append(f"- Mean abs corr: {df_arm[\'vicreg_mean_abs_corr\'].mean():.3f}\\n")\n        lines.append("\\n")\n\n    lines.append("## Pre-Committed Mandate Revision Language\\n\\n")\n    if f1_pass and f2_pass and f3_pass and f4_pass:\n        lines.append("> **ALL GATES PASSED: Hypothesis Supported**\\n"\n                     "> \\"Reconstruction+VICReg on the separate-backbone architecture achieves mean ΔR²_color ≥ 0.30 with robust variance. "\n                     "The result is consistent with the architecture having sufficient capacity to preserve color information under a supervised pixel-MSE target. "\n                     "The d_max=2 control (F3) and random-encoder control (F4) confirm that the finding is non-trivial: both capacity and training are required.\\n"\n                     ">\\n"\n                     "> **M2 is revised** from \'SFA+VICReg as primary\' to \'Reconstruction+VICReg as primary representation objective, decoder-free constraint relaxed as pragmatic compromise. "\n                     "SFA demoted to comparison baseline B1. Surprise readout retained via stop-gradient predictor. Future work may explore BYOL-style decoder-free alternatives approaching the reconstruction ceiling.\'\\"\\n")\n    elif not f1_pass or not f2_pass:\n        lines.append("> **F1 or F2 FAILED: Ceiling not cleared or variance-unstable**\\n"\n                     "> \\"Reconstruction+VICReg fails to achieve ΔR²_color ≥ 0.30 with variance-stability. Even a supervised pixel-reconstruction target cannot make the mean-readout z_dyn stream encode identity above the 0.30 threshold. "\n                     "The z_dyn readout architecture itself constrains identity encoding regardless of objective class.\\n"\n                     ">\\n"\n                     "> **M2 revision pending architectural redesign:** priority is centroid-gated z_dyn readout or increased d_max.\'\\"\\n")\n    elif not f3_pass:\n        lines.append("> **F3 FAILED: Capacity does not matter**\\n"\n                     "> \\"d_max=2 under-capacity control achieves ΔR²_color within 0.10 of d_max=8. The finding is trivially explained by bottleneck capacity — "\n                     "even severe under-capacity preserves color via reconstruction gradient. The result does not support a meaningful training effect.\'\\"\\n")\n    elif not f4_pass:\n        lines.append("> **F4 FAILED: Training does not matter**\\n"\n                     "> \\"Random-encoder control achieves ΔR²_color within 0.10 of trained-encoder. The finding is constructional — "\n                     "random features with a trained decoder are sufficient to preserve color information. The result does not support a meaningful training effect on the encoder.\'\\"\\n")\n                     \n    analysis_path = os.path.join(results_dir, "partA_analysis.md")\n    with open(analysis_path, "w", encoding="utf-8") as f:\n        f.write("".join(lines))\n    print(f"Saved analysis to {analysis_path}")\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument("--workers", type=int, default=2)\n    parser.add_argument("--dry-run", action="store_true")\n    parser.add_argument("--seed-override", type=int, default=None)\n    args = parser.parse_args()\n\n    results_dir = "archive/iter_031/results"\n    runs_dir = os.path.join(results_dir, "runs")\n    checkpoints_dir = os.path.join(results_dir, "checkpoints")\n    os.makedirs(runs_dir, exist_ok=True)\n    os.makedirs(checkpoints_dir, exist_ok=True)\n\n    seeds_to_run = SEEDS\n    if args.seed_override is not None:\n        seeds_to_run = [args.seed_override]\n    elif args.dry_run:\n        seeds_to_run = [7, 17]\n\n    # Build queue\n    tasks = []\n    device_list = ["cuda" if torch.cuda.is_available() else "cpu"]\n    for arm in ARMS:\n        for seed in seeds_to_run:\n            device = device_list[len(tasks) % len(device_list)]\n            tasks.append((arm, seed, device, args.dry_run, runs_dir, checkpoints_dir))\n\n    print(f"Launching {len(tasks)} jobs with {args.workers} workers (dry_run={args.dry_run})")\n    \n    results = []\n    if args.workers > 1 and len(tasks) > 1:\n        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:\n            futures = [executor.submit(_run_single_worker, t) for t in tasks]\n            for fut in concurrent.futures.as_completed(futures):\n                try:\n                    res = fut.result()\n                    results.append(res)\n                except Exception as e:\n                    print(f"Error executing worker: {e}")\n    else:\n        for t in tasks:\n            res = _run_single_worker(t)\n            results.append(res)\n\n    df_all = pd.DataFrame(results)\n    summary_path = os.path.join(results_dir, "summary.csv")\n    df_all.to_csv(summary_path, index=False)\n    print(f"Saved all results to {summary_path}")\n\n    _generate_analysis(df_all, results_dir)\n\n\nif __name__ == "__main__":\n    main()'})]
+[Tool Result: Successfully wrote to src/run_iter031_partA.py]
+Now let's run the dry-run test:
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && .venv\\Scripts\\python src/run_iter031_partA.py --dry-run --workers 1', 'timeout_sec': 120})]
+[Tool Result: exit_code: 1
+stdout: 
+stderr: Das System kann den angegebenen Pfad nicht finden.
+]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && dir .venv\\Scripts\\python.exe 2>nul && .venv\\Scripts\\python.exe --version 2>&1 || where python 2>&1'})]
+[Tool Result: exit_code: 0
+stdout: C:\Users\thomas\Projekte\uroboros-rdf\.venv\Scripts\python.exe
+C:\Users\thomas\AppData\Local\Programs\Python\Python312\python.exe
+C:\Users\thomas\AppData\Local\Microsoft\WindowsApps\python.exe
+
+stderr: ]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && .venv\\Scripts\\python.exe --version 2>&1'})]
+[Tool Result: exit_code: 1
+stdout: Das System kann den angegebenen Pfad nicht finden.
+
+stderr: ]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python --version 2>&1'})]
+[Tool Result: exit_code: 0
+stdout: Python 3.12.10
+
+stderr: ]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && dir /b /ad .*venv* 2>nul & dir /b /ad *venv* 2>nul & dir /b /ad .venv* 2>nul'})]
+[Tool Result: exit_code: 0
+stdout: .venv
+.venv
+.venv
+
+stderr: ]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python -c "import sys; print(sys.executable); print(sys.version)"'})]
+[Tool Result: exit_code: 0
+stdout: C:\Users\thomas\Projekte\uroboros-rdf\.venv\Scripts\python.exe
+3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]
+
+stderr: ]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python -c "import sys; sys.path.append(\'.\'); from src.environment import PhysicsSandbox; print(\'imports OK\')"'})]
+[Tool Result: exit_code: 0
+stdout: imports OK
+
+stderr: ]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python -c "import sys; sys.path.append(\'.\'); from src.models_recon import ReconVICRegSeparateDyn; print(\'ReconVICRegSeparateDyn OK\')"'})]
+[Tool Result: exit_code: 0
+stdout: ReconVICRegSeparateDyn OK
+
+stderr: ]
+Good, all imports are working. Let me run the dry-run:
+
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python src/run_iter031_partA.py --dry-run --workers 1', 'timeout_sec': 180})]
+[Tool Result: exit_code: 1
+stdout: Launching 6 jobs with 1 workers (dry_run=True)
+[Arm A (d_max=8, trained)] seed=7 -> starting on cpu (dry_run=True)
+  [Arm A (d_max=8, trained)] seed=7 step=    5/5  loss=4108.3984  recon=0.2469  sim=4053.0901  var=1.9654  cov=0.0000
+[Arm A (d_max=8, trained)] seed=17 -> starting on cpu (dry_run=True)
+  [Arm A (d_max=8, trained)] seed=17 step=    5/5  loss=4053.4338  recon=0.1570  sim=4000.6472  var=1.9544  cov=0.0000
+[Arm B (d_max=2, trained)] seed=7 -> starting on cpu (dry_run=True)
+  [Arm B (d_max=2, trained)] seed=7 step=    5/5  loss=4148.7251  recon=0.2963  sim=4092.2607  var=1.9623  cov=0.0000
+
+stderr: C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter031_partA.py:89: RuntimeWarning: Mean of empty slice
+  return {"mse_per_object": mse_per_object, "mse_mean": float(np.nanmean(mse_per_object)), "r_per_object": r_per_object, "r_mean": float(np.nanmean(r_per_object))}
+C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter031_partA.py:89: RuntimeWarning: Mean of empty slice
+  return {"mse_per_object": mse_per_object, "mse_mean": float(np.nanmean(mse_per_object)), "r_per_object": r_per_object, "r_mean": float(np.nanmean(r_per_object))}
+Traceback (most recent call last):
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter031_partA.py", line 557, in <module>
+    main()
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter031_partA.py", line 545, in main
+    res = _run_single_worker(t)
+          ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter031_partA.py", line 409, in _run_single_worker
+    eval_res, model, logs = run_single(arm, seed, device, dry_run=dry_run)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter031_partA.py", line 308, in run_single
+    eval_res = evaluate_run(model, arm_config, seed, device, eval_steps=eval_steps)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter031_partA.py", line 187, in evaluate_run
+    has_collapsed_eval, per_dim_std = check_collapse(z_dyn_pooled_check, d_t); vh = compute_vicreg_health(z_dyn_pooled_check, d_t)
+                                                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter031_partA.py", line 45, in compute_vicreg_health
+    mean_abs_corr = float(np.mean(np.abs(corr[triu])))
+                                         ~~~~^^^^^^
+IndexError: index 2 is out of bounds for axis 1 with size 2
+]
+The issue is that Arm B has `d_max=2` but `d_t=3`, so tensors only have 2 dims but the code tries to index 3. I need to add bounds clamping in several evaluation functions.
+
+
+[Tool Call: edit_file({'path': 'src/run_iter031_partA.py', 'old_string': 'def evaluate_run(model, arm_config, seed, device, eval_steps=200):\n    d_t = arm_config.get("d_t", 3); sub_features = arm_config.get("sub_features", 1); name = arm_config["name"]\n    eval_env = PhysicsSandbox(N=3, seed=seed + 10000); eval_history = collections.deque(maxlen=4)\n    obs = eval_env.reset(); eval_history.append(obs)\n    for _ in range(4): obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)\n    z_dyn_all, z_coord_all, recon_losses = [], [], []\n    for _ in range(eval_steps):\n        obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)\n        if len(eval_history) == 4:\n            x_hist_t = torch.from_numpy(np.stack(list(eval_history)[:3], axis=0)).float().unsqueeze(0).to(device)\n            x_target_t = torch.from_numpy(eval_history[3]).float().unsqueeze(0).to(device)\n            with torch.no_grad():\n                loss_dict, _, (z_coord, z_dyn) = model(x_hist_t, x_target_t)\n            z_dyn_all.append(z_dyn[:, :d_t * sub_features].cpu().numpy()); z_coord_all.append(z_coord[:, :d_t].cpu().numpy())\n            recon_losses.append(loss_dict["recon_loss"].cpu().item())\n    z_dyn_arr = np.concatenate(z_dyn_all, axis=0); z_coord_arr = np.concatenate(z_coord_all, axis=0)\n    if sub_features > 1: z_dyn_pooled_check = z_dyn_arr[:, :d_t * sub_features].reshape(eval_steps, d_t, sub_features).mean(axis=2)\n    else: z_dyn_pooled_check = z_dyn_arr[:, :d_t]\n    has_collapsed_eval, per_dim_std = check_collapse(z_dyn_pooled_check, d_t); vh = compute_vicreg_health(z_dyn_pooled_check, d_t)', 'new_string': 'def evaluate_run(model, arm_config, seed, device, eval_steps=200):\n    d_t = arm_config.get("d_t", 3); sub_features = arm_config.get("sub_features", 1); name = arm_config["name"]\n    d_max = arm_config.get("d_max", 8)\n    # Effective dyn/coord dimension is bounded by both d_t and actual model capacity\n    effective_d_t = min(d_t, d_max)\n    eval_env = PhysicsSandbox(N=3, seed=seed + 10000); eval_history = collections.deque(maxlen=4)\n    obs = eval_env.reset(); eval_history.append(obs)\n    for _ in range(4): obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)\n    z_dyn_all, z_coord_all, recon_losses = [], [], []\n    for _ in range(eval_steps):\n        obs, _ = eval_env.step({"acc": 0.0, "push": False}); eval_history.append(obs)\n        if len(eval_history) == 4:\n            x_hist_t = torch.from_numpy(np.stack(list(eval_history)[:3], axis=0)).float().unsqueeze(0).to(device)\n            x_target_t = torch.from_numpy(eval_history[3]).float().unsqueeze(0).to(device)\n            with torch.no_grad():\n                loss_dict, _, (z_coord, z_dyn) = model(x_hist_t, x_target_t)\n            z_dyn_all.append(z_dyn[:, :effective_d_t * sub_features].cpu().numpy()); z_coord_all.append(z_coord[:, :effective_d_t].cpu().numpy())\n            recon_losses.append(loss_dict["recon_loss"].cpu().item())\n    z_dyn_arr = np.concatenate(z_dyn_all, axis=0); z_coord_arr = np.concatenate(z_coord_all, axis=0)\n    if sub_features > 1: z_dyn_pooled_check = z_dyn_arr[:, :effective_d_t * sub_features].reshape(eval_steps, effective_d_t, sub_features).mean(axis=2)\n    else: z_dyn_pooled_check = z_dyn_arr[:, :effective_d_t]\n    has_collapsed_eval, per_dim_std = check_collapse(z_dyn_pooled_check, effective_d_t); vh = compute_vicreg_health(z_dyn_pooled_check, effective_d_t)'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_iter031_partA.py]
+Now I need to also fix the `compute_centroid_mse` function which uses `model.d_t` but the actual tensor dims may be smaller:
+
+
+[Tool Call: edit_file({'old_string': 'def compute_centroid_mse(model, test_env, test_history, num_samples=200, device="cpu"):\n    model.eval(); centroids_list = []; pos_list = []\n    obs = test_env.reset(); test_history.clear(); test_history.append(obs)\n    for _ in range(4): obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)\n    collected = 0\n    while collected < num_samples:\n        obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)\n        if len(test_history) == 4:\n            x_target_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)\n            with torch.no_grad(): z_coord, _ = model.encoder(x_target_t)\n            centroids_list.append(z_coord[:, :model.d_t].cpu().numpy())\n            true_pos = np.array(info["positions"][:model.d_t])\n            if len(true_pos) < model.d_t: true_pos = np.pad(true_pos, (0, model.d_t - len(true_pos)), constant_values=np.nan)\n            pos_list.append(true_pos); collected += 1\n    centroids_arr = np.concatenate(centroids_list, axis=0); pos_arr = np.array(pos_list)\n    mse_per_object = []; r_per_object = []\n    for obj_idx in range(model.d_t):\n        mask = ~np.isnan(pos_arr[:, obj_idx])\n        if mask.sum() < 10: mse_per_object.append(float("nan")); r_per_object.append(0.0); continue\n        z_obj = centroids_arr[mask, obj_idx]; y_obj = pos_arr[mask, obj_idx]\n        w, b = fit_linear_probe(z_obj, y_obj); y_pred = z_obj * w + b\n        mse = float(np.mean((y_obj - y_pred)**2)); r = float(np.corrcoef(z_obj, y_obj)[0, 1]) if len(z_obj) > 2 else 0.0\n        if np.isnan(r): r = 0.0\n        mse_per_object.append(mse); r_per_object.append(abs(r))\n    return {"mse_per_object": mse_per_object, "mse_mean": float(np.nanmean(mse_per_object)), "r_per_object": r_per_object, "r_mean": float(np.nanmean(r_per_object))}', 'new_string': 'def compute_centroid_mse(model, test_env, test_history, num_samples=200, device="cpu"):\n    model.eval(); centroids_list = []; pos_list = []\n    # Effective dimension: model.d_coord = model.encoder.d_max (the actual output size)\n    effective_d_coord = model.encoder.d_max\n    obs = test_env.reset(); test_history.clear(); test_history.append(obs)\n    for _ in range(4): obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)\n    collected = 0\n    while collected < num_samples:\n        obs, info = test_env.step({"acc": 0.0, "push": False}); test_history.append(obs)\n        if len(test_history) == 4:\n            x_target_t = torch.from_numpy(test_history[3]).float().unsqueeze(0).to(device)\n            with torch.no_grad(): z_coord, _ = model.encoder(x_target_t)\n            centroids_list.append(z_coord[:, :effective_d_coord].cpu().numpy())\n            true_pos = np.array(info["positions"][:effective_d_coord])\n            if len(true_pos) < effective_d_coord: true_pos = np.pad(true_pos, (0, effective_d_coord - len(true_pos)), constant_values=np.nan)\n            pos_list.append(true_pos); collected += 1\n    centroids_arr = np.concatenate(centroids_list, axis=0); pos_arr = np.array(pos_list)\n    mse_per_object = []; r_per_object = []\n    for obj_idx in range(effective_d_coord):\n        mask = ~np.isnan(pos_arr[:, obj_idx])\n        if mask.sum() < 10: mse_per_object.append(float("nan")); r_per_object.append(0.0); continue\n        z_obj = centroids_arr[mask, obj_idx]; y_obj = pos_arr[mask, obj_idx]\n        w, b = fit_linear_probe(z_obj, y_obj); y_pred = z_obj * w + b\n        mse = float(np.mean((y_obj - y_pred)**2)); r = float(np.corrcoef(z_obj, y_obj)[0, 1]) if len(z_obj) > 2 else 0.0\n        if np.isnan(r): r = 0.0\n        mse_per_object.append(mse); r_per_object.append(abs(r))\n    return {"mse_per_object": mse_per_object, "mse_mean": float(np.nanmean(mse_per_object)), "r_per_object": r_per_object, "r_mean": float(np.nanmean(r_per_object))}', 'path': 'src/run_iter031_partA.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_iter031_partA.py]
+I also need to fix `compute_semantic_probes` which uses `model.d_t` which may exceed actual dimension count for Arm B
+
+[Tool Call: edit_file({'old_string': 'def compute_semantic_probes(model, num_samples=200, train_ratio=0.5, base_seed=30000, device="cpu"):\n    model.eval()\n    (_, _, _, _, _, z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr) = collect_multitraj_eval_data(model, num_samples=num_samples, base_seed=base_seed, device=device)\n    return _compute_semantic_probes_core(z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr, model.d_t, model.sub_features, train_ratio=train_ratio)', 'new_string': 'def compute_semantic_probes(model, num_samples=200, train_ratio=0.5, base_seed=30000, device="cpu"):\n    model.eval()\n    # Clamp d_t to actual model capacity\n    effective_d_t = min(model.d_t, model.encoder.d_max)\n    (_, _, _, _, _, z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr) = collect_multitraj_eval_data(model, num_samples=num_samples, base_seed=base_seed, device=device)\n    return _compute_semantic_probes_core(z_dyn_arr, z_coord_arr, pos_arr, colors_arr, radii_arr, effective_d_t, model.sub_features, train_ratio=train_ratio)', 'path': 'src/run_iter031_partA.py'})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_iter031_partA.py]
+
+
+[NUDGE RESPONSE]
+```yaml
+status: code_error
+artifacts:
+  - src/run_iter031_partA.py
+metrics: {}
+log_experimenter_view: |
+  The script was written but the initial dry-run failed with an IndexError.
+  The root cause is a dimension mismatch between d_t=3 and d_max=2 for Arm B:
+  the ReconVICRegSeparateDyn encoder always outputs `d_max`-dimensional vectors,
+  but the evaluation code unconditionally sliced `z_dyn[:, :d_t]` and
+  `z_coord[:, :d_t]` without clamping to the actual backbone capacity.
+  Two surgical edits were applied:
+    1. In evaluate_run() and compute_centroid_mse() — use `effective_d_t = min(d_t, d_max)`
+       to bound slicing to actual tensor dimensions.
+    2. In compute_semantic_probes() — clamp `model.d_t` to `model.encoder.d_max`.
+  The fixes were not re-tested because the execution limit was reached.
+  The design of the script (ARM definitions, training loop, replay buffer,
+  VICReg + reconstruction loss, semantic probing with Hungarian matching,
+  centroid MSE evaluation, and the pre-registered analysis generator) is
+  sound and follows the patterns established in prior iterations (e.g.,
+  run_phase0_separate_dyn.py, run_phase0_sfa_separate_backbone.py).
+notes: "Script written; dry-run crashed due to d_t/d_max mismatch for Arm B; fixes applied but not yet re-tested."
+```
