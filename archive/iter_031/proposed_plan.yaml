@@ -1,0 +1,98 @@
+falsification_criterion: 'If Reconstruction+VICReg achieves mean ΔR²_color ≤ 0.275
+  (the best decoder-free result from
+
+  iter_029 Arm B, SFA+VICReg sfa_weight=5.0, 20 seeds), then the mean-readout z_dyn
+  architecture
+
+  itself constrains identity encoding regardless of objective class, and the project
+  must
+
+  redesign the z_dyn readout mechanism (e.g., centroid-gated readout from iter_027
+  Arm A'') or
+
+  encoder architecture before any further objective work. This would be a fundamental
+  architectural
+
+  finding, not an objective finding.
+
+  '
+hypothesis: 'Reconstruction+VICReg on the separate-backbone architecture achieves
+  mean ΔR²_color ≥ 0.30
+
+  across 20 seeds (lower 95% CI ≥ 0.18), establishing that the architecture supports
+  identity
+
+  encoding and that the M2 failure was objective-specific (all decoder-free objectives
+
+  insufficient for this architecture''s mean-readout z_dyn stream), not architectural.
+
+  Additionally, reconstruction-trained models produce centroid MSE < 120 (improved
+  over the
+
+  ~160 baseline from VICReg-only and SFA+VICReg arms).
+
+
+  Specifically: a deconv decoder head on the dyn backbone''s spatial features (B,
+  d_max, 8)
+
+  → (B, 3, 128) with loss = recon_weight × MSE(x_recon, x_input) + var_weight × VICReg(z_dyn)
+
+  + cov_weight × VICReg(z_dyn) + (coord_vicreg=True) VICReg(z_coord) shapes z_dyn
+  to carry
+
+  object identity information, as measured by the same ΔR²_color linear probe used
+  across
+
+  iter_020-030.
+
+  '
+pre_registration_file: src/pre_registration.md
+proposed_method: "## Part A: Reconstruction+VICReg Ceiling Probe (PRIMARY)\n\n###\
+  \ A1: Model Implementation\nCreate `src/models_recon.py` containing `ReconVICRegSeparateDyn`:\n\
+  - Encoder: `SeparateDynEncoder` (existing separate coord + dyn backbones, unchanged)\n\
+  - Decoder: Deconv head on dyn spatial features a_dyn (B, d_max, 8) → (B, 3, 128)\n\
+  \  Architecture: ConvTranspose1d(d_max, 128, k=5, s=2, p=2, op=1) → ReLU → \n  ConvTranspose1d(128,\
+  \ 64, k=5, s=2, p=2, op=1) → ReLU →\n  ConvTranspose1d(64, 32, k=5, s=2, p=2, op=1)\
+  \ → ReLU →\n  ConvTranspose1d(32, 3, k=5, s=2, p=2, op=1)\n- Loss: recon_weight\
+  \ × MSE(x_recon, x_target) + var_weight × [VICReg_var(z_dyn) + VICReg_var(z_coord)]\n\
+  \  + cov_weight × [VICReg_cov(z_dyn) + VICReg_cov(z_coord)] + sim_weight × predictor_loss\n\
+  - Predictor: DualStreamPredictor with stop-gradient on encoder output (surprise\
+  \ readout only)\n- All attributes needed for evaluation pipeline: encoder, d_t,\
+  \ d_max, sub_features,\n  color_probe_weight, color_probe_bias, id_contrastive_proj,\
+  \ gdasr_growth_points\n\n### A2: Quick Hyperparameter Scan\n- recon_weight ∈ {10.0,\
+  \ 25.0, 50.0}\n- 3 seeds per weight (7, 31, 97), 2000 steps each = 9 quick runs\n\
+  - var_weight=25.0, cov_weight=25.0, sim_weight=1.0, coord_vicreg=True\n- Select\
+  \ best recon_weight by ΔR²_color for full run\n\n### A3: Full Training (20 seeds,\
+  \ union bank)\n- Seeds: 10 original [7, 17, 31, 53, 71, 83, 97, 113, 127, 149] +\
+  \ 10 fresh [101, 103, 107, 109, 131, 137, 139, 151, 157, 163]\n- 8000 steps, batch_size=32,\
+  \ lr=3e-4, d_t=3, d_max=8\n- pos_encoding=\"none\", coord_vicreg=True\n- GDASR in\
+  \ log-only mode (no recruitment)\n\n### A4: Evaluation (identical pipeline to iter_029/030)\n\
+  - ΔR²_color (primary): linear probe from z_dyn to object color, channel-object matched\n\
+  - Centroid MSE: soft-argmax centroid decoding\n- Collapse rate: per-dim std < 0.5\
+  \ threshold\n- VICReg health: per-dim std, mean absolute cross-correlation\n- Reconstruction\
+  \ MSE\n- All metrics reported with 95% CI across 20 seeds\n\n### Comparison Baselines\
+  \ (from iter_029, no re-run)\n- VICReg-only: ΔR²_color = 0.045 (20 seeds)\n- SFA+VICReg\
+  \ sfa=5.0: ΔR²_color = 0.275 (20 seeds)\n\n## Part B: Protocol Calibration (REQUIRED\
+  \ PREAMBLE)\n\n### B1: N=2 Collision-Sparse CLTS Evaluation\n- Using existing VICReg-only\
+  \ checkpoint from iter_029 (best tracking: 36.22 px)\n- Environment: PhysicsSandbox(N=2),\
+  \ fewer collisions than N=3\n- 3 conditions per seed (5 seeds): surprise-driven,\
+  \ frozen (locus=0), random\n- 2000 evaluation steps per condition\n- Measure FIRST:\
+  \ random/frozen baseline for tracking error, collision count/100 steps,\n  collision\
+  \ attention selectivity (fraction of post-collision steps where colliding channel\
+  \ is attended)\n- Report measured random baselines explicitly\n- Define data-driven\
+  \ gate formulation: active condition must exceed random baseline by\n  a pre-declared\
+  \ margin (e.g., tracking error ≤ random − 1σ, or collision selectivity ≥ random\
+  \ × 1.5)\n\n### B2: Subtle Mass Perturbation Test\n- In same N=2 environment, at\
+  \ step 1000: mass of object 0 changes by 1.5× (not 10×)\n- Measure: perturbation\
+  \ attention selectivity (fraction of steps post-perturbation where\n  changed object's\
+  \ channel is attended)\n- Compare surprise-driven vs random baselines\n\n## Mandate\
+  \ Revision (PRE-REGISTERED)\n- If ceiling probe SUCCEEDS (ΔR²_color ≥ 0.30): M2\
+  \ revised from \"SFA+VICReg as primary\"\n  to \"Reconstruction+VICReg as primary\
+  \ representation objective, decoder-free constraint\n  relaxed as pragmatic compromise.\
+  \ SFA demoted to comparison baseline B1. Surprise readout\n  retained via stop-gradient\
+  \ predictor. Future work may explore BYOL-style decoder-free\n  alternatives approaching\
+  \ the reconstruction ceiling.\"\n- If ceiling probe FAILS (ΔR²_color ≤ 0.275): \"\
+  Mean-readout z_dyn architecture is\n  insufficient for identity encoding under any\
+  \ tested objective class. M2 revision pending\n  architectural redesign. Priority:\
+  \ centroid-gated z_dyn readout (iter_027 Arm A' showed\n  directional improvement)\
+  \ or increased d_max.\"\n"
