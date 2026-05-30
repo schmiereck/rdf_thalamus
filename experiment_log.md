@@ -1356,3 +1356,68 @@ G2/G3: Complete ceiling effects. With 3 objects in 128 pixels, collisions occur 
 
 **Notes:** ARM 1: all gates failed (protocol confounded by ceiling effects). ARM 2: both D1 and D2 falsified.
 
+
+---
+```yaml
+cached_tokens: 5732958
+campaign: collapse-elimination
+cost_usd: 7.13369
+hypothesis: 'phase-31: Reconstruction+VICReg ceiling probe definitively falsifies
+  ΔR²_color ≥ 0.30 for mean-readout z_dyn; spatial averaging is the structural bottleneck,
+  not the training objective. CLTS protocol calibration establishes baselines but
+  all gates fail due to representation quality constraints.'
+input_tokens: 9743154
+iter: 31
+metrics:
+  F1_gate_mean_delta_r2_ge_0_30: FAIL
+  F2_gate_ci_lower_ge_0_18: FAIL
+  F3_gate_arm_a_minus_arm_b_ge_0_10: FAIL
+  F4_gate_arm_a_minus_arm_c_ge_0_10: FAIL
+  G1_tracking_gate: FAIL
+  G2_collision_selectivity_gate: FAIL
+  G3_perturbation_selectivity_gate: FAIL
+  arm_a_collapse_rate: 0.0
+  arm_a_lower_ci_95_delta_r2_color: -0.0127
+  arm_a_mean_centroid_mse: 160.32
+  arm_a_mean_delta_r2_color: 0.0631
+  arm_a_mean_recon_mse: 0.0185
+  arm_a_vs_arm_b_delta_r2_diff: 0.036
+  arm_b_collapse_rate: 0.0
+  arm_b_mean_delta_r2_color: 0.0271
+  arm_c_collapse_rate: 1.0
+  dt2_random_collision_selectivity: 0.44
+  dt2_random_perturbation_selectivity: 0.606
+  dt2_random_tracking_error: 38.75
+  dt2_surprise_driven_collision_selectivity: 0.59
+  dt2_surprise_driven_perturbation_selectivity: 0.482
+  dt2_surprise_driven_tracking_error: 37.61
+output_tokens: 174470
+status: ok
+```
+
+## iter_031: phase-31: Reconstruction+VICReg ceiling probe definitively falsifies ΔR²_color ≥ 0.30 for mean-readout z_dyn; spatial averaging is the structural bottleneck, not the training objective. CLTS protocol calibration establishes baselines but all gates fail due to representation quality constraints.
+
+**Analysis:** This phase tested the ONE remaining hypothesis that could have rescued M2: that
+Reconstruction+VICReg would achieve ΔR²_color ≥ 0.30, establishing a ceiling for
+identity encoding and showing the decoder-free constraint was the bottleneck.
+
+The result is a comprehensive architectural null:
+
+1. Reconstruction DOES reconstruct pixels well (MSE=0.018), confirming the spatial
+   features a_dyn contain 
+
+**Status:** ok
+
+**Metrics:** `{'arm_a_mean_delta_r2_color': 0.0631, 'arm_a_lower_ci_95_delta_r2_color': -0.0127, 'arm_a_collapse_rate': 0.0, 'arm_a_mean_recon_mse': 0.0185, 'arm_a_mean_centroid_mse': 160.32, 'arm_b_mean_delta_r2_color': 0.0271, 'arm_b_collapse_rate': 0.0, 'arm_c_collapse_rate': 1.0, 'arm_a_vs_arm_b_delta_r2_diff': 0.036, 'dt2_surprise_driven_tracking_error': 37.61, 'dt2_random_tracking_error': 38.75, 'dt2_surprise_driven_collision_selectivity': 0.59, 'dt2_random_collision_selectivity': 0.44, 'dt2_surprise_driven_perturbation_selectivity': 0.482, 'dt2_random_perturbation_selectivity': 0.606, 'F1_gate_mean_delta_r2_ge_0_30': 'FAIL', 'F2_gate_ci_lower_ge_0_18': 'FAIL', 'F3_gate_arm_a_minus_arm_b_ge_0_10': 'FAIL', 'F4_gate_arm_a_minus_arm_c_ge_0_10': 'FAIL', 'G1_tracking_gate': 'FAIL', 'G2_collision_selectivity_gate': 'FAIL', 'G3_perturbation_selectivity_gate': 'FAIL'}`
+
+**Experimenter view:** Part A (Ceiling Probe, agent 31.2): ALL four pre-registered gates failed.
+F1: Arm A mean ΔR²_color = 0.063 (threshold ≥ 0.30) — FAILED
+F2: Arm A lower 95% CI = -0.013 (threshold ≥ 0.18) — FAILED
+F3: Arm A − Arm B = 0.036 (threshold ≥ 0.10) — FAILED
+F4: Arm A − Arm C inapplicable (Arm C collapsed 100%) — FAILED
+
+Reconstruction MSE was very low (0.0185), confirming the decoder IS reconstructing
+pixe
+
+**Notes:** Fundamental architectural finding: mean-pooling z_dyn readout destroys color identity even under supervised reconstruction. CLTS protocol calibration shows directional collision-sensitivity signal but insufficient for pre-registered gates.
+
