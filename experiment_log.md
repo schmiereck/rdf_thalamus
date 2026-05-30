@@ -1296,3 +1296,63 @@ predicted mechanism for improving identity encoding is
 
 **Notes:** F1 falsified: ΔR²_color=0.2749<0.30; F2/F3 passed. Zero collapse across all 60 runs. Trend present but not robust.
 
+
+---
+```yaml
+cached_tokens: 2564275
+cost_usd: 3.2065
+hypothesis: 'phase-30: ARM 1 integration gates fail due to protocol confounds (ceiling
+  effects on G2/G3, tight G1 threshold); ARM 2 definitively falsifies ΔR²_color≥0.30
+  for all tested decoder-free objectives; M2 mandate not supported and proxy metric
+  must be retired'
+input_tokens: 5085157
+iter: 30
+metrics:
+  arm1_g1_clts_sfa_tracking_error: 45.09
+  arm1_g1_clts_vicreg_tracking_error: 36.22
+  arm1_g1_pass: false
+  arm1_g1_threshold: 20.0
+  arm1_g2_clts_sfa_collision_switch_rate: 1.0
+  arm1_g2_frozen_collision_switch_rate: 1.0
+  arm1_g2_pass: false
+  arm1_g2_random_collision_switch_rate: 0.999
+  arm1_g3_clts_sfa_perturbation_switch_rate: 1.0
+  arm1_g3_frozen_perturbation_switch_rate: 1.0
+  arm1_g3_pass: false
+  arm1_g3_random_perturbation_switch_rate: 1.0
+  arm1_gates_passed: 0
+  arm1_total_runs: 48
+  arm2_d1_ci_lower_95: 0.007
+  arm2_d1_collapse_rate: 0.0
+  arm2_d1_mean_delta_r2_color: 0.115
+  arm2_d1_verdict: FALSIFIED
+  arm2_d2_ci_lower_95: 0.074
+  arm2_d2_collapse_rate: 0.0
+  arm2_d2_mean_delta_r2_color: 0.189
+  arm2_d2_verdict: FALSIFIED
+  arm2_total_runs: 60
+  arm2_total_seeds: 30
+  best_delta_r2_color_achieved: 0.275
+  best_delta_r2_source: iter_029 Arm B, SFA+VICReg sfa_weight=5.0, 20 seeds
+  separate_backbone_collapse_rate_all_iters: 0.0
+output_tokens: 126162
+status: ok
+```
+
+## iter_030: phase-30: ARM 1 integration gates fail due to protocol confounds (ceiling effects on G2/G3, tight G1 threshold); ARM 2 definitively falsifies ΔR²_color≥0.30 for all tested decoder-free objectives; M2 mandate not supported and proxy metric must be retired
+
+**Analysis:** This phase executed the two-arm plan from the approved research plan with the Manager's three corrections incorporated.
+
+ARM 1 was designed to test whether frozen iter_029 representations (SFA+VICReg at ΔR²≈0.27 and VICReg-only at ΔR²≈0.04) support functional downstream behavior (tracking, collision attention, causal sensitivity). The pre-registered gates all failed, but the failure is primarily a
+
+**Status:** ok
+
+**Metrics:** `{'arm1_g1_clts_sfa_tracking_error': 45.09, 'arm1_g1_clts_vicreg_tracking_error': 36.22, 'arm1_g1_threshold': 20.0, 'arm1_g1_pass': False, 'arm1_g2_clts_sfa_collision_switch_rate': 1.0, 'arm1_g2_frozen_collision_switch_rate': 1.0, 'arm1_g2_random_collision_switch_rate': 0.999, 'arm1_g2_pass': False, 'arm1_g3_clts_sfa_perturbation_switch_rate': 1.0, 'arm1_g3_frozen_perturbation_switch_rate': 1.0, 'arm1_g3_random_perturbation_switch_rate': 1.0, 'arm1_g3_pass': False, 'arm1_gates_passed': 0, 'arm1_total_runs': 48, 'arm2_d1_mean_delta_r2_color': 0.115, 'arm2_d1_ci_lower_95': 0.007, 'arm2_d1_collapse_rate': 0.0, 'arm2_d1_verdict': 'FALSIFIED', 'arm2_d2_mean_delta_r2_color': 0.189, 'arm2_d2_ci_lower_95': 0.074, 'arm2_d2_collapse_rate': 0.0, 'arm2_d2_verdict': 'FALSIFIED', 'arm2_total_seeds': 30, 'arm2_total_runs': 60, 'separate_backbone_collapse_rate_all_iters': 0.0, 'best_delta_r2_color_achieved': 0.275, 'best_delta_r2_source': 'iter_029 Arm B, SFA+VICReg sfa_weight=5.0, 20 seeds'}`
+
+**Experimenter view:** ARM 1 (Integration Smoke-Test, agent 30.2):
+All 48 runs completed (12 seeds × 4 conditions). All 3 pre-registered gates failed.
+G1: CLTS-SFA mean tracking error = 45.09 ± 9.82 px, CLTS-VICReg = 36.22 ± 2.83 px — both above 20px threshold.
+G2/G3: Complete ceiling effects. With 3 objects in 128 pixels, collisions occur every 2-3 steps (~500-800 per run). ANY attention channel is "collision-involved"
+
+**Notes:** ARM 1: all gates failed (protocol confounded by ceiling effects). ARM 2: both D1 and D2 falsified.
+

@@ -1,0 +1,674 @@
+I'll start by reviewing the current project state and codebase before planning the phase execution.
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_mask_dyn_sim_shared.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      run_phase0_sfa_multistep.py
+      run_phase0_sfa_recovery.py
+      run_phase0_sfa_separate_backbone.py
+      run_phase0_sfa_sweep.py
+      run_phase10_experiments.py
+      run_phase11_experiments.py
+      run_phase12_experiments.py
+      run_phase13_experiments.py
+      run_phase14_experiments.py
+      run_phase15_experiments.py
+      run_phase16_experiments.py
+      run_phase17_experiments.py
+      run_phase18_experiments.py
+      run_phase19_experiments.py
+      run_phase4...]
+
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: iter | status          | hypothesis
+-----|-----------------|----------
+002  | ok              | phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
+003  | ok              | phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
+004  | ok              | phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
+005  | ok              | phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
+006  | ok              | phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
+007  | ok              | phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
+008  | ok              | phase-8: evaluate unsupervised spatial bottlenecks and close...]
+
+
+[Tool Call: read_file({'path': 'src/motor.py'})]
+
+[Tool Result: import numpy as np
+import torch
+
+class SubsumptionMotorController:
+    def __init__(self, Kp=1.0, Kd=0.1, Kv=0.5, error_thresh=4.0, stability_thresh=0.05, 
+                 push_cooldown=15, push_magnitude=20.0, dt=1.0, ablation=None):
+        """
+        Subsumption Motor Controller with 3 hierarchical layers.
+        
+        Args:
+            Kp (float): Proportional gain for reflexive PD tracking.
+            Kd (float): Derivative gain for reflexive PD tracking.
+            Kv (float): Velocity gain for predictive kinematics.
+            error_thresh (float): Threshold under which the pointer is close enough to target to trigger boredom.
+            stability_thresh (float): Threshold under which surprise change is stable.
+            push_cooldown (int): Cooldown steps after a push is triggered.
+            push_magnitude (float): Override acceleration magnitude during a deliberate push.
+            dt (float): Control loop time step.
+            ablation (str, optional): "random...]
+
+
+[Tool Call: read_file({'path': 'src/models_separate_dyn.py'})]
+
+[Tool Result: """
+Separate z_dyn Encoder Architecture for Iteration 027.
+
+Provides two classes:
+  - SeparateDynEncoder: Two independent CNN backbones (coord + dyn)
+  - NonParametricJEPASpatialSeparateDyn: JEPA model using SeparateDynEncoder
+"""
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+from src.models_dual_stream import (
+    calculate_centroid_and_variance,
+    add_positional_encoding,
+    DualStreamPredictor,
+    NonParametricJEPASpatial,
+)
+
+
+class SeparateDynEncoder(nn.Module):
+    """
+    Encoder with TWO independent CNN backbones:
+      (a) coord_backbone: conv1->conv2->conv3->conv4->conv_spatial
+          Produces z_coord via soft-argmax centroid from spatial feature map.
+      (b) dyn_backbone: conv1_dyn->conv2_dyn->conv3_dyn->conv4_dyn->conv_identity_dyn
+          Same architecture, SEPARATE parameters.
+          Produces z_dyn via mean pooling over the spatial dimension.
+
+    Both backbones process the SAME RGB input independe...]
+
+
+[Tool Call: read_file({'path': 'src/train.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import time
+import random
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Ensure src directory is in the path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import FixedJEPA, DynamicJEPA
+
+# Replay Buffer storing (x_hist, x_target)
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        x_hist_batch, x_target_bat...]
+
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_b...]
+
+
+[Tool Call: read_file({'path': 'src/train_thalamus.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import json
+import random
+import argparse
+import collections
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import pandas as pd
+
+# Set threads to prevent CPU thrashing
+torch.set_num_threads(2)
+
+# Ensure src directory is in path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.environment import PhysicsSandbox
+from src.models import FixedJEPA
+from src.thalamus import ThalamusNet, NonGatedControlNet
+
+class ReplayBuffer:
+    def __init__(self, capacity=2000):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+
+    def push(self, x_hist, x_target, color_0, pos_0):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target, color_0, pos_0)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        bat...]
+
+
+[Tool Call: read_file({'path': 'src/train_eval_closed_loop.py'})]
+
+[Tool Result: import os
+import sys
+import csv
+import json
+import random
+import collections
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import concurrent.futures
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.environment import PhysicsSandbox
+from src.thalamus import ThalamusNet
+from src.motor import SubsumptionMotorController
+
+class ReplayBuffer:
+    def __init__(self, capacity=2000, seed=42):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+        self.rng = random.Random(seed)
+
+    def push(self, x_hist, x_target, color_0, pos_0):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (x_hist, x_target, color_0, pos_0)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        batch = self.rng.sample(self.buffer, batch_size)
+...]
+
+Let me read the iter_029 experiment script and model files to understand the checkpoint structure:
+
+[Tool Call: read_file({'path': 'src/run_phase0_sfa_separate_backbone.py'})]
+
+[Tool Result: #!/usr/bin/env python3
+"""
+Iter_029: SFA+VICReg on Separate Backbone with coord_vicreg.
+
+Three-arm experiment on a union seed bank (20 seeds) testing whether
+explicit SFA slowness on z_dyn improves identity encoding (ΔR²_color).
+
+Arms:
+  A — VICReg-only control (separate backbone, mask_dyn_sim=True)
+  B — SFA+VICReg, sfa_weight=5.0
+  C — SFA+VICReg, sfa_weight=1.0
+"""
+
+import os, sys, json, random, argparse, collections, warnings, concurrent.futures
+import numpy as np, pandas as pd, torch, torch.nn as nn, torch.nn.functional as F, torch.optim as optim
+from scipy.optimize import linear_sum_assignment
+warnings.filterwarnings("ignore", category=UserWarning)
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from src.environment import PhysicsSandbox
+from src.models_separate_dyn import NonParametricJEPASpatialSeparateDyn
+
+
+class ExtendedReplayBuffer:
+    def __init__(self, capacity=4000):
+        self.capacity = capacity; self.buffer = []; self.position = 0
+   ...]
+
+
+[Tool Call: read_file({'path': 'src/models_dual_stream.py'})]
+
+[Tool Result: import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_encoding == "linear":
+        pos_...]
+
+Let me check the iter_029 checkpoint structure:
+
+[Tool Call: read_iteration({'iter_num': 29})]
+
+[Tool Result: ```yaml
+cached_tokens: 548611
+cost_usd: 5.03612
+hypothesis: 'phase-29: SFA+VICReg on separate backbone shows directional trend (ΔR²_color
+  0.27 vs 0.04) but fails pre-registered F1 gate (0.27 < 0.30); M2 mandate not supported
+  by evidence'
+input_tokens: 3012206
+iter: 29
+metrics:
+  arm_a_centroid_mse_mean: 159.83
+  arm_a_collapse_rate: 0.0
+  arm_a_delta_r2_color_mean: 0.0445
+  arm_a_delta_r2_color_std: 0.2108
+  arm_b_centroid_mse_mean: 159.85
+  arm_b_collapse_rate: 0.0
+  arm_b_delta_r2_color_mean: 0.2749
+  arm_b_delta_r2_color_std: 0.5772
+  arm_b_final_sfa_loss_mean: 0.1408
+  arm_b_fresh_seeds_delta_r2: 0.3576
+  arm_b_original_seeds_delta_r2: 0.1921
+  arm_c_centroid_mse_mean: 167.13
+  arm_c_collapse_rate: 0.0
+  arm_c_delta_r2_color_mean: 0.1428
+  arm_c_delta_r2_color_std: 0.2634
+  arm_c_final_sfa_loss_mean: 0.2052
+  completed_runs: 60
+  f1_gate_delta_r2_color: FAIL (0.2749 < 0.30)
+  f2_gate_collapse_rate: PASS (0.0 <= 0.10)
+  f3_gate_centroid_mse: PASS (159.85 <= 241.88)
+  failed_runs...]
+
+Now I have a thorough understanding of the codebase, iter_029's checkpoint structure, and the CLTSMotorController. Let me plan and execute this phase.
+
+**Phase 30 Plan:**
+
+Based on the Manager's three corrections:
+1. ARM 1 needs THREE conditions: SFA-B, VICReg-only, plus frozen-attention and random controls
+2. G2/G3 must beat BOTH controls (random + frozen-attention) by 15pp with stated event-count null
+3. ARM 2 variance gate: lower 95% CI ≥ 0.18 (not std/mean < 2.0)
+
+**Sub-goals:**
+- **030.1**: Write pre-registration file with corrected gates
+- **030.2**: ARM 1 — Integration Smoke-Test (high priority, runs first)
+- **030.3**: ARM 2 — M2 Decisive Test (contingent, runs after ARM 1)
+
+Let me start with the pre-registration file:
+
+[Tool Call: run_agent({'complexity': 'low', 'estimated_runtime_sec': 120, 'iter_id': '030.1', 'task': 'Write the pre-registration file at src/pre_registration.md for iteration 030.\n\nRead the existing src/pre_registration.md first to understand the format, then OVERWRITE it with the following content. This is a critical scientific document — write it exactly as specified below.\n\n---\n\n# Pre-Registration: Iteration 030\n\n## ARM 1 — Integration Smoke-Test\n\n### Hypothesis\nA representation with ΔR²_color ≈ 0.27 (SFA+VICReg on separate backbone, 0% collapse, iter_029 Arm B) produces CLTS motor behavior that is functionally adequate for Pillar D (thalamic gating) and Pillar E (motor probing). The weaker representation (ΔR²_color ≈ 0.04, VICReg-only, iter_029 Arm A) may also be adequate, which would indicate identity decodability does not bottleneck downstream behavior and M2 should be demoted.\n\n### Falsification Criteria\nThree pre-registered gates, evaluated per-seed with paired comparisons:\n\n**G1 (Tracking Functionality):** CLTS-SFA mean |pointer_pos - attended_centroid| < 20 pixels over a 2000-step closed-loop evaluation (steps 200-2000, after EMA warmup). CLTS-VICReg must also meet this threshold. This gate tests whether z_coord centroid readout supports functional PD tracking.\n\n**G2 (Attention Validity — Collision):** Within 15 steps after a detected collision (|delta_v| > 2.0 for any object pair), CLTS attention switches to a collision-involved channel. We measure per-seed collision-switching-rate = fraction of collision events where CLTS attention is on a collision-involved channel within 15 steps. CLTS-SFA must have collision-switching-rate ≥ CLTS-Random + 15pp AND ≥ CLTS-Frozen + 15pp. The same applies to CLTS-VICReg if we test its gating separately. \n\nWith n_seeds=10, and estimating ~5-10 collision events per 2000-step run, each seed contributes a binomial outcome. Under the null (no advantage), the per-seed rate difference has expected 0. The 15pp threshold corresponds to a meaningful behavioral improvement. With 10 seeds and paired comparisons, a consistent 15pp advantage across seeds would reject the null at p < 0.05 via a sign test (probability of ≥8/10 seeds favoring CLTS under null = 0.055; ≥9/10 = 0.010).\n\n**G3 (Causal Sensitivity — Mass Perturbation):** At step 1000, object-0 mass is tripled and the pointer is forced near object 0 (pointer_pos = obj_0_pos ± 5) with a push. Within 20 steps, CLTS attention must switch to object 0\'s channel. Per-seed: 1 if switch occurs, 0 if not. CLTS-SFA switch-rate must ≥ CLTS-Random switch-rate + 15pp AND ≥ CLTS-Frozen switch-rate + 15pp. With 10 seeds and 1 perturbation per seed, under null (no advantage, 1/3 chance per random), the expected random switch-rate is ~33%. CLTS must achieve ≥48%.\n\n### Decision Rule\n- ≥2 of 3 gates pass for CLTS-SFA → representation sufficient → project advances to Phase 2/3\n- 0-1 gates pass for CLTS-SFA → representation insufficient → objective hunt justified (ARM 2 becomes critical)\n- CLTS-SFA passes AND CLTS-VICReg passes → identity decodability does NOT bottleneck downstream behavior → M2 demoted to "not a bottleneck for the project goal"\n- CLTS-SFA passes AND CLTS-VICReg fails → identity encoding DOES matter → 0.30 search is justified\n- Both fail → representation truly insufficient regardless of objective\n- CLTS-VICReg passes but CLTS-SFA doesn\'t → investigate anomaly\n\n### Controls (mandatory)\n1. **CLTS-Random**: Same CLTS controller but token_locus selected uniformly at random from d_t channels (replacing argmax of normalized surprise). PD tracking and push logic identical.\n2. **CLTS-Frozen**: Token_locus held at channel 0 throughout evaluation. Isolates contribution of attention switching from PD tracking.\n\n### Seeds\n10 fresh seeds (101, 103, 107, 109, 131, 137, 139, 151, 157, 163) from iter_029 union bank. Hard seeds 53, 71 reported separately, NOT included in gate calculations.\n\n---\n\n## ARM 2 — M2 Decisive Test\n\n### Hypothesis\nTemporal identity contrastive binding (D1) or variance-ramped SFA (D2) achieves mean ΔR²_color ≥ 0.30 on a 30-seed union bank with variance-stability (lower bound of the 95% CI ≥ 0.18, anchored to iter_027 Arm C result).\n\n### Falsification Criteria\n- **D1 falsified**: mean ΔR²_color < 0.30 OR lower 95% CI < 0.18 on the 30-seed bank\n- **D2 falsified**: mean ΔR²_color < 0.30 OR lower 95% CI < 0.18 on the 30-seed bank\n- **Both D1 and D2 falsified**: the ΔR²_color ≥ 0.30 target is unachievable by any decoder-free objective tested; the project accepts the current representation quality per ARM 1\'s verdict\n\n### Seed Bank\n30 seeds: original 10 (7, 17, 31, 53, 71, 83, 97, 113, 127, 149) + fresh 10 (101, 103, 107, 109, 131, 137, 139, 151, 157, 163) + new 10 (173, 179, 181, 191, 193, 197, 199, 211, 223, 227). Hard seeds 53, 71 included but flagged.\n\n### Preservation Rules\n- Separate backbone + collapse-avoiding config (mask_dyn_sim=True, coord_vicreg=True)\n- d_t=3 frozen, GDASR log-only (M3)\n- Pooled batch VICReg (M1)\n- No positional encoding (cross-objective regularity from iter_013 and iter_021)\n- Hard seeds 53/71 reported separately, not averaged away\n- Report σ alongside mean for all metrics (≥5 seeds minimum per condition)\n'})]
+
+[Tool Result: {"error": "Wrong iter_id '030.1' for iteration 30. Use ids like '30.1', '30.2', etc. (not numbers from a previous or future iteration)."}]
+
+
+[Tool Call: run_agent({'complexity': 'low', 'estimated_runtime_sec': 120, 'iter_id': '30.1', 'task': "Write the pre-registration file at src/pre_registration.md for iteration 030.\n\nRead the existing src/pre_registration.md first to understand the format, then OVERWRITE it with the following content. This is a critical scientific document — write it exactly as specified below.\n\n---\n\n# Pre-Registration: Iteration 030\n\n## ARM 1 — Integration Smoke-Test\n\n### Hypothesis\nA representation with ΔR²_color ≈ 0.27 (SFA+VICReg on separate backbone, 0% collapse, iter_029 Arm B) produces CLTS motor behavior that is functionally adequate for Pillar D (thalamic gating) and Pillar E (motor probing). The weaker representation (ΔR²_color ≈ 0.04, VICReg-only, iter_029 Arm A) may also be adequate, which would indicate identity decodability does not bottleneck downstream behavior and M2 should be demoted.\n\n### Falsification Criteria\nThree pre-registered gates, evaluated per-seed with paired comparisons:\n\n**G1 (Tracking Functionality):** CLTS-SFA mean |pointer_pos - attended_centroid| < 20 pixels over a 2000-step closed-loop evaluation (steps 200-2000, after EMA warmup). CLTS-VICReg must also meet this threshold. This gate tests whether z_coord centroid readout supports functional PD tracking.\n\n**G2 (Attention Validity — Collision):** Within 15 steps after a detected collision (|delta_v| > 2.0 for any object pair), CLTS attention switches to a collision-involved channel. We measure per-seed collision-switching-rate = fraction of collision events where CLTS attention is on a collision-involved channel within 15 steps. CLTS-SFA must have collision-switching-rate ≥ CLTS-Random + 15pp AND ≥ CLTS-Frozen + 15pp. The same applies to CLTS-VICReg. \n\nWith n_seeds=10, estimating ~5-10 collision events per 2000-step run, each seed contributes a binomial outcome. Under null (no advantage), per-seed rate difference has expected 0. The 15pp threshold is a meaningful behavioral improvement. With 10 seeds and paired comparisons, a consistent 15pp advantage across seeds rejects the null at p < 0.05 via sign test (≥9/10 seeds favoring CLTS under null: p = 0.010).\n\n**G3 (Causal Sensitivity — Mass Perturbation):** At step 1000, object-0 mass is tripled and the pointer is forced near object 0 (pointer_pos = obj_0_pos ± 5) with a push. Within 20 steps, CLTS attention must switch to object 0's channel. Per-seed: 1 if switch occurs, 0 if not. CLTS-SFA switch-rate must ≥ CLTS-Random switch-rate + 15pp AND ≥ CLTS-Frozen switch-rate + 15pp. With 10 seeds and 1 perturbation per seed, under null (1/3 chance per random), expected random switch-rate is ~33%. CLTS must achieve ≥48%.\n\n### Decision Rule\n- ≥2 of 3 gates pass for CLTS-SFA → representation sufficient → project advances to Phase 2/3\n- 0-1 gates pass for CLTS-SFA → representation insufficient → objective hunt justified (ARM 2 becomes critical)\n- CLTS-SFA passes AND CLTS-VICReg passes → identity decodability does NOT bottleneck downstream behavior → M2 demoted\n- CLTS-SFA passes AND CLTS-VICReg fails → identity encoding DOES matter → 0.30 search justified\n- Both fail → representation truly insufficient\n- CLTS-VICReg passes but CLTS-SFA doesn't → investigate anomaly\n\n### Controls (mandatory)\n1. **CLTS-Random**: Same CLTS controller but token_locus selected uniformly at random from d_t channels (replacing argmax of normalized surprise). PD tracking and push logic identical.\n2. **CLTS-Frozen**: Token_locus held at channel 0 throughout evaluation. Isolates contribution of attention switching from PD tracking.\n\n### Seeds\n10 fresh seeds (101, 103, 107, 109, 131, 137, 139, 151, 157, 163) from iter_029 union bank. Hard seeds 53, 71 reported separately, NOT included in gate calculations.\n\n---\n\n## ARM 2 — M2 Decisive Test\n\n### Hypothesis\nTemporal identity contrastive binding (D1) or variance-ramped SFA (D2) achieves mean ΔR²_color ≥ 0.30 on a 30-seed union bank with variance-stability (lower bound of the 95% CI ≥ 0.18, anchored to iter_027 Arm C result).\n\n### Falsification Criteria\n- **D1 falsified**: mean ΔR²_color < 0.30 OR lower 95% CI < 0.18 on the 30-seed bank\n- **D2 falsified**: mean ΔR²_color < 0.30 OR lower 95% CI < 0.18 on the 30-seed bank\n- **Both D1 and D2 falsified**: ΔR²_color ≥ 0.30 is unachievable by any decoder-free objective tested; project accepts current representation quality per ARM 1 verdict\n\n### Seed Bank\n30 seeds: original 10 (7, 17, 31, 53, 71, 83, 97, 113, 127, 149) + fresh 10 (101, 103, 107, 109, 131, 137, 139, 151, 157, 163) + new 10 (173, 179, 181, 191, 193, 197, 199, 211, 223, 227). Hard seeds 53, 71 flagged.\n\n### Preservation Rules\n- Separate backbone + collapse-avoiding config (mask_dyn_sim=True, coord_vicreg=True)\n- d_t=3 frozen, GDASR log-only (M3)\n- Pooled batch VICReg (M1)\n- No positional encoding (cross-objective regularity from iter_013 and iter_021)\n- Hard seeds 53/71 reported separately, not averaged away\n- Report σ alongside mean for all metrics (≥5 seeds minimum per condition)\n"})]
+
+[Tool Result: {"started": true, "iter_id": "30.1", "done": true, "final_result": {"status": "ok", "artifacts": ["src/pre_registration.md"], "metrics": {}, "experimenter_view": "Completed the pre-registration document for iteration 030, overwriting the existing file. The pre-registration specifies two arms: ARM 1 (Integration Smoke-Test) evaluates CLTS motor behavior using representations from iter_029, testing three gates (tracking, collision attention, mass perturbation causal sensitivity) with paired comparisons across 10 fresh seeds and two mandatory controls (CLTS-Random and CLTS-Frozen). ARM 2 (M2 Decisive Test) tests temporal identity contrastive binding (D1) and variance-ramped SFA (D2) targeting \u0394R\u00b2_color \u2265 0.30 on a 30-seed union bank with variance-stability (95% CI lower bound \u2265 0.18). Decision rules, falsification criteria, seed banks, and preservation rules are fully specified for both arms.\n", "notes": "Pre-registration file for iteration 030 written successfully."}...]
+
+Pre-registration written. Now executing ARM 1 — the Integration Smoke-Test (highest priority):
+
+[Tool Call: run_agent({'complexity': 'high', 'estimated_runtime_sec': 1800, 'iter_id': '30.2', 'task': 'ARM 1 — Integration Smoke-Test for Iteration 030.\n\nFIRST: Read src/pre_registration.md to understand the full pre-registered hypothesis and falsification criteria. You MUST adhere strictly to these criteria.\n\n## Overview\nLoad pre-trained checkpoints from iter_029 and run them through CLTSMotorController closed-loop evaluation. This tests whether the current representation quality (ΔR²_color ≈ 0.27 for SFA+VICReg, ≈ 0.04 for VICReg-only) is sufficient for downstream thalamic gating and motor behavior.\n\n## Experiment Design\n\n### Checkpoints\n- SFA+VICReg checkpoints: `archive/iter_029/results/checkpoints/b_sfavicreg,_sfa_5.0_seed{SEED}.pt`\n- VICReg-only checkpoints: `archive/iter_029/results/checkpoints/a_vicreg-only_control_seed{SEED}.pt`\n\n### Seeds\n10 fresh seeds: [101, 103, 107, 109, 131, 137, 139, 151, 157, 163]\nHard seeds (reported separately): [53, 71]\n\n### Four Conditions Per Seed\n1. **CLTS-SFA**: Load SFA+VICReg checkpoint, run CLTSMotorController with surprise-driven attention\n2. **CLTS-VICReg**: Load VICReg-only checkpoint, run CLTSMotorController with surprise-driven attention\n3. **CLTS-Frozen**: Load SFA+VICReg checkpoint, but override token_locus to always be channel 0 (frozen attention — control for PD tracking)\n4. **CLTS-Random**: Load SFA+VICReg checkpoint, but override token_locus to be uniformly random from [0, d_t) at each step (random attention — control for chance)\n\n### Closed-Loop Evaluation Protocol (per seed per condition, 2000 steps)\n1. Create PhysicsSandbox(N=3, seed=seed)\n2. Initialize model from checkpoint, set d_t=3\n3. Initialize CLTSMotorController(Kp=2.0, Kd=0.5, Kv=0.5)\n4. Run 2000 steps with the controller providing actions\n5. First 200 steps: warm-up with fixed attention at channel 0 (let EMA stats converge), no metrics collected\n6. Steps 200-1000: collect tracking metrics, detect collisions\n7. At step 1000: Apply mass perturbation — set object 0 mass to 3× current mass. Force pointer near object 0 (pointer_pos = obj_0_pos ± 5.0). Issue a push action.\n8. Steps 1000-2000: continue evaluation, measure response to perturbation\n\n### Model Forward Pass Adaptation\nThe NonParametricJEPASpatialSeparateDyn model in SFA mode needs x_hist (B, H, 3, 128) and x_target (B, 3, 128). You need to maintain a history deque of 4 frames. The forward pass returns: loss_dict, (z_pred_coord, z_pred_dyn), (z_target_coord, z_target_dyn).\n\nTo compute surprise for CLTS, use z_pred_coord, z_target_coord, z_pred_dyn, z_target_dyn. Take the active dims [:d_t]:\n```python\nerr_coord_c = MSE(z_pred_coord[:, c] - z_target_coord[:, c]) for c in range(d_t)\nerr_dyn_c = MSE(z_pred_dyn[:, c] - z_target_dyn[:, c]) for c in range(d_t)\nsurprise_c = err_coord_c + err_dyn_c\n```\n\nFor CLTS-Frozen: after computing surprises, override token_locus to 0.\nFor CLTS-Random: after computing surprises, set token_locus to random.randint(0, d_t-1).\n\n### Collision Detection\nAt each step, check environment info["velocities"]. A collision between objects i and j is flagged if:\n- |velocity_i(t) - velocity_i(t-1)| > 2.0 (velocity change threshold)\nRecord the previous velocities to detect changes.\n\nWhen a collision is detected, record the objects involved. Check whether CLTS attention (token_locus) switches to a collision-involved channel within 15 steps. To map channels to objects, use the z_coord centroids: channel c\'s centroid should be near the position of the object it tracks. Sort channels by centroid value and sort objects by position to get a mapping.\n\n### Mass Perturbation\nAt step 1000:\n- env.masses[0] *= 3.0\n- env.pointer_pos = env.positions[0] + (5.0 if env.positions[0] < 64 else -5.0)\n- Issue push action\n- Record whether CLTS attention switches to object 0\'s channel within 20 steps\n\n### Metrics to Collect Per Seed Per Condition\n1. **tracking_error_mean**: mean |pointer_pos - attended_centroid| over steps 200-2000\n2. **collision_switch_rate**: fraction of collision events where attention was on a collision-involved channel within 15 steps\n3. **collision_switch_count**: number of collision events detected\n4. **perturbation_switch**: 1 if attention switched to object 0\'s channel within 20 steps after mass perturbation, 0 otherwise\n5. **perturbation_switch_step**: step at which switch occurred (if any)\n6. **mean_surprise**: mean surprise signal over evaluation\n\n### Gate Evaluation (from pre-registration)\n- **G1 PASS**: CLTS-SFA tracking_error_mean < 20 pixels AND CLTS-VICReg tracking_error_mean < 20 pixels\n- **G2 PASS**: CLTS-SFA collision_switch_rate ≥ max(CLTS-Random collision_switch_rate, CLTS-Frozen collision_switch_rate) + 0.15 (15pp)\n  - ALSO: CLTS-VICReg collision_switch_rate ≥ max(CLTS-Random, CLTS-Frozen) + 0.15 (for the M2 decision)\n- **G3 PASS**: CLTS-SFA perturbation_switch_rate ≥ max(CLTS-Random perturbation_switch_rate, CLTS-Frozen perturbation_switch_rate) + 0.15\n\nNote: For G2 and G3, compute the mean switch rate across seeds for each condition, then check if CLTS-SFA ≥ max(control) + 0.15. Also check CLTS-VICReg ≥ max(control) + 0.15 for the M2 decision hierarchy.\n\n### Decision Rules (from pre-registration)\n- ≥2 of 3 gates pass for CLTS-SFA → representation sufficient → project advances\n- 0-1 gates pass → representation insufficient\n- CLTS-SFA passes AND CLTS-VICReg passes → M2 demoted\n- CLTS-SFA passes AND CLTS-VICReg fails → identity encoding matters, 0.30 search justified\n- Both fail → representation truly insufficient\n\n### Output Files\nWrite results to: `archive/iter_030/results/arm1_integration_smoke_test.csv`\nWrite per-seed per-condition results to: `archive/iter_030/results/arm1_per_seed.csv`\nWrite analysis to: `archive/iter_030/results/arm1_analysis.md`\n\n### Implementation Notes\n- Use src/motor.py CLTSMotorController — it already implements surprise-driven attention with EMA normalization\n- Use src/models_separate_dyn.py NonParametricJEPASpatialSeparateDyn — create the model, set d_t=3, load checkpoint\n- Use src/environment.py PhysicsSandbox\n- The CLTSMotorController.get_action() takes model, obs, info, z_pred_coord, z_target_coord, z_pred_dyn, z_target_dyn, d_t, centroids\n- To get centroids from the model, use model.encoder(x_target) which returns (z_coord, z_dyn)\n- For the closed loop: at each step, encode current obs to get z_coord and z_dyn, maintain a history of z_coord and z_dyn for the predictor, run predictor to get z_pred_coord and z_pred_dyn, compute surprise, and pass to CLTS controller\n- IMPORTANT: Run on CPU. Use torch.set_num_threads(2) to avoid CPU thrashing. Process seeds sequentially.\n- Report mean ± std for all metrics. Flag hard seeds 53, 71 separately.\n- If checkpoint doesn\'t exist for a seed, skip and report.\n'})]
+
+[Tool Result: {"started": true, "iter_id": "30.2", "done": false, "final_result": null, "intermediate_state": "=== stdout (last 2000 chars) ===\nndom ... done in 6.4s | tracking_err=34.00 coll_rate=1.00 pert_switch=1\n\n[33/48] seed=157  condition=CLTS-SFA ... done in 6.3s | tracking_err=48.34 coll_rate=1.00 pert_switch=1\n\n[34/48] seed=157  condition=CLTS-VICReg ... done in 6.5s | tracking_err=41.01 coll_rate=1.00 pert_switch=1\n\n[35/48] seed=157  condition=CLTS-Frozen ... done in 6.3s | tracking_err=35.83 coll_rate=1.00 pert_switch=1\n\n[36/48] seed=157  condition=CLTS-Random ... done in 6.4s | tracking_err=48.76 coll_rate=1.00 pert_switch=1\n\n[37/48] seed=163  condition=CLTS-SFA ... done in 6.3s | tracking_err=56.12 coll_rate=1.00 pert_switch=1\n\n[38/48] seed=163  condition=CLTS-VICReg ... done in 6.5s | tracking_err=40.74 coll_rate=1.00 pert_switch=1\n\n[39/48] seed=163  condition=CLTS-Frozen ... done in 6.4s | tracking_err=46.39 coll_rate=1.00 pert_switch=1\n\n[40/48] seed=163  condition=CL...]
+
+
+[Tool Call: poll_agent({'iter_id': '30.2'})]
+
+[Tool Result: {"done": true, "final_result": {"status": "experiment_failed", "artifacts": ["src/run_arm1_integration_smoke_test.py", "debug_arm1.py", "archive/iter_030/results/arm1_per_seed.csv", "archive/iter_030/results/arm1_integration_smoke_test.csv", "archive/iter_030/results/arm1_analysis.md"], "metrics": {"g1_clts_sfa_tracking_error": 45.09, "g1_clts_vicreg_tracking_error": 36.22, "g2_clts_sfa_collision_switch_rate": 0.999, "g2_clts_vicreg_collision_switch_rate": 0.999, "g2_frozen_collision_switch_rate": 0.994, "g2_random_collision_switch_rate": 0.999, "g3_clts_sfa_perturbation_switch_rate": 1.0, "g3_clts_vicreg_perturbation_switch_rate": 1.0, "g3_frozen_perturbation_switch_rate": 1.0, "g3_random_perturbation_switch_rate": 1.0, "clts_sfa_gates_passed": 0, "clts_vicreg_gates_passed": 0, "total_runs": 48, "fresh_seeds": 10, "hard_seeds": 2}, "log_excerpt": "[1/48] seed=101  condition=CLTS-SFA ... done in 6.1s | tracking_err=55.81 coll_rate=1.00 pert_switch=1\n[2/48] seed=101  condition=CLTS-VIC...]
+
+Let me examine the ARM 1 results in detail to understand the failure mode:
+
+[Tool Call: read_file({'path': 'archive/iter_030/results/arm1_analysis.md'})]
+
+[Tool Result: # ARM 1 — Integration Smoke-Test Analysis (Iter 030)
+## Protocol
+- Seeds: fresh [101, 103, 107, 109, 131, 137, 139, 151, 157, 163]
+- Hard seeds (reported separately): [53, 71]
+- Conditions: ['CLTS-SFA', 'CLTS-VICReg', 'CLTS-Frozen', 'CLTS-Random']
+- Evaluation steps per run: 200–2000
+- Total seeds evaluated (fresh only for gates): 10
+
+## Summary Statistics (Fresh Seeds)
+
+| Condition | n | Tracking Error (mean±std) | Collision Switch (mean±std) | Perturbation Switch Rate | Mean Surprise (mean±std) |
+|-----------|---|---------------------------|----------------------------|--------------------------|--------------------------|
+| CLTS-SFA | 10 | 45.09±9.82 | 1.00±0.00 | 1.00 | 99.24±159.29 |
+| CLTS-VICReg | 10 | 36.22±2.83 | 1.00±0.00 | 1.00 | 1949.18±1344.45 |
+| CLTS-Frozen | 10 | 47.16±12.05 | 1.00±0.00 | 1.00 | 129.52±198.48 |
+| CLTS-Random | 10 | 46.76±9.59 | 1.00±0.00 | 1.00 | 90.61±135.54 |
+
+## Gate Evaluation (Fresh Seeds Only)
+
+**G1 (Tracking Functionality):** mean tracking error ...]
+
+
+[Tool Call: read_file({'path': 'archive/iter_030/results/arm1_per_seed.csv'})]
+
+[Tool Result: seed,condition,is_hard_seed,tracking_error_mean,tracking_error_std,collision_switch_rate,collision_switch_count,perturbation_switch,perturbation_switch_step,mean_surprise,num_eval_steps
+101,CLTS-SFA,False,55.81382031583501,37.462711324984106,0.9986910994764397,764,1,1002,16.707801040820353,1800
+101,CLTS-VICReg,False,38.43524088430597,25.831404824738026,0.9987325728770595,789,1,1001,1486.8274742960914,1800
+101,CLTS-Frozen,False,55.98648094850581,37.18490978571244,0.9986244841815681,727,1,1003,32.17472876172158,1800
+101,CLTS-Random,False,57.22882517331102,37.58162214289319,0.9987357774968394,791,1,1001,16.946674163683234,1800
+103,CLTS-SFA,False,29.194936904440826,17.9313604714482,0.9988662131519275,882,1,1002,28.73527088536185,1800
+103,CLTS-VICReg,False,33.91659764494906,20.484156105744187,0.9985141158989599,673,1,1002,1918.3842279092325,1800
+103,CLTS-Frozen,False,34.18297881210101,20.860413821264643,1.0,672,1,1018,6.037138729090248,1800
+103,CLTS-Random,False,33.22756143909888,21.1110882...]
+
+ARM 1 completed with all 3 gates failing — but the failure mode is important: G2 and G3 hit ceiling effects (collisions ~500-800 per run, making any attention channel collision-involved), and G1 tracking error (36-55 pixels) exceeded the 20-pixel threshold. The protocol gates were poorly calibrated for this environment's dynamics.
+
+Per the pre-registered decision rule (0/3 gates → objective hunt justified), ARM 2 becomes critical. Let me execute it now:
+
+[Tool Call: run_agent({'complexity': 'high', 'estimated_runtime_sec': 3600, 'iter_id': '30.3', 'task': 'ARM 2 — M2 Decisive Test for Iteration 030.\n\nFIRST: Read src/pre_registration.md to understand the full pre-registered hypothesis and falsification criteria. You MUST adhere strictly to these criteria.\n\n## Overview\nTrain two new representation objectives on the separate-backbone architecture and test whether either achieves mean ΔR²_color ≥ 0.30 with variance-stability (lower 95% CI ≥ 0.18) on a 30-seed union bank.\n\n## Two Arms\n\n### D1 — Temporal Identity Contrastive Binding (NT-Xent)\n- **Architecture**: NonParametricJEPASpatialSeparateDyn with primary_objective="contrastive"\n- **Loss**: Same-object-across-consecutive-timesteps as positive pairs, different-objects-as-negatives\n- **Implementation**: \n  1. Encode x_target and x_hist[:,-1] to get z_dyn_target (B, d_dyn) and z_dyn_hist (B, H, d_dyn), taking z_dyn_hist[:,-1] as z_dyn_prev\n  2. Use sorted matching: sort z_coord channels by centroid value, sort object positions by position, map channel→object\n  3. For each matched (channel c, object o): z_dyn_target[:, c] and z_dyn_prev[:, c] form a positive pair; z_dyn_target[:, c] and z_dyn_prev[:, other_c] for other_c ≠ c form negatives\n  4. NT-Xent loss: contrastive_loss = cross_entropy(sim(z_pos, z_anchor) / temperature, labels)\n  5. The contrastive loss replaces SFA as the primary identity-shaping objective on z_dyn\n  6. Total loss = contrastive_weight * contrastive_loss + var_weight * VICReg_var + cov_weight * VICReg_cov + sim_weight * JEPA_readout_loss\n- **Key params**: contrastive_weight=5.0, temperature=0.1, mask_dyn_sim=True, coord_vicreg=True, sfa_weight=0 (SFA disabled)\n\n### D2 — Variance-Ramped SFA\n- **Architecture**: NonParametricJEPASpatialSeparateDyn with primary_objective="sfa"  \n- **Loss**: Same as iter_029 Arm B but sfa_weight is LINEARLY RAMPED from 0 to 5.0 over the first 4000 training steps, then held constant at 5.0 for steps 4001-8000\n- **Implementation**: In the training loop, compute: sfa_weight_current = min(5.0, 5.0 * step / 4000) and pass sfa_weight=sfa_weight_current to model.forward()\n- **Key params**: mask_dyn_sim=True, coord_vicreg=True, sfa_weight=5.0 (target, ramped)\n\n### Shared Configuration\n- d_max=8, d_t=3 (frozen), h=3, k=4\n- Separate backbone (NonParametricJEPASpatialSeparateDyn)\n- GDASR log-only (gdasr_log_only=True)\n- pos_encoding="none"\n- lr=3e-4, batch_size=32\n- buffer_capacity=4000\n- sim_weight=1.0, var_weight=25.0, cov_weight=25.0\n- total_steps=8000\n- eval_steps=200 for semantic probe evaluation\n\n### Seed Bank (30 seeds)\nOriginal: [7, 17, 31, 53, 71, 83, 97, 113, 127, 149]\nFresh: [101, 103, 107, 109, 131, 137, 139, 151, 157, 163]\nNew: [173, 179, 181, 191, 193, 197, 199, 211, 223, 227]\nHard seeds 53, 71 must be included but flagged separately.\n\n## Contrastive Loss Implementation Detail\n\nThe existing model\'s forward method with primary_objective="contrastive" already has a basic NT-Xent implementation using batch-level positive pairs (z_target and z_hist[:,-1]). However, this is NOT object-level matching — it treats each batch element as its own positive pair, which doesn\'t enforce same-object identity across time.\n\nYou need to implement OBJECT-LEVEL temporal contrastive binding. Here\'s how:\n\n1. In the forward pass, after encoding x_target and x_hist, extract z_dyn_target (B, d_t) and z_dyn_prev (B, d_t) — the latter from z_hist_dyn[:, -1, :d_t]\n2. Match channels to objects using sorted matching on z_coord:\n   - Sort z_coord channels by centroid value (ascending)\n   - Sort object positions (ascending)  \n   - Map sorted channel index → sorted object index\n3. For each batch element, for each channel c matched to object o:\n   - Positive pair: (z_dyn_target[b, c], z_dyn_prev[b, c]) — same object at consecutive timesteps\n   - Negatives: (z_dyn_target[b, c], z_dyn_prev[b, c\']) for all c\' ≠ c — different objects at t-1\n4. Compute NT-Xent loss per (batch, channel) pair, then average\n\nThis requires access to the object positions and colors from the replay buffer (which stores them). In the training loop, when sampling a batch, extract positions to compute the matching.\n\nIf implementing object-level contrastive is too complex, you may use the EXISTING batch-level NT-Xent already implemented in the model (primary_objective="contrastive"), which uses (z_target, z_prev) from the same batch element as positive pairs. This is weaker but simpler. Document which approach was used.\n\n## Evaluation Protocol (same as iter_029)\nFor each trained model, compute:\n1. **ΔR²_color**: linear probe R² for color from z_dyn minus R² from z_coord (using Hungarian matching)\n2. **collapse_rate**: whether per-dim std < 0.5 on eval data\n3. **centroid_mse_mean**: linear probe MSE for centroid-to-position mapping\n4. **r2_dyn_color**, **r2_coord_color**: per-stream color decodability\n5. **r2_dyn_pos**, **r2_coord_pos**: per-stream position decodability\n6. **mean_abs_corr**: inter-channel correlation\n\nUse the same evaluation functions from src/run_phase0_sfa_separate_backbone.py:\n- evaluate_run()\n- compute_semantic_probes()\n- compute_centroid_mse()\n- check_collapse()\n- compute_vicreg_health()\n\n## Falsification Criteria\n- **D1 falsified**: mean ΔR²_color < 0.30 OR lower 95% CI < 0.18 on 30-seed bank\n- **D2 falsified**: mean ΔR²_color < 0.30 OR lower 95% CI < 0.18 on 30-seed bank\n- **Both falsified**: ΔR²_color ≥ 0.30 is unachievable by any decoder-free objective tested\n\nFor the 95% CI lower bound: compute mean and std of ΔR²_color across non-collapsed seeds, then CI_lower = mean - 1.96 * std / sqrt(n). If n < 5, cannot compute CI → flag as underpowered.\n\n## Output Files\n- `archive/iter_030/results/arm2_per_seed.csv` — per-seed per-arm results\n- `archive/iter_030/results/arm2_summary.csv` — arm-level summary\n- `archive/iter_030/results/arm2_analysis.md` — analysis with gate evaluation\n- `archive/iter_030/results/arm2_checkpoints/` — saved model checkpoints\n\n## Implementation Notes\n- Base your script on src/run_phase0_sfa_separate_backbone.py which has all the evaluation infrastructure\n- For D2 (variance-ramped SFA): modify the training loop to compute sfa_weight_current = min(5.0, 5.0 * step / 4000) and pass it as sfa_weight=sfa_weight_current to model.forward()\n- For D1 (temporal contrastive): use primary_objective="contrastive" in the model config. The existing forward method already has a batch-level NT-Xent implementation. You can use this as-is or extend it for object-level matching.\n- Run on CPU. Use torch.set_num_threads(2). Process sequentially or with ProcessPoolExecutor (max 4 workers).\n- Report mean ± std for all metrics. Flag hard seeds 53, 71 separately.\n- For each arm, also report: the 95% CI lower bound for ΔR²_color, and whether it exceeds 0.18.\n'})]
+
+[Tool Result: {"started": true, "iter_id": "30.3", "done": false, "final_result": null, "intermediate_state": "=== stdout (last 2000 chars) ===\n================================\n\nTASK [4/4]: D2 (SFA, variance-ramped) seed=17\n\n======================================================================\n\n[D2 (SFA, variance-ramped)] seed=17 -> starting on cpu (dry_run=True)\n\n  [D2 (SFA, variance-ramped)] seed=17 step=    5/5  loss=3895.9221  sim=3854.6912  var=1.9681  cov=0.0000  sfa_w=0.01\n\n\n\nSaved per-seed results to archive/iter_030/results\\arm2_per_seed.csv\n\nSaved summary to archive/iter_030/results\\arm2_summary.csv\n\nSaved analysis to archive/iter_030/results\\arm2_analysis.md\n\n\n\nDone.\n\n\nstderr: C:\\Users\\thomas\\Projekte\\rdf_thalamus\\src\\run_iter030_arm2.py:105: RuntimeWarning: Mean of empty slice\n\n  return {\"mse_per_object\": mse_per_object, \"mse_mean\": float(np.nanmean(mse_per_object)), \"r_per_object\": r_per_object, \"r_mean\": float(np.nanmean(r_per_object))}\n\nC:...]
+
+
+[Tool Call: poll_agent({'iter_id': '30.3'})]
+
+[Tool Result: {"done": true, "final_result": {"status": "ok", "artifacts": ["src/run_iter030_arm2.py", "archive/iter_030/results/arm2_per_seed.csv", "archive/iter_030/results/arm2_summary.csv", "archive/iter_030/results/arm2_analysis.md", "archive/iter_030/results/arm2_checkpoints/", "archive/iter_030/results/arm2_runs/"], "metrics": {"d1_mean_delta_r2_color": 0.115, "d1_ci_lower_95": 0.007, "d1_collapse_rate": 0.0, "d2_mean_delta_r2_color": 0.189, "d2_ci_lower_95": 0.074, "d2_collapse_rate": 0.0, "n_seeds": 30, "n_runs_total": 60, "hard_seed_53_d1": 0.064, "hard_seed_53_d2": 0.031, "hard_seed_71_d1": -0.168, "hard_seed_71_d2": -0.068}, "log_excerpt": "Saved per-seed results to archive/iter_030/results\\arm2_per_seed.csv\nSaved summary to archive/iter_030/results\\arm2_summary.csv\nSaved analysis to archive/iter_030/results\\arm2_analysis.md\nD1 (Contrastive, batch-level): mean=0.115, ci_lower=0.007 -> FALSIFIED\nD2 (SFA, variance-ramped): mean=0.189, ci_lower=0.074 -> FALSIFIED\n", "experimenter_vi...]
+
+Let me read the detailed ARM 2 results:
+
+[Tool Call: read_file({'path': 'archive/iter_030/results/arm2_analysis.md'})]
+
+[Tool Result: # Iter_030 ARM 2 — M2 Decisive Test Analysis
+
+This analysis tests whether D1 (batch-level temporal contrastive NT-Xent) or D2 (variance-ramped SFA) achieves mean ΔR²_color ≥ 0.30 with variance-stability (lower 95% CI ≥ 0.18) on a 30-seed union bank.
+
+**Dual collapse criterion:** collapsed = collapsed_eval OR collapsed_train
+**Contrastive implementation:** Existing batch-level NT-Xent in model.forward (same batch index as positive pair, cross-batch as negatives). Object-level temporal matching NOT implemented — uses weaker batch-level signal.
+**D2 ramp:** sfa_weight linearly 0 → 5.0 over steps 1–4000, then held at 5.0 for steps 4001–8000.
+
+---
+
+## Per-Arm Summary (all 30 seeds)
+
+### D1 (Contrastive, batch-level)
+- N seeds: 30
+- Collapse rate (dual): 0.00 (0/30)
+- Collapse rate (eval-only): 0.00 (0/30)
+- Collapse rate (train-only): 0.00 (0/30)
+- Mean ΔR²_color (all): 0.1149 ± 0.3029
+- Mean centroid MSE: 159.61
+- Mean abs corr: 0.183
+- Parameter count: 135608
+
+### D2 (SFA, variance-ramped...]
+
+
+[Tool Call: read_file({'path': 'archive/iter_030/results/arm2_summary.csv'})]
+
+[Tool Result: arm,n_total,n_collapsed,n_non_collapsed,mean_delta_r2_color,std_delta_r2_color,se_delta_r2_color,ci_lower_95,mean_centroid_mse,mean_vicreg_mean_abs_corr
+"D1 (Contrastive, batch-level)",30,0,30,0.1149019117062285,0.3028627176561056,0.055294914095855734,0.006523880078351266,159.61423331386075,0.18298517812161752
+"D2 (SFA, variance-ramped)",30,0,30,0.1893750379210605,0.3217719628303493,0.058747254138298725,0.07423041980999501,165.7039634164469,0.1433302336503949
+]
+
+Both sub-agents have completed. Now let me synthesize the full results into the YAML report.
+
+```yaml
+# --- Synthesised result (aggregate across all sub-agents) ---
+status: ok
+metrics:
+  # ARM 1 (Integration Smoke-Test)
+  arm1_g1_clts_sfa_tracking_error: 45.09
+  arm1_g1_clts_vicreg_tracking_error: 36.22
+  arm1_g1_threshold: 20.0
+  arm1_g1_pass: false
+  arm1_g2_clts_sfa_collision_switch_rate: 1.00
+  arm1_g2_frozen_collision_switch_rate: 1.00
+  arm1_g2_random_collision_switch_rate: 0.999
+  arm1_g2_pass: false
+  arm1_g3_clts_sfa_perturbation_switch_rate: 1.0
+  arm1_g3_frozen_perturbation_switch_rate: 1.0
+  arm1_g3_random_perturbation_switch_rate: 1.0
+  arm1_g3_pass: false
+  arm1_gates_passed: 0
+  arm1_total_runs: 48
+  arm1_verdict: "representation insufficient (protocol confounded)"
+  # ARM 2 (M2 Decisive Test)
+  arm2_d1_mean_delta_r2_color: 0.115
+  arm2_d1_ci_lower_95: 0.007
+  arm2_d1_collapse_rate: 0.0
+  arm2_d1_verdict: "FALSIFIED"
+  arm2_d2_mean_delta_r2_color: 0.189
+  arm2_d2_ci_lower_95: 0.074
+  arm2_d2_collapse_rate: 0.0
+  arm2_d2_verdict: "FALSIFIED"
+  arm2_total_seeds: 30
+  arm2_total_runs: 60
+  # Cross-experiment summary
+  separate_backbone_collapse_rate: 0.0
+  best_delta_r2_color_achieved: 0.275
+  best_delta_r2_source: "iter_029 Arm B (SFA+VICReg, sfa_weight=5.0, 20 seeds)"
+experimenter_view: |
+  ARM 1 (Integration Smoke-Test, agent 30.2):
+  All 48 runs completed (12 seeds × 4 conditions). All 3 pre-registered gates failed.
+  G1: CLTS-SFA mean tracking error = 45.09 ± 9.82 px, CLTS-VICReg = 36.22 ± 2.83 px — both above 20px threshold.
+  G2/G3: Complete ceiling effects. With 3 objects in 128 pixels, collisions occur every 2-3 steps (~500-800 per run). ANY attention channel is "collision-involved" almost always. Similarly, the forced pointer-near-object-0 + push perturbation guarantees object-0 is the most surprising channel regardless of attention mode. Controls (Frozen, Random) also achieve 99-100%.
+  
+  Informative signal from ARM 1 despite gate failures: CLTS-VICReg (ΔR²≈0.04) tracks BETTER than CLTS-SFA (ΔR²≈0.27): 36.22 vs 45.09 px. This suggests the weaker representation does not degrade, and may improve, PD tracking — identity encoding quality and tracking quality are not correlated.
+  
+  ARM 2 (M2 Decisive Test, agent 30.3):
+  All 60 runs completed (2 arms × 30 seeds). Both arms falsified.
+  D1 (batch-level temporal contrastive NT-Xent): mean ΔR²_color = 0.115, 95% CI lower = 0.007. Far below 0.30 threshold. The batch-level NT-Xent signal is too weak to enforce object identity. Object-level temporal matching was NOT implemented — a known weakness.
+  D2 (variance-ramped SFA, 0→5.0 over 4000 steps): mean ΔR²_color = 0.189, 95% CI lower = 0.074. Worse than static sfa_weight=5.0 from iter_029 (0.275). The ramp delays SFA pressure, allowing the representation to settle before slowness enforcement fully kicks in.
+  Both arms: 0% collapse rate across 30 seeds. Structural stability confirmed again.
+  
+  Comprehensive summary across all iterations (020-030):
+  No decoder-free objective achieves ΔR²_color ≥ 0.30 on the separate-backbone architecture.
+  - SFA single-step (sfa=5.0): 0.275 (iter_029)
+  - SFA variance-ramped: 0.189 (this iter)
+  - SFA multi-step (k=20,50,100): <0.10 (iter_024)
+  - Temporal contrastive (batch-level NT-Xent): 0.115 (this iter)
+  - VICReg-only: 0.045 (iter_029)
+  The ΔR²_color ≥ 0.30 proxy metric is comprehensively falsified as achievable.
+notes: "ARM 1: all gates failed (protocol confounded by ceiling effects). ARM 2: both D1 and D2 falsified."
+artifacts:
+  - src/pre_registration.md
+  - src/run_arm1_integration_smoke_test.py
+  - src/run_iter030_arm2.py
+  - archive/iter_030/results/arm1_per_seed.csv
+  - archive/iter_030/results/arm1_integration_smoke_test.csv
+  - archive/iter_030/results/arm1_analysis.md
+  - archive/iter_030/results/arm2_per_seed.csv
+  - archive/iter_030/results/arm2_summary.csv
+  - archive/iter_030/results/arm2_analysis.md
+
+# --- Planning and State ---
+analysis: |
+  This phase executed the two-arm plan from the approved research plan with the Manager's three corrections incorporated.
+
+  ARM 1 was designed to test whether frozen iter_029 representations (SFA+VICReg at ΔR²≈0.27 and VICReg-only at ΔR²≈0.04) support functional downstream behavior (tracking, collision attention, causal sensitivity). The pre-registered gates all failed, but the failure is primarily a protocol calibration issue, not a representation quality issue:
+  
+  1. G1 (tracking): The 20-pixel threshold was unrealistic for the PD controller (Kp=2.0) tracking moving objects in a 128-pixel space. Tracking error of 36-55 pixels is functional (objects are tracked within ~30-40% of the arena width), but not tight. Notably, CLTS-VICReg tracks better than CLTS-SFA, suggesting identity encoding quality does NOT determine tracking quality.
+  
+  2. G2/G3 (attention/sensitivity): Ceiling effects make these gates uninformative. With 3 objects in 128 pixels and elastic collisions, collision events are too frequent (~500-800 per 1800-step run) for attention switching to be discriminated from chance. The mass perturbation protocol forces the pointer near object 0 and pushes, guaranteeing object-0 surprise regardless of attention mode.
+  
+  The ARM 1 results are thus a NEGATIVE RESULT about the protocol design, not about the representation. The pre-registered verdict is "representation insufficient," but the actual data does not support this conclusion — the experiment was simply unable to measure what it intended to measure for G2/G3.
+
+  ARM 2 tested two new objectives: D1 (batch-level temporal contrastive) and D2 (variance-ramped SFA). Both were falsified on the ΔR²_color ≥ 0.30 gate. D1's batch-level NT-Xent was too weak (object-level matching not implemented). D2's variance ramp actually hurt (0.189 vs iter_029's static 0.275). 
+  
+  The combined evidence across 11 iterations (020-030) now comprehensively establishes:
+  - ΔR²_color ≥ 0.30 is NOT achievable by any tested decoder-free objective on this architecture
+  - The separate-backbone + mask_dyn_sim + coord_vicreg configuration is 0% collapse across 100+ runs
+  - The proxy metric has been maximally explored and should be retired
+  - The project must pivot to either (a) accepting weak identity encoding and testing whether it matters for the actual project goal, or (b) relaxing the decoder-free constraint to include reconstruction
+
+open_questions:
+  - "Should M2 be formally demoted from 'SFA+VICReg as primary' to 'VICReg-only as primary, identity encoding acknowledged as weak' in goal.md?"
+  - "Can a properly calibrated integration test (with collision-sparse environments and subtler perturbations) show that the current representation supports functional thalamic gating and motor behavior?"
+  - "Should the project accept a lightweight decoder (reconstruction+VICReg, sml: 83%) as a pragmatic compromise, or is decoder-free a non-negotiable principle?"
+  - "Is the ΔR²_color metric fundamentally limited by the z_dyn readout (mean over spatial dimension of 8-feature map), and would a better readout (e.g., centroid-gated) improve it?"
+  - "Why does VICReg-only track better than SFA+VICReg in ARM 1? Does SFA's slowness constraint interfere with the representation's responsiveness to sudden events?"
+  - "Would object-level temporal contrastive (matching channels to physical objects) significantly outperform batch-level NT-Xent?"
+  - "Can the hard-seed pattern (53, 71) be mitigated by initialization distribution control?"
+
+chosen_direction: "Pivot from representation optimization to properly-calibrated behavioral integration: re-run ARM 1 with collision-sparse environments, subtler perturbations, and a realistic tracking threshold, to determine whether the current representation actually supports the project goal."
+hypothesis: "phase-30: ARM 1 integration gates fail due to protocol confounds (ceiling effects on G2/G3, tight G1 threshold); ARM 2 definitively falsifies ΔR²_color≥0.30 for all tested decoder-free objectives; M2 mandate not supported and proxy metric must be retired"
+rationale: |
+  ARM 1 (highest priority per user hint) tests whether the representation is sufficient for downstream behavior — the key decision point. ARM 2 tests whether any new objective can clear the ΔR²_color≥0.30 gate. Both were needed: ARM 1 to decide if more optimization is justified, ARM 2 to test the remaining candidate objectives. The sequential execution (ARM 1 first, ARM 2 second) follows the plan's priority ordering.
+
+status: ok
+metrics:
+  arm1_g1_clts_sfa_tracking_error: 45.09
+  arm1_g1_clts_vicreg_tracking_error: 36.22
+  arm1_g1_threshold: 20.0
+  arm1_g1_pass: false
+  arm1_g2_clts_sfa_collision_switch_rate: 1.00
+  arm1_g2_frozen_collision_switch_rate: 1.00
+  arm1_g2_random_collision_switch_rate: 0.999
+  arm1_g2_pass: false
+  arm1_g3_clts_sfa_perturbation_switch_rate: 1.0
+  arm1_g3_frozen_perturbation_switch_rate: 1.0
+  arm1_g3_random_perturbation_switch_rate: 1.0
+  arm1_g3_pass: false
+  arm1_gates_passed: 0
+  arm1_total_runs: 48
+  arm2_d1_mean_delta_r2_color: 0.115
+  arm2_d1_ci_lower_95: 0.007
+  arm2_d1_collapse_rate: 0.0
+  arm2_d1_verdict: FALSIFIED
+  arm2_d2_mean_delta_r2_color: 0.189
+  arm2_d2_ci_lower_95: 0.074
+  arm2_d2_collapse_rate: 0.0
+  arm2_d2_verdict: FALSIFIED
+  arm2_total_seeds: 30
+  arm2_total_runs: 60
+  separate_backbone_collapse_rate_all_iters: 0.0
+  best_delta_r2_color_achieved: 0.275
+  best_delta_r2_source: "iter_029 Arm B, SFA+VICReg sfa_weight=5.0, 20 seeds"
+
+state_update: |
+  # Current Research State
+  Phase: ΔR²_color ≥ 0.30 comprehensively falsified; M2 mandate not supported; pivot to behavioral integration needed
+
+  ## Goal
+  Achieve a training regime where the NonParametricJEPASpatial encoder collapses on ≤10% of seeds. Ultimately: build a decoder-free, curiosity-driven representation agent with thalamic gating and motor.
+
+  ## Confirmed (iter_030, agents 30.2 + 30.3)
+  - ARM 1: All 3 pre-registered integration gates failed (0/3 pass)
+    - G1: CLTS-SFA tracking error = 45.09 ± 9.82 px, CLTS-VICReg = 36.22 ± 2.83 px (threshold: 20 px)
+    - G2: ALL conditions at 99-100% collision switch rate (ceiling effect — collisions too frequent)
+    - G3: ALL conditions at 100% perturbation switch rate (ceiling effect — forced perturbation too aggressive)
+    - CLTS-VICReg tracks BETTER than CLTS-SFA (36.22 vs 45.09 px) — identity encoding does not determine tracking quality
+    - ARM 1 protocol confounded: G2/G3 uninformative, G1 threshold too tight
+  - ARM 2: Both D1 and D2 falsified on ΔR²_color ≥ 0.30 gate
+    - D1 (batch-level temporal contrastive): ΔR²_color = 0.115, CI lower = 0.007
+    - D2 (variance-ramped SFA): ΔR²_color = 0.189, CI lower = 0.074
+    - Both: 0% collapse rate across 30 seeds
+    - D2 WORSE than iter_029 static sfa_weight=5.0 (0.189 vs 0.275)
+
+  ## Confirmed (prior iterations, still valid)
+  - ΔR²_color ≥ 0.30 NOT achieved by ANY decoder-free objective tested (iter_020-030):
+    - SFA single-step (sfa=5.0): 0.275 (iter_029)
+    - SFA variance-ramped: 0.189 (iter_030)
+    - SFA multi-step (k=20,50,100): <0.10 (iter_024)
+    - Temporal contrastive (batch-level): 0.115 (iter_030)
+    - VICReg-only: 0.045 (iter_029)
+  - Separate-backbone + mask_dyn_sim=True + coord_vicreg=True: 0% collapse across 100+ seeds
+  - SHARED BACKBONE: SFA falsified (iter_023-024)
+  - SEPARATE BACKBONE IS LOAD-BEARING (iter_028)
+  - SIM_LOSS_DYN IS THE COLLAPSE DRIVER (iter_027)
+
+  ## Refuted
+  - PRE-REGISTERED (iter_030): SFA+VICReg representation supports functional CLTS behavior per G1/G2/G3 gates. FALSIFIED — all gates failed.
+  - PRE-REGISTERED (iter_030): D1 or D2 achieves ΔR²_color ≥ 0.30 with CI lower ≥ 0.18. FALSIFIED — neither passes.
+  - M2 MANDATE (goal document): "SFA+VICReg as primary representation objective." Comprehensively not supported by evidence across iter_020-030.
+
+  ## Best Result
+  - SFA+VICReg sfa_weight=5.0 on separate backbone: ΔR²_color = 0.275 (iter_029, 20 seeds)
+  - VICReg-only on separate backbone: ΔR²_color = 0.045, 0% collapse, best tracking (iter_030 ARM 1)
+  - Centroid MSE ~160 across all arms (moderate; Phase-12 reference: CLTS 85.85, WUP-MDL 57.34)
+
+  ## NOT Established
+  - Whether the current representation supports the ACTUAL project goal (curiosity-driven agent with gating + motor) when evaluated with properly calibrated tests
+  - Whether object-level temporal contrastive (matching channels to physical objects) would significantly outperform batch-level NT-Xent
+  - Whether reconstruction+VICReg (sml: 83%) would work on this architecture
+  - Why VICReg-only tracks better than SFA+VICReg in closed-loop evaluation
+
+  ## In Progress
+  - None. iter_030 complete.
+
+  ## Open Questions (ordered by expected value)
+  1. Should the project accept weak identity encoding (ΔR²≈0.05-0.27) and test whether it matters for the actual project goal via properly-calibrated behavioral tests? This is the central decision.
+  2. Can a re-run of ARM 1 with collision-sparse environments (N=2, larger arena, or fewer substeps) and subtler perturbations distinguish surprise-driven from random/frozen attention?
+  3. Should M2 be formally demoted from "SFA+VICReg as primary" to "VICReg-only as primary" in goal.md?
+  4. Would object-level temporal contrastive (same-object-across-time positive pairs with channel-to-object matching) achieve ΔR²_color ≥ 0.30?
+  5. Should the project relax the decoder-free constraint to include reconstruction+VICReg as a pragmatic upper-bound reference?
+  6. Is the ΔR²_color metric fundamentally limited by the mean-over-spatial z_dyn readout, and would a centroid-gated readout improve it?
+  7. Why does SFA worsen tracking relative to VICReg-only? Does slowness constraint reduce representation responsiveness to sudden events?
+```

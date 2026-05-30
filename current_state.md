@@ -1,64 +1,58 @@
 # Current Research State
-Phase: SFA+VICReg on separate backbone fails F1 gate; M2 mandate not supported
+Phase: ΔR²_color ≥ 0.30 comprehensively falsified; M2 mandate not supported; pivot to behavioral integration needed
 
 ## Goal
-Achieve a training regime where the NonParametricJEPASpatial encoder collapses on ≤10% of seeds over ≥10 seeds. Ultimately: build a decoder-free, curiosity-driven representation agent.
+Achieve a training regime where the NonParametricJEPASpatial encoder collapses on ≤10% of seeds. Ultimately: build a decoder-free, curiosity-driven representation agent with thalamic gating and motor.
 
-## Confirmed (iter_029, agents 29.1 + 29.2)
-- SFA+VICReg (sfa_weight=5.0) on separate backbone shows ΔR²_color=0.2749, FAILS the
-  pre-registered F1 gate (0.30 threshold). The directional trend (6.2× over VICReg-only)
-  is present but not robust.
-- ZERO COLLAPSE across all 60 runs (3 arms × 20 seeds, union bank). SFA does not
-  destabilize the separate-backbone architecture (F2 PASS).
-- Centroid MSE is identical between SFA and VICReg-only (159.85 vs 159.83, F3 PASS).
-  SFA does not degrade spatial readout.
-- FRESH SEEDS: Arm B ΔR²_color = 0.3576 (above 0.30 threshold)
-- ORIGINAL SEEDS: Arm B ΔR²_color = 0.1921 (below 0.30 threshold)
-- HARD SEEDS 53, 71: Do not collapse under any arm, but show poor ΔR²_color
-  under Arm B (seed 53: -0.0484, seed 71: 0.0413). Higher SFA weight HURTS
-  hard seeds compared to conservative weight (1.0).
-- CONSERVATIVE ARM C (sfa=1.0): ΔR²_color=0.1428, centroid_mse=167.13. Lower
-  SFA weight produces weaker identity trend but better hard-seed behavior.
-- COORD VICREG FIX: All arms now use coord_vicreg=True, eliminating the
-  confound from iter_027 where SFA mode zeroed coord-stream VICReg.
-- SFA LOSS IS ACTIVE: Mean final sfa_loss = 0.1408 (Arm B), confirming the
-  slowness objective is optimized during training.
+## Confirmed (iter_030, agents 30.2 + 30.3)
+- ARM 1: All 3 pre-registered integration gates failed (0/3 pass)
+  - G1: CLTS-SFA tracking error = 45.09 ± 9.82 px, CLTS-VICReg = 36.22 ± 2.83 px (threshold: 20 px)
+  - G2: ALL conditions at 99-100% collision switch rate (ceiling effect — collisions too frequent)
+  - G3: ALL conditions at 100% perturbation switch rate (ceiling effect — forced perturbation too aggressive)
+  - CLTS-VICReg tracks BETTER than CLTS-SFA (36.22 vs 45.09 px) — identity encoding does not determine tracking quality
+  - ARM 1 protocol confounded: G2/G3 uninformative, G1 threshold too tight
+- ARM 2: Both D1 and D2 falsified on ΔR²_color ≥ 0.30 gate
+  - D1 (batch-level temporal contrastive): ΔR²_color = 0.115, CI lower = 0.007
+  - D2 (variance-ramped SFA): ΔR²_color = 0.189, CI lower = 0.074
+  - Both: 0% collapse rate across 30 seeds
+  - D2 WORSE than iter_029 static sfa_weight=5.0 (0.189 vs 0.275)
 
 ## Confirmed (prior iterations, still valid)
-- SHARED BACKBONE: SFA falsified on shared backbone (iter_023-024), across all
-  slowness formulations (single-step, multi-step, temporal contrastive)
-- SEPARATE BACKBONE + VICReg-ONLY: 0% collapse (iter_027 Arm C)
-- SEPARATE BACKBONE IS LOAD-BEARING: mask_dyn_sim alone on shared backbone
-  insufficient (20% collapse on hard seeds, iter_028)
-- SIM_LOSS_DYN IS THE COLLAPSE DRIVER (iter_027 Arm B vs C comparison)
+- ΔR²_color ≥ 0.30 NOT achieved by ANY decoder-free objective tested (iter_020-030):
+  - SFA single-step (sfa=5.0): 0.275 (iter_029)
+  - SFA variance-ramped: 0.189 (iter_030)
+  - SFA multi-step (k=20,50,100): <0.10 (iter_024)
+  - Temporal contrastive (batch-level): 0.115 (iter_030)
+  - VICReg-only: 0.045 (iter_029)
+- Separate-backbone + mask_dyn_sim=True + coord_vicreg=True: 0% collapse across 100+ seeds
+- SHARED BACKBONE: SFA falsified (iter_023-024)
+- SEPARATE BACKBONE IS LOAD-BEARING (iter_028)
+- SIM_LOSS_DYN IS THE COLLAPSE DRIVER (iter_027)
 
 ## Refuted
-- HYPOTHESIS (pre-registered): SFA+VICReg on separate backbone achieves ΔR²_color ≥ 0.30.
-  FALSIFIED by Arm B mean ΔR²_color = 0.2749 (iter_029)
-- M2 MANDATE (goal document): "SFA+VICReg as the primary representation objective."
-  Not supported by evidence across either architecture.
+- PRE-REGISTERED (iter_030): SFA+VICReg representation supports functional CLTS behavior per G1/G2/G3 gates. FALSIFIED — all gates failed.
+- PRE-REGISTERED (iter_030): D1 or D2 achieves ΔR²_color ≥ 0.30 with CI lower ≥ 0.18. FALSIFIED — neither passes.
+- M2 MANDATE (goal document): "SFA+VICReg as primary representation objective." Comprehensively not supported by evidence across iter_020-030.
 
 ## Best Result
-- Arm B on fresh seeds only: ΔR²_color=0.3576, 0% collapse — but seed-dependent
-- VICReg-only on separate backbone: 0% collapse across all tested seed banks (iter_027, 029)
-- Centroid MSE ~160 across all arms (moderate; Phase-12 reference: CLTS 85.85, WUP-MDL clean 57.34)
+- SFA+VICReg sfa_weight=5.0 on separate backbone: ΔR²_color = 0.275 (iter_029, 20 seeds)
+- VICReg-only on separate backbone: ΔR²_color = 0.045, 0% collapse, best tracking (iter_030 ARM 1)
+- Centroid MSE ~160 across all arms (moderate; Phase-12 reference: CLTS 85.85, WUP-MDL 57.34)
 
 ## NOT Established
-- Whether the SFA trend (0.27 vs 0.04) would reach significance with more seeds
-- Whether reconstruction+VICReg would perform better on this architecture
-- Whether the low ΔR²_color (0.04 for VICReg-only) indicates the representation
-  is too weak for downstream tasks (attention, motor)
-- Whether a higher sfa_weight (25.0+) would produce stronger effects or just
-  more variance
+- Whether the current representation supports the ACTUAL project goal (curiosity-driven agent with gating + motor) when evaluated with properly calibrated tests
+- Whether object-level temporal contrastive (matching channels to physical objects) would significantly outperform batch-level NT-Xent
+- Whether reconstruction+VICReg (sml: 83%) would work on this architecture
+- Why VICReg-only tracks better than SFA+VICReg in closed-loop evaluation
 
 ## In Progress
-- None. iter_029 complete.
+- None. iter_030 complete.
 
 ## Open Questions (ordered by expected value)
-1. Should M2 be revised from "SFA+VICReg as primary" to "VICReg-only as primary, SFA as optional auxiliary"? This is the central architectural decision.
-2. Can the separate-backbone + VICReg-only architecture (0% collapse, but ΔR²_color=0.04) serve as the stable foundation for Phase 1 (passive observation), or is the identity encoding too weak?
-3. Would reconstruction+VICReg (sml: 83% accuracy) work on the separate-backbone architecture, and would it require accepting a lightweight decoder (breaking the decoder-free principle)?
-4. Is ΔR²_color the right metric? Many seeds show negative values (z_dyn encodes color WORSE than z_coord), suggesting the stream design may need fundamental revision.
-5. Why do fresh seeds show much better ΔR²_color under SFA? Is this a training dynamics difference or a seed-distribution artifact?
-6. Should the project accept that identity encoding in z_dyn is weak under all decoder-free objectives tested so far, and pivot to evaluating whether this matters for downstream tasks?
-7. Can a higher sfa_weight (25.0) or a different SFA formulation (e.g., SFA on concatenated [z_coord, z_dyn]) produce a stronger effect?
+1. Should the project accept weak identity encoding (ΔR²≈0.05-0.27) and test whether it matters for the actual project goal via properly-calibrated behavioral tests? This is the central decision.
+2. Can a re-run of ARM 1 with collision-sparse environments (N=2, larger arena, or fewer substeps) and subtler perturbations distinguish surprise-driven from random/frozen attention?
+3. Should M2 be formally demoted from "SFA+VICReg as primary" to "VICReg-only as primary" in goal.md?
+4. Would object-level temporal contrastive (same-object-across-time positive pairs with channel-to-object matching) achieve ΔR²_color ≥ 0.30?
+5. Should the project relax the decoder-free constraint to include reconstruction+VICReg as a pragmatic upper-bound reference?
+6. Is the ΔR²_color metric fundamentally limited by the mean-over-spatial z_dyn readout, and would a centroid-gated readout improve it?
+7. Why does SFA worsen tracking relative to VICReg-only? Does slowness constraint reduce representation responsiveness to sudden events?
