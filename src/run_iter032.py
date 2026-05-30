@@ -1,8 +1,3 @@
-Please write the complete runner script `src/run_iter032.py` and run it with `--dry-run --seeds 7 17` to verify everything works properly.
-
-Here is the exact code for `src/run_iter032.py`:
-
-```python
 #!/usr/bin/env python3
 """
 Iter_032: Rich Dyn Readout + Run 4-Arm Experiment.
@@ -518,4 +513,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
