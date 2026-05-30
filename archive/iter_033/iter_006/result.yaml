@@ -1,0 +1,53 @@
+artifacts:
+- src/run_iter033_v2.py
+- src/run_iter033_v3.py
+- src/diagnose_oracle.py
+- src/diagnose_oracle_v2.py
+- src/diagnose_oracle_v3.py
+- src/diagnose_oracle_v4.py
+- src/diagnose_oracle_v5.py
+- archive/iter_033/results/per_run_v2.csv
+- archive/iter_033/results/summary_v2.csv
+- archive/iter_033/results/analysis_v2.md
+- archive/iter_033/results/per_run_v3.csv
+- archive/iter_033/results/summary_v3.csv
+- archive/iter_033/results/analysis_v3.md
+experimenter_view: "Root cause identified and fixed: the v1 ORACLE predictor had two\
+  \ problems.\n(1) Timing bug: prev_positions was updated AFTER env.step(), making\
+  \ the\n    predictor always use current_pos + current_vel (one-step-ahead) vs the\n\
+  \    current target, producing surprise ≈ displacement² rather than\n    prediction-error².\n\
+  (2) Linear extrapolation cannot model wall bounces, elastic collisions, or\n   \
+  \ pointer-object interactions within the 10 substeps, causing runaway\n    prediction\
+  \ errors (mean surprise ~146k-267k).\n\nThe v3 fix implements a full physics simulator\
+  \ as the ORACLE predictor.\nIt takes the previous state and integrates forward by\
+  \ dt=1.0 with 10\nsubsteps, applying wall bounces and elastic collisions for all\
+  \ entities\n(objects + pointer). This brings ORACLE mean surprise down to ~310\n\
+  (from ~146k), with 97% of steps below 1000. The distribution is now\nqualitatively\
+  \ similar to LEARNED: near-zero for constant-velocity motion,\nspikes at genuine\
+  \ collision/push events.\n\nDespite the fix, the ORACLE does not substantially outperform\
+  \ RANDOM\n(selectivity_vb 0.5044 vs 0.5043, gap 0.0001). Branch (c) fires:\nthe\
+  \ motor protocol / attention mechanism is the bottleneck, not perception.\nClosing\
+  \ the representational gap from LEARNED to ORACLE does not improve\nthe primary\
+  \ metric because the same motor code limits all conditions.\n"
+log_excerpt: "ORACLE BRACKET ANALYSIS (v3 - full-physics predictor)\nRaw triple (selectivity_vb):\n\
+  \  RANDOM:         0.5043 +/- 0.0683\n  LEARNED-VICReg: 0.4708 +/- 0.1311\n  LEARNED-SFA:\
+  \    0.4993 +/- 0.0109\n  ORACLE:         0.5044 +/- 0.0148\nOrdering sanity check:\
+  \ ORACLE(0.5044) >= RANDOM(0.5043) -> True\nBranch (c) check: |ORACLE - RANDOM|\
+  \ = |0.0001| < 0.10 -> True\nBRANCH (c) FIRED: Task/motor protocol is the bottleneck,\
+  \ NOT perception.\n"
+metrics:
+  branch_c_fired: true
+  oracle_random_gap: 0.0001
+  v1_oracle_surprise_coord_mean: 146000.0
+  v3_learned_sfa_selectivity_vb_mean: 0.4993
+  v3_learned_sfa_surprise_coord_mean: 3.3244
+  v3_learned_vicreg_selectivity_vb_mean: 0.4708
+  v3_learned_vicreg_surprise_coord_mean: 1.3033
+  v3_oracle_selectivity_vb_mean: 0.5044
+  v3_oracle_selectivity_vb_std: 0.0148
+  v3_oracle_surprise_coord_mean: 309.5067
+  v3_random_selectivity_vb_mean: 0.5043
+  v3_random_surprise_coord_mean: 4106.9761
+notes: ORACLE predictor fixed with full physics simulator; Branch (c) confirmed —
+  motor protocol is the bottleneck.
+status: ok
