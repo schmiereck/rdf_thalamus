@@ -1,0 +1,109 @@
+complexity: planner
+estimated_runtime_sec: 3600
+iter_id: '32.2'
+started_at: '2026-05-30T22:19:55.220931'
+status: running
+task: "## Task: Implement Rich Dyn Readout + Run 4-Arm Experiment (iter_032)\n\nRead\
+  \ the pre-registration file at src/pre_registration.md FIRST and adhere strictly\
+  \ to it. The experiment design, gates, and decision rules are binding.\n\n### Overview\n\
+  We need to test whether replacing mean-pool z_dyn with attention-pooled multi-dimensional\
+  \ feature vectors breaks through the ΔR²_color ≥ 0.30 threshold. This is a 4-arm\
+  \ experiment (E1, E1.5, E2, E3) × 20 seeds = 80 runs.\n\n### Architecture Changes\
+  \ Required\n\n**Modify `src/models_separate_dyn.py`** — Update `SeparateDynEncoder`\
+  \ to support centroid_gated readout:\n\n1. In `__init__`, when `dyn_readout == \"\
+  centroid_gated\"`:\n   - Replace `self.conv_identity_dyn = nn.Conv1d(128, d_max,\
+  \ kernel_size=1)` with `self.conv_identity_dyn = nn.Conv1d(128, d_max * sub_features,\
+  \ kernel_size=1)`\n   - Keep all other layers the same (coord backbone unchanged)\n\
+  \n2. In `forward()`:\n   - Always compute coord backbone first (same as now), producing\
+  \ `a_spatial (B, d_max, 128)` and `p_c = F.softmax(a_spatial, dim=-1)`\n   - For\
+  \ dyn backbone, produce `dyn_features (B, 128, 8)` then `a_dyn = self.conv_identity_dyn(dyn_features)`\
+  \ producing either `(B, d_max, 8)` or `(B, d_max*K, 8)` depending on sub_features\n\
+  \   - Implement three readout modes:\n     a. `dyn_readout == \"mean\"` (existing):\
+  \ `z_dyn = a_dyn.mean(dim=-1)` → (B, d_max)  [unchanged]\n     b. `dyn_readout ==\
+  \ \"centroid_gated\"` with `sub_features == 1`:\n        - Interpolate a_dyn from\
+  \ 8 to 128: `a_dyn_128 = F.interpolate(a_dyn, size=128, mode='linear', align_corners=False)`\
+  \ → (B, d_max, 128)\n        - `z_dyn = torch.einsum('bcs,bs->bc', p_c.detach(),\
+  \ a_dyn_128)` → (B, d_max)\n     c. `dyn_readout == \"centroid_gated\"` with `sub_features\
+  \ > 1`:\n        - Interpolate a_dyn from 8 to 128: `a_dyn_128 = F.interpolate(a_dyn,\
+  \ size=128, mode='linear', align_corners=False)` → (B, d_max*K, 128)\n        -\
+  \ Reshape: `a_dyn_128 = a_dyn_128.reshape(B, d_max, K, 128)` where K = sub_features\n\
+  \        - `z_dyn = torch.einsum('bcs,bcks->bck', p_c.detach(), a_dyn_128)` → (B,\
+  \ d_max, K)\n        - Reshape: `z_dyn = z_dyn.reshape(B, d_max * K)` → (B, d_max*K)\n\
+  \   \n   STOP-GRADIENT on p_c is critical (consistent with existing centroid_gated\
+  \ convention) — the coord backbone's attention weights should not receive gradient\
+  \ from the dyn readout.\n\n3. The `d_dyn` property should return `d_max * self.sub_features`\
+  \ (already exists, verify it works with the new readout).\n\n4. **NonParametricJEPASpatialSeparateDyn**\
+  \ must also be updated:\n   - Ensure it correctly passes `dyn_readout` and `sub_features`\
+  \ to the encoder\n   - Ensure `self.sub_features` is accessible on the model for\
+  \ evaluation\n   - The clone() method must also pass these parameters\n   - Make\
+  \ sure the model's `forward()` correctly handles the different d_dyn dimensions\
+  \ for the predictor\n\n### Runner Script: `src/run_iter032.py`\n\nCreate a new runner\
+  \ based on `src/run_phase0_sfa_separate_backbone.py` with these 4 arms:\n\n```python\n\
+  ARMS = [\n    {\n        \"name\": \"E1 (VICReg-only, mean-pool)\",\n        \"\
+  dyn_readout\": \"mean\", \"sub_features\": 1,\n        \"primary_objective\": \"\
+  sfa\", \"sfa_weight\": 0,\n        \"mask_dyn_sim\": True, \"coord_vicreg\": True,\n\
+  \        \"sim_weight\": 1.0, \"var_weight\": 25.0, \"cov_weight\": 25.0,\n    \
+  \    \"d_max\": 8, \"d_t\": 3, \"pos_encoding\": \"none\",\n        \"lr\": 3e-4,\
+  \ \"batch_size\": 32, \"replay_buffer_capacity\": 4000,\n    },\n    {\n       \
+  \ \"name\": \"E1.5 (VICReg-only, centroid-gated scalar)\",\n        \"dyn_readout\"\
+  : \"centroid_gated\", \"sub_features\": 1,\n        \"primary_objective\": \"sfa\"\
+  , \"sfa_weight\": 0,\n        \"mask_dyn_sim\": True, \"coord_vicreg\": True,\n\
+  \        \"sim_weight\": 1.0, \"var_weight\": 25.0, \"cov_weight\": 25.0,\n    \
+  \    \"d_max\": 8, \"d_t\": 3, \"pos_encoding\": \"none\",\n        \"lr\": 3e-4,\
+  \ \"batch_size\": 32, \"replay_buffer_capacity\": 4000,\n    },\n    {\n       \
+  \ \"name\": \"E2 (VICReg-only, centroid-gated rich K=4)\",\n        \"dyn_readout\"\
+  : \"centroid_gated\", \"sub_features\": 4,\n        \"primary_objective\": \"sfa\"\
+  , \"sfa_weight\": 0,\n        \"mask_dyn_sim\": True, \"coord_vicreg\": True,\n\
+  \        \"sim_weight\": 1.0, \"var_weight\": 25.0, \"cov_weight\": 25.0,\n    \
+  \    \"d_max\": 8, \"d_t\": 3, \"pos_encoding\": \"none\",\n        \"lr\": 3e-4,\
+  \ \"batch_size\": 32, \"replay_buffer_capacity\": 4000,\n    },\n    {\n       \
+  \ \"name\": \"E3 (SFA+VICReg, centroid-gated rich K=4)\",\n        \"dyn_readout\"\
+  : \"centroid_gated\", \"sub_features\": 4,\n        \"primary_objective\": \"sfa\"\
+  , \"sfa_weight\": 5.0,\n        \"mask_dyn_sim\": True, \"coord_vicreg\": True,\n\
+  \        \"sim_weight\": 1.0, \"var_weight\": 25.0, \"cov_weight\": 25.0,\n    \
+  \    \"d_max\": 8, \"d_t\": 3, \"pos_encoding\": \"none\",\n        \"lr\": 3e-4,\
+  \ \"batch_size\": 32, \"replay_buffer_capacity\": 4000,\n    },\n]\n\nSEEDS = [7,\
+  \ 17, 31, 53, 71, 83, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151,\
+  \ 157, 163]\n```\n\nCRITICAL implementation details for the runner:\n- The `run_single()`\
+  \ function must create `NonParametricJEPASpatialSeparateDyn` with the correct `dyn_readout`\
+  \ and `sub_features` parameters from the arm config\n- The model's `self.sub_features`\
+  \ must match the arm's sub_features — ensure NonParametricJEPASpatialSeparateDyn\
+  \ stores this correctly\n- For E1 (mean readout), `sfa_weight=0` means VICReg-only\
+  \ (the SFA loss term is zeroed out). The primary_objective should be \"sfa\" but\
+  \ sfa_weight=0, so the SFA loss contributes nothing. VERIFY this works correctly\
+  \ — the model should still compute VICReg (var_loss + cov_loss) on z_dyn.\n- The\
+  \ `evaluate_run()` function must correctly handle sub_features > 1 for the collapse\
+  \ check and semantic probes. When sub_features > 1, the z_dyn has shape (B, d_t\
+  \ * sub_features). The collapse check should pool across sub_features first: `z_dyn_pooled\
+  \ = z_dyn[:, :d_t * sub_features].reshape(N, d_t, sub_features).mean(axis=2)` then\
+  \ check per-dim std on the pooled (B, d_t) array.\n- The `compute_semantic_probes()`\
+  \ function similarly needs to pool across sub_features before fitting linear probes.\n\
+  - The centroid MSE evaluation only uses z_coord (unchanged), so it should work as-is.\n\
+  \n### Execution\n\n1. First, implement the architecture changes and create the runner\
+  \ script\n2. Do a DRY RUN with 2 seeds to verify everything works (all 4 arms, no\
+  \ crashes)\n3. Run the full experiment: 80 runs (4 arms × 20 seeds), 8000 training\
+  \ steps each\n4. Use ProcessPoolExecutor with available workers for parallel execution\n\
+  5. After all runs complete, generate the analysis including:\n   - Per-arm summary\
+  \ (collapse rate, mean ΔR²_color, centroid MSE, etc.)\n   - All 6 gate evaluations\
+  \ (F1-F6)\n   - Paired-seed comparisons (E2 vs E1, E2 vs E1.5)\n   - The binding\
+  \ decision rule outcome (branch a or b)\n   - Pre-registered outcome classification\n\
+  \n### Gate Evaluation (CRITICAL — follow pre-registration exactly)\n\nF1: mean ΔR²_color\
+  \ (E2, non-collapsed seeds) ≥ 0.30\nF2: lower 95% CI of E2 mean ΔR²_color ≥ 0.18\n\
+  F3: collapse rate ≤ 0.10 across ALL arms\nF4: E2 − E1 paired-seed mean ΔR² improvement\
+  \ ≥ 0.10\nF5: E2 − E1.5 paired-seed mean ΔR² improvement ≥ 0.10\nF6: E3 − E2 paired-seed\
+  \ mean ΔR² improvement (informational only)\n\nFor paired-seed comparisons (F4,\
+  \ F5, F6): compute the per-seed ΔR²_color difference, then take the mean and check\
+  \ against the threshold. This controls for seed-level variation.\n\n### Output Locations\n\
+  - Results: `archive/iter_032/results/`\n- Runs CSVs: `archive/iter_032/results/runs/`\n\
+  - Checkpoints: `archive/iter_032/results/checkpoints/`\n- Summary: `archive/iter_032/results/summary.csv`\n\
+  - Analysis: `archive/iter_032/results/analysis.md`\n\n### Important Notes\n- PRESERVE\
+  \ all existing files in src/ — modify models_separate_dyn.py in place, do not break\
+  \ backward compatibility\n- The coord backbone is UNCHANGED — only the dyn backbone\
+  \ readout changes\n- Do NOT add positional encoding (cross-objective harmful per\
+  \ iter_013 and iter_021)\n- Do NOT re-enable GDASR recruitment (M3: log-only mode)\n\
+  - For sfa_weight=0 in E1 and E1.5: the primary_objective is still \"sfa\" but the\
+  \ sfa_weight=0 zeros out the slowness term. The model should still apply VICReg\
+  \ (var + cov) on z_dyn and z_coord. VERIFY this produces the same behavior as iter_029\
+  \ Arm A (the VICReg-only control).\n- Training: 8000 steps, batch_size=32, lr=3e-4,\
+  \ Adam optimizer, grad clip max_norm=1.0\n- Report parameter counts per arm (E2/E3\
+  \ will be larger due to conv_identity_dyn outputting d_max*4 channels)"
