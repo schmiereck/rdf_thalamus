@@ -53,11 +53,13 @@ class FoveatedGazeSandbox(PhysicsSandbox):
         self.gaze_radius = gaze_radius
         self.probe_budget = PROBE_BUDGET
         self.probe_events = []  # list of (step, obj_idx, v_gaze_pre, v_obj_pre, v_gaze_post, v_obj_post)
+        self._pending_probe_events = []
 
     def reset(self, seed=None):
         result = super().reset(seed=seed)
         self.probe_budget = PROBE_BUDGET
         self.probe_events = []
+        self._pending_probe_events = []
         return result
 
     def step(self, action=None):
@@ -98,11 +100,10 @@ class FoveatedGazeSandbox(PhysicsSandbox):
                 self.pointer_vel = v_gaze_post
                 self.velocities[best_idx] = v_obj_post
 
-                # Record probe event
-                self.probe_events.append((
+                # Record partial probe event (pre-step info)
+                self._pending_probe_events.append((
                     step_num, best_idx,
-                    float(v_gaze), float(v_obj),
-                    float(v_gaze_post), float(v_obj_post)
+                    float(pre_ptr_vel), float(pre_obj_vels[best_idx])
                 ))
             # else: probe wasted, budget already decremented
 
@@ -182,6 +183,15 @@ class FoveatedGazeSandbox(PhysicsSandbox):
             self.pointer_pos = temp_pos[-1]
             self.pointer_vel = temp_vel[-1]
 
+        # Finalize probe events with post-step velocities
+        for (step_num, obj_idx, v_gaze_pre, v_obj_pre) in self._pending_probe_events:
+            self.probe_events.append((
+                step_num, obj_idx,
+                v_gaze_pre, v_obj_pre,
+                float(self.pointer_vel), float(self.velocities[obj_idx])
+            ))
+        self._pending_probe_events = []
+
         # Increment step counter (for probe event recording)
         self._step_counter = getattr(self, '_step_counter', 0) + 1
 
@@ -198,10 +208,6 @@ class FoveatedGazeSandbox(PhysicsSandbox):
             self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(
                 self.sd_omega * self.sd_t + self.sd_phase
             )
-
-        # ── Record post-step velocities (AFTER full substep loop) ──
-        post_ptr_vel = float(self.pointer_vel)
-        post_obj_vels = self.velocities.copy()
 
         obs = self.render()
         info = {
@@ -408,7 +414,7 @@ def run_episode(condition, seed, arm):
 
             # Fire probe if within gaze_radius AND |error| ≤ threshold
             do_probe = False
-            if abs(error) <= PROBE_ERROR_THRESH and env.probe_budget > 0:
+            if abs(error) <= PROBE_ERROR_THRESH and abs(error) <= GAZE_RADIUS and env.probe_budget > 0:
                 do_probe = True
                 probe_attempts += 1
 
@@ -455,6 +461,7 @@ def run_episode(condition, seed, arm):
         'n_probe_events': n_probe_events,
         'steps_in_bounds_frac': steps_in_bounds / N_STEPS,
         'branches': branches,
+        'probe_events': all_probe_events,
     }
 
     if condition == 'ORACLE':
@@ -544,15 +551,22 @@ def main():
             print(f"  Arm={arm} seed={seed}: POMLRE={r['pomlre']:.4f} "
                   f"probe_events={r['n_probe_events']} valid={r['per_obj_n_valid']}")
 
-    # Compute per-arm RANDOM POMLRE CV
+    # Compute per-arm CV of per-object probe-event counts under RANDOM
     gate_cv = {}
     gate_pass = {}
+    gate_mean_count = {}
     for arm in ['A', 'B']:
-        poms = [gate_results[arm][s]['pomlre'] for s in GATE_SEEDS]
-        cv = compute_cv(poms) if len(poms) > 1 else 0.0
-        gate_cv[arm] = cv
-        gate_pass[arm] = cv < 0.5  # CV < 0.5 for gate pass
-        print(f"  Arm={arm}: POMLRE mean={np.mean(poms):.4f}, std={np.std(poms):.4f}, CV={cv:.4f} "
+        cvs = []
+        for s in GATE_SEEDS:
+            counts = gate_results[arm][s]['per_obj_n_valid']
+            cv = compute_cv(counts) if np.mean(counts) > 0 else 0.0
+            cvs.append(cv)
+        avg_cv = np.mean(cvs)
+        mean_count = np.mean([np.mean(gate_results[arm][s]['per_obj_n_valid']) for s in GATE_SEEDS])
+        gate_cv[arm] = avg_cv
+        gate_mean_count[arm] = mean_count
+        gate_pass[arm] = (avg_cv >= 0.5) and (mean_count >= 0.5)
+        print(f"  Arm={arm}: mean per-obj count={mean_count:.4f}, CV={avg_cv:.4f} "
               f"— {'PASS' if gate_pass[arm] else 'FAIL'}")
 
     arms_to_run = [arm for arm in ['A', 'B'] if gate_pass[arm]]
@@ -565,9 +579,10 @@ def main():
             f.write(f"Arm {arm} (obj-obj {'pass-through' if arm == 'B' else 'normal'}):\n")
             poms = [gate_results[arm][s]['pomlre'] for s in GATE_SEEDS]
             f.write(f"  Seeds: {GATE_SEEDS}\n")
-            f.write(f"  POMLRE values: {[round(p, 4) for p in poms]}\n")
-            f.write(f"  Mean: {np.mean(poms):.4f}, Std: {np.std(poms):.4f}, CV: {gate_cv[arm]:.4f}\n")
-            f.write(f"  Gate (CV < 0.5): {'PASS' if gate_pass[arm] else 'FAIL'}\n\n")
+            counts_per_seed = [gate_results[arm][s]['per_obj_n_valid'] for s in GATE_SEEDS]
+            f.write(f"  Per-obj counts per seed: {counts_per_seed}\n")
+            f.write(f"  Mean per-obj count: {gate_mean_count[arm]:.4f}, CV: {gate_cv[arm]:.4f}\n")
+            f.write(f"  Gate (CV >= 0.5 and mean >= 0.5): {'PASS' if gate_pass[arm] else 'FAIL'}\n\n")
         f.write(f"Arms proceeding to bracket: {arms_to_run}\n")
 
     print(f"\nGate decision: arms {arms_to_run} proceed to full bracket.\n")
@@ -603,39 +618,51 @@ def main():
         oracle = by[arm]['ORACLE']
         s_details = []
 
-        # S1: ≥1 valid probe event per object on average (softer gate than iter_035)
-        s1_per_obj = np.array([r['per_obj_n_valid'] for r in oracle]).mean(axis=0)
-        s1_pass = bool(np.all(s1_per_obj >= 1))
+        # S1: ORACLE achieves ≥3 probe-induced collision events per object (mean across seeds)
+        s1_per_obj = np.array([r['per_obj_probe_counts'] for r in oracle]).mean(axis=0)
+        s1_pass = bool(np.all(s1_per_obj >= 3))
         s_details.append(('S1', s1_pass,
-                          f"Mean per-obj valid probes: {s1_per_obj.tolist()}"))
+                          f"Mean per-obj probe events: {s1_per_obj.tolist()}"))
 
-        # S2: probe hits >= probe_attempts * 0.5
+        # S2: ORACLE probe success rate ≥ 60%
         attempts = [r['probe_attempts'] for r in oracle]
         hits = [r['probe_hits'] for r in oracle]
         hit_ratio = float(np.sum(hits) / max(np.sum(attempts), 1))
-        s2_pass = hit_ratio >= 0.5
+        s2_pass = hit_ratio >= 0.60
         s_details.append(('S2', s2_pass,
-                          f"Probe hit ratio: {hit_ratio:.3f} "
+                          f"Probe success rate: {hit_ratio:.3f} "
                           f"({np.sum(hits)}/{np.sum(attempts)})"))
 
-        # S3: RANDOM has fewer probe events than ORACLE
-        or_n = np.mean([r['n_probe_events'] for r in oracle])
-        rn_n = np.mean([r['n_probe_events'] for r in by[arm]['RANDOM']])
-        s3_pass = or_n > rn_n
+        # S3: ≥80% of ORACLE's probe-induced collision events have |Δv_obj| > 1.0
+        all_oracle_events = []
+        for r in oracle:
+            all_oracle_events.extend(r['probe_events'])
+        informative = [e for e in all_oracle_events if abs(e[5] - e[3]) > 1.0]
+        s3_frac = len(informative) / len(all_oracle_events) if len(all_oracle_events) > 0 else 0.0
+        s3_pass = s3_frac >= 0.80
         s_details.append(('S3', s3_pass,
-                          f"Mean ORACLE probes={or_n:.1f} > RANDOM probes={rn_n:.1f}"))
+                          f"Informative events: {s3_frac:.3f} "
+                          f"({len(informative)}/{len(all_oracle_events)})"))
 
-        # S4: PASSIVE has 0 probe events
-        ps_n = np.mean([r['n_probe_events'] for r in by[arm]['PASSIVE']])
-        s4_pass = ps_n == 0.0
+        # S4: No single object receives >80% of ORACLE's total probe events
+        total_per_obj = np.array([r['per_obj_probe_counts'] for r in oracle]).sum(axis=0)
+        total_probes = total_per_obj.sum()
+        max_frac = total_per_obj.max() / total_probes if total_probes > 0 else 0.0
+        s4_pass = max_frac <= 0.80
         s_details.append(('S4', s4_pass,
-                          f"PASSIVE mean probes: {ps_n:.1f}"))
+                          f"Max obj fraction: {max_frac:.3f}"))
 
-        # S5: pointer stays in bounds >= 95%
+        # S5: ORACLE gaze stays in bounds ≥95% of steps
         oob = [r['steps_in_bounds_frac'] for r in oracle]
         s5_pass = all(f >= 0.95 for f in oob)
         s_details.append(('S5', s5_pass,
                           f"Min in-bounds frac: {min(oob):.4f}"))
+
+        # S6: Each of the 3 objects receives ≥10% of ORACLE's total probe events
+        min_frac = total_per_obj.min() / total_probes if total_probes > 0 else 0.0
+        s6_pass = min_frac >= 0.10
+        s_details.append(('S6', s6_pass,
+                          f"Min obj fraction: {min_frac:.3f}"))
 
         sanity[arm] = {k: (p, d) for k, p, d in s_details}
         all_sanity = all(p for _, p, d in s_details)
