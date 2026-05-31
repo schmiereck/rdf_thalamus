@@ -1,9 +1,20 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 037
 
-*   **Iteration:** 037
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 037 -> Planner [Pre-Planning Hints]
 
-## 1. Hypothesis
+## Manager's Pre-Planning Hints (for iter_037)
+
+**1 — Iter_037 is a decision-support and de-risking iteration, not a meta-decision execution. Do not autonomously pick among paths (i)/(ii)/(iii).** The choice between a 2D rebuild, deliverable re-frame, or relaxing decoder-free is a human-scale strategic call about scope, cost, and project identity. Iter_037's deliverables are: (a) the four-iteration environment-design null crystallized as a standalone, citable finding (iter_033 saturation, iter_034 free information, iter_035 collision-inevitability 12.27 vs 3.0, iter_036 coverage-uniformity CV 0.36/0.46 vs 0.50), and (b) a structured decision package for the human with explicit costs, what carries over, and what must be rebuilt. The planner must explicitly state that the path selection is left to the human.
+
+**2 — Apply the project's own validated discipline to the most expensive option before committing to it. Pre-register and run ONLY the cheap analytical gates for a minimal 2D arena — no training, no learned encoder, no ORACLE bracket, no representation re-architecture.** The two gates must mirror the 1D failures and address both dual-failure-mode conditions: Gate-1 (boundedness) — under a non-perceptual 2D pointer in a 2D arena, PASSIVE per-object collision count ≤ 3.0, since off-axis trajectories can no longer be collision-inevitable; Gate-2 (heterogeneity) — under RANDOM 2D gaze, per-object probe-event CV ≥ 0.50, since a finite random 2D walk cannot cover area as uniformly as a 1D line. Both gates must be pre-registered with arena size, N, gaze radius, rollout length, and seeds fixed in advance. Failing either gate kills path (i) before any 2D engineering investment; passing both produces measured evidence for an informed human go/no-go, not hope.
+
+**3 — Hold scientific discipline tight on three specific risks.** (a) Path (iii) decoder-relaxation should be explicitly rejected as mis-targeted in iter_037's analysis: the binding constraint is environmental (perception not load-bearing under any tested 1D regime), not representational, and a mean-pool reconstruction readout was already tested and failed in iter_031 — adding a decoder does not explain why behavior does not need perception, and the planner must say so. (b) The four-iteration null permits the statement "the 1D × N=3 × 128px sandbox cannot make perception behaviorally load-bearing under an ORACLE-vs-RANDOM bracket across four mechanism-distinct redesigns" — it does **not** permit "no 1D environment could ever work" nor any claim about M2; phrase the finding with that restraint. (c) The 2D cheap-gate result, whether pass or fail, must be reported as a single-condition geometric-statistical measurement at one pre-registered radius/arena/N — not as validation that 2D "works"; passing the gate only unblocks a human decision, it does not establish that the full 2D bracket would discriminate.
+
+---
+
+## Iteration 037 -> Manager [Proposed Research Plan]
+
+**Proposed Hypothesis:**
 In a minimal 2D physics arena (64×64 pixels, N=3 circular objects with radius
 ∈ [3,8], velocity components ∈ [-2.0,-0.5]∪[0.5,2.0], mass ∝ radius, substeps=10),
 the two structural constraints that defeated the 1D testbed are removed:
@@ -25,7 +36,7 @@ Both gates are necessary preconditions for a 2D ORACLE-vs-RANDOM bracket to
 have headroom. Neither gate is sufficient to establish that the full 2D
 bracket would discriminate — passing only unblocks a human go/no-go decision.
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 The hypothesis is falsified if EITHER gate fails:
 
 Gate-1 FAIL: Mean per-object valid collision count under PASSIVE > 3.0
@@ -44,7 +55,7 @@ inevitability, coverage uniformity) are relaxed in 2D at the tested
 parameterization (64×64, N=3, gaze_radius=8). The full bracket result
 remains unknown.
 
-## 3. Proposed Method
+**Proposed Method:**
 Step 1 — Four-Iteration Null Finding Document:
 Write a standalone, citable markdown document crystallizing the
 environment-design null chain across iter_033–036:
@@ -205,4 +216,16 @@ FILES PRESERVED (no modification):
 - M2 remains untestable, not falsified
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 037 -> Planner [Strategic Guidance]
+
+## Manager's Note (Strategic Critique of Proposed Plan, iter_037)
+
+**1 — The plan is broadly well-scoped and faithful to the de-risking mandate, but the two gate parameterizations are arbitrarily ported from 1D without justifying that the 2D thresholds remain calibrated. This must be fixed before pre-registration is frozen.** Gate-1 reuses the "≤ 3.0 valid collisions / object" threshold from iter_035 verbatim, and Gate-2 reuses "CV ≥ 0.50" from iter_036 — but neither threshold was originally derived from first principles. They were operational cutoffs chosen for the 1D setting. The planner must add one short paragraph each justifying why those numbers remain the right cutoffs in a 64×64 / 2000-step / N=3 / r_gaze=8 / probe_budget=20 regime — or pre-register revised cutoffs derived from the new geometry. Otherwise an "obvious" pass can be a calibration artifact (e.g. Gate-2 trivially passes simply because probe_budget=20 with p=0.01 yields ~20 events spread over 3 objects, where Poisson noise alone can push CV ≥ 0.50). Also: report each gate's per-seed values and the across-seed standard deviation, not just the mean — a mean-passing gate that fails on 2/5 seeds is not a pass. Pre-register the per-seed decision rule (e.g. "≥4/5 seeds must individually meet threshold") in addition to the mean.
+
+**2 — The construction-vs-empirical test is partially failed by the framing of Gate-1. "2D pointer collides less than 1D pointer" is geometrically near-tautological** — moving from a 1-axis-share regime to a 2-axis regime cannot fail to reduce collision frequency at fixed pointer/object size. So a Gate-1 pass would be a verification of the chosen geometry, not an empirical discovery. The planner should either (a) reframe Gate-1 honestly as a *quantitative calibration measurement* ("at this arena/object size, the reduction is sufficient to fall under 3.0") rather than a hypothesis test, or (b) add an additional empirical-content gate whose outcome is *not* predictable from the dimension change alone — e.g. measure whether **per-object collision counts under PASSIVE are themselves heterogeneous** (a 2D dual of Gate-2 applied to PASSIVE), since uniform-but-low collision rates would still leave the dual-failure-mode (b) condition unmet on the bound side. Gate-2 has more empirical content (a 2D random walk's coverage uniformity over 2000 steps is genuinely uncertain), but Gate-1 as currently written largely restates the construction.
+
+**3 — Pre-registration mechanics and language hygiene.** (a) The Orchestrator will automatically write the pre-registration to `src/pre_registration.md` from the `hypothesis` and `falsification_criterion` fields and commit it before execution begins; sub-agents must read and strictly adhere to it. Therefore everything that needs to bind execution — including the calibration justification from point 1, the per-seed decision rule, and the additional empirical-content gate from point 2 — must be written into those YAML fields *now*, not added as commentary later. (b) Language: the plan already restrains itself well ("passing only unblocks a human go/no-go decision"); preserve that discipline in the deliverable. The decision-support write-up must use "is consistent with" / "does not refute" / "provides measured evidence for" — avoid "2D works", "2D validates", "2D solves the 1D problem" in any deliverable phrasing. (c) Step 1 (four-iteration null finding document) and Step 3 (decoder-free rejection rationale) are good and should be retained as written; they execute the human-hint's first and third asks cleanly. (d) Step 4D's explicit "iter_037 does not make the decision" statement is exactly right — keep it prominent and ensure the output handoff to the human surfaces it as the headline, not a footnote.
+
+---
+
