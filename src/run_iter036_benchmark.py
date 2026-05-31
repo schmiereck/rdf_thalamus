@@ -1,0 +1,945 @@
+#!/usr/bin/env python3
+"""
+iter_036: Foveated Gaze Benchmark
+
+Tests whether perception-driven probing is load-bearing for mass estimation
+when the gaze pointer is ghostly (passes through all objects) and must use
+an explicit probe budget to elicit collisions.
+
+Two arms:
+  A — normal obj-obj collisions, ghostly pointer
+  B — pass-through obj-obj collisions, ghostly pointer
+
+Three conditions: ORACLE, RANDOM, PASSIVE
+"""
+import os, sys, csv, numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from environment import PhysicsSandbox
+
+# ── Constants ──
+GATE_SEEDS = [7, 31, 53, 71, 83]
+SEEDS = [7, 31, 53, 71, 83, 97, 113, 163]
+N_OBJ = 3
+N_STEPS = 2000
+PROBE_BUDGET = 20
+PTR_IDX = N_OBJ  # pointer index in concatenated arrays
+GAZE_MASS = 10.0
+KP, KD = 2.0, 0.5
+GAZE_RADIUS = 8
+PROBE_ERROR_THRESH = 6.0
+N_BOOT = 10000
+OUT = os.path.join('archive', 'iter_036', 'results')
+
+
+# ── FoveatedGazeSandbox ──────────────────────────────────────────────────
+class FoveatedGazeSandbox(PhysicsSandbox):
+    """
+    PhysicsSandbox where the pointer is GHOSTLY — it passes through objects
+    (no pointer-object collision resolution during the substep loop).
+    The pointer still bounces off walls at 0 and 128, and receives acceleration
+    from action['acc'].
+
+    A probe mechanism allows deliberate elastic collisions:
+      - action['probe'] (bool) requests a probe.
+      - If probe=True, budget>0, and an object is within gaze_radius,
+        a 1D elastic collision is applied between gaze and that object.
+      - probe_budget decrements regardless.
+    """
+
+    def __init__(self, N=3, substeps=10, seed=None, pass_through=False, gaze_radius=8):
+        super().__init__(N=N, substeps=substeps, seed=seed)
+        self.pass_through = pass_through
+        self.gaze_radius = gaze_radius
+        self.probe_budget = PROBE_BUDGET
+        self.probe_events = []  # list of (step, obj_idx, v_gaze_pre, v_obj_pre, v_gaze_post, v_obj_post)
+
+    def reset(self, seed=None):
+        result = super().reset(seed=seed)
+        self.probe_budget = PROBE_BUDGET
+        self.probe_events = []
+        return result
+
+    def step(self, action=None):
+        if action is not None:
+            acc = action.get('acc', 0.0)
+            probe = action.get('probe', False)
+        else:
+            acc = 0.0
+            probe = False
+
+        # ── Record pre-step velocities (BEFORE probe + substep) ──
+        pre_ptr_vel = float(self.pointer_vel)
+        pre_obj_vels = self.velocities.copy()
+
+        # ── Probe collision (applied BEFORE the substep loop) ──
+        if probe and self.probe_budget > 0:
+            self.probe_budget -= 1
+            # Find nearest object whose center is within gaze_radius of gaze center
+            best_idx = None
+            best_dist = float('inf')
+            for i in range(self.N):
+                d = abs(self.positions[i] - self.pointer_pos)
+                if d < self.gaze_radius and d < best_dist:
+                    best_dist = d
+                    best_idx = i
+
+            step_num = getattr(self, '_step_counter', 0)
+            if best_idx is not None:
+                # Apply 1D elastic collision between gaze (mass=GAZE_MASS) and object
+                v_gaze = float(self.pointer_vel)
+                v_obj = float(self.velocities[best_idx])
+                m_gaze = GAZE_MASS
+                m_obj = float(self.masses[best_idx])
+
+                v_gaze_post = (v_gaze * (m_gaze - m_obj) + 2.0 * m_obj * v_obj) / (m_gaze + m_obj)
+                v_obj_post = (v_obj * (m_obj - m_gaze) + 2.0 * m_gaze * v_gaze) / (m_gaze + m_obj)
+
+                self.pointer_vel = v_gaze_post
+                self.velocities[best_idx] = v_obj_post
+
+                # Record probe event
+                self.probe_events.append((
+                    step_num, best_idx,
+                    float(v_gaze), float(v_obj),
+                    float(v_gaze_post), float(v_obj_post)
+                ))
+            # else: probe wasted, budget already decremented
+
+        # ── Substep loop ──
+        dt = 1.0 / self.substeps
+        for _ in range(self.substeps):
+            # Apply acceleration to gaze velocity
+            self.pointer_vel += acc * dt
+
+            # Pack all N+1 entities
+            temp_pos = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_vel = np.concatenate([self.velocities, [self.pointer_vel]])
+            temp_rad = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_mass = np.concatenate([self.masses, [self.pointer_mass]])
+
+            # Update positions
+            temp_pos += temp_vel * dt
+
+            # Boundary bounces for ALL entities (including pointer at 0 and 128)
+            for i in range(len(temp_pos)):
+                if temp_pos[i] - temp_rad[i] < 0.0:
+                    temp_pos[i] = temp_rad[i]
+                    if temp_vel[i] < 0.0:
+                        temp_vel[i] = -temp_vel[i]
+                elif temp_pos[i] + temp_rad[i] > 128.0:
+                    temp_pos[i] = 128.0 - temp_rad[i]
+                    if temp_vel[i] > 0.0:
+                        temp_vel[i] = -temp_vel[i]
+
+            # Resolve collisions — ONLY object-object pairs (skip pointer-object)
+            sort_idx = np.argsort(temp_pos)
+            for k in range(len(sort_idx) - 1):
+                i = int(sort_idx[k])
+                j = int(sort_idx[k + 1])
+
+                # SKIP any pair involving the pointer (index N)
+                if i == PTR_IDX or j == PTR_IDX:
+                    continue
+
+                # If pass_through=True, also skip obj-obj collisions
+                if self.pass_through:
+                    continue
+
+                dist = temp_pos[j] - temp_pos[i]
+                min_dist = temp_rad[i] + temp_rad[j]
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    m_inv_i = 1.0 / temp_mass[i]
+                    m_inv_j = 1.0 / temp_mass[j]
+                    sum_inv_m = m_inv_i + m_inv_j
+
+                    temp_pos[i] -= overlap * (m_inv_i / sum_inv_m)
+                    temp_pos[j] += overlap * (m_inv_j / sum_inv_m)
+
+                    if temp_vel[i] > temp_vel[j]:
+                        v1 = temp_vel[i]
+                        v2 = temp_vel[j]
+                        m1 = temp_mass[i]
+                        m2 = temp_mass[j]
+                        temp_vel[i] = (v1 * (m1 - m2) + 2.0 * m2 * v2) / (m1 + m2)
+                        temp_vel[j] = (v2 * (m2 - m1) + 2.0 * m1 * v1) / (m1 + m2)
+
+            # Additional boundary check after collision resolution
+            for i in range(len(temp_pos)):
+                if temp_pos[i] - temp_rad[i] < 0.0:
+                    temp_pos[i] = temp_rad[i]
+                    if temp_vel[i] < 0.0:
+                        temp_vel[i] = -temp_vel[i]
+                elif temp_pos[i] + temp_rad[i] > 128.0:
+                    temp_pos[i] = 128.0 - temp_rad[i]
+                    if temp_vel[i] > 0.0:
+                        temp_vel[i] = -temp_vel[i]
+
+            # Unpack
+            self.positions = temp_pos[:-1].copy()
+            self.velocities = temp_vel[:-1].copy()
+            self.pointer_pos = temp_pos[-1]
+            self.pointer_vel = temp_vel[-1]
+
+        # Increment step counter (for probe event recording)
+        self._step_counter = getattr(self, '_step_counter', 0) + 1
+
+        # Noisy-TV / Structured Distractor (inherited logic)
+        if self.noisy_tv:
+            step_noise = np.random.normal(0.0, 2.0)
+            self.noisy_tv_pos += step_noise
+            self.noisy_tv_pos = np.clip(
+                self.noisy_tv_pos, self.noisy_tv_radius, 128.0 - self.noisy_tv_radius
+            )
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+        if self.structured_distractor:
+            self.sd_t += 1
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(
+                self.sd_omega * self.sd_t + self.sd_phase
+            )
+
+        # ── Record post-step velocities (AFTER full substep loop) ──
+        post_ptr_vel = float(self.pointer_vel)
+        post_obj_vels = self.velocities.copy()
+
+        obs = self.render()
+        info = {
+            "positions": self.positions.copy(),
+            "velocities": self.velocities.copy(),
+            "radii": self.radii.copy(),
+            "masses": self.masses.copy(),
+            "colors": self.colors.copy(),
+            "pointer_pos": self.pointer_pos,
+            "pointer_vel": self.pointer_vel,
+            "pointer_radius": self.pointer_radius,
+            "pointer_mass": self.pointer_mass,
+            "pointer_color": self.pointer_color.copy(),
+            "probe_events": list(self.probe_events),
+            "probe_budget": self.probe_budget,
+        }
+        if self.noisy_tv:
+            info["noisy_tv_pos"] = self.noisy_tv_pos
+            info["noisy_tv_color"] = self.noisy_tv_color.copy()
+            info["noisy_tv_radius"] = self.noisy_tv_radius
+        if self.structured_distractor:
+            info["sd_pos"] = self.sd_pos
+            info["sd_color"] = self.sd_color.copy()
+            info["sd_radius"] = self.sd_radius
+        return obs, info
+
+    def render(self):
+        """
+        Render a foveated view: only pixels within [gaze_pos - gaze_radius,
+        gaze_pos + gaze_radius] are visible. Outside this window, canvas is zero.
+        (For future LEARNED condition; does not affect ORACLE/RANDOM metrics.)
+        """
+        pixel_centers = np.arange(128) + 0.5
+        canvas = np.zeros((3, 128))
+
+        if self.noisy_tv:
+            temp_positions = np.concatenate(
+                [self.positions, [self.pointer_pos], [self.noisy_tv_pos]]
+            )
+            temp_radii = np.concatenate(
+                [self.radii, [self.pointer_radius], [self.noisy_tv_radius]]
+            )
+            temp_colors = np.concatenate(
+                [self.colors, [self.pointer_color], [self.noisy_tv_color]], axis=0
+            )
+        else:
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_colors = np.concatenate([self.colors, [self.pointer_color]], axis=0)
+
+        sorted_indices = np.argsort(temp_positions)
+        for idx in sorted_indices:
+            pos = temp_positions[idx]
+            r = temp_radii[idx]
+            color = temp_colors[idx]
+
+            d = np.abs(pixel_centers - pos)
+            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))
+            mask = mask[np.newaxis, :]
+            color_expanded = color[:, np.newaxis]
+            canvas = canvas * (1.0 - mask) + color_expanded * mask
+
+        if self.structured_distractor:
+            pos = self.sd_pos
+            r = self.sd_radius
+            color = self.sd_color
+            d = np.abs(pixel_centers - pos)
+            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))
+            mask = mask[np.newaxis, :]
+            color_expanded = color[:, np.newaxis]
+            canvas = canvas * (1.0 - mask) + color_expanded * mask
+
+        if self.pixel_noise_std > 0.0:
+            noise = np.random.normal(0.0, self.pixel_noise_std, size=canvas.shape)
+            canvas = np.clip(canvas + noise, 0.0, 1.0)
+
+        # Apply foveation mask: zero out pixels outside gaze_radius
+        lo = max(0, int(self.pointer_pos - self.gaze_radius))
+        hi = min(128, int(self.pointer_pos + self.gaze_radius))
+        fovea_mask = np.zeros((3, 128))
+        fovea_mask[:, lo:hi] = 1.0
+        canvas = canvas * fovea_mask
+
+        # Apply global pixel noise if specified (after foveation)
+        if self.pixel_noise_std > 0.0:
+            noise = np.random.normal(0.0, self.pixel_noise_std, size=canvas.shape)
+            canvas = np.clip(canvas + noise, 0.0, 1.0)
+
+        return canvas
+
+
+# ── POMLRE Metric ────────────────────────────────────────────────────────
+def compute_pomlre_and_branches(probe_events, true_masses):
+    """
+    Per-Object Median Log-Ratio Error with branch tracking.
+
+    For each object i:
+      1. Collect probe events with |Δv_obj| > 1.0
+      2. m_est_k = -M_gaze * Δv_gaze_k / Δv_obj_k
+      3. Branch:
+         0 events  → error = 2.0
+         1-2 events → median→mean of estimates
+         ≥3 events  → median of estimates
+      4. error_i = |log(m_hat / m_true_i)| (or 2.0 if no valid events)
+
+    Returns:
+      pomlre, per_obj_n_valid, per_obj_errors, branch_dict
+        branch_dict: {(seed, obj_idx): branch_number}
+        branch_number: 0 = no events, 1 = 1-2 events, 2 = >=3 events
+        (These keys don't include seed at call-site; caller adds it.)
+    """
+    errors = []
+    per_obj_n_valid = []
+    per_obj_errors = []
+    branches = {}  # obj_idx -> branch number
+
+    for i in range(N_OBJ):
+        # Filter: probe events for object i with |Δv_obj| > 1.0
+        # probe_events: (step, obj_idx, v_gaze_pre, v_obj_pre, v_gaze_post, v_obj_post)
+        valid = [e for e in probe_events if e[1] == i and abs(e[5] - e[3]) > 1.0]
+
+        n = len(valid)
+        if n == 0:
+            err = 2.0
+            branch = 0
+        else:
+            # Compute mass estimates
+            m_ests = []
+            for e in valid:
+                dv_gaze = e[4] - e[2]  # post - pre
+                dv_obj = e[5] - e[3]
+                m_est = -GAZE_MASS * dv_gaze / dv_obj
+                m_ests.append(m_est)
+
+            if n >= 3:
+                m_hat = float(np.median(m_ests))
+                branch = 2
+            else:
+                m_hat = float(np.mean(m_ests))
+                branch = 1
+
+            if m_hat > 0 and true_masses[i] > 0:
+                err = float(abs(np.log(m_hat / true_masses[i])))
+            else:
+                err = 2.0
+
+        errors.append(err)
+        per_obj_n_valid.append(n)
+        per_obj_errors.append(err)
+        branches[i] = branch
+
+    pomlre = float(np.mean(errors))
+    return pomlre, per_obj_n_valid, per_obj_errors, branches
+
+
+# ── Bootstrap CI ─────────────────────────────────────────────────────────
+def bootstrap_ci(a_vals, b_vals, n_boot=N_BOOT):
+    """Paired bootstrap CI for mean(b) - mean(a). Returns (lower_95, upper_95)."""
+    n = len(a_vals)
+    gaps = []
+    for _ in range(n_boot):
+        idx = np.random.randint(0, n, size=n)
+        gaps.append(float(np.mean(b_vals[idx]) - np.mean(a_vals[idx])))
+    gaps = np.array(gaps)
+    return float(np.percentile(gaps, 2.5)), float(np.percentile(gaps, 97.5))
+
+
+# ── Single Episode ───────────────────────────────────────────────────────
+def run_episode(condition, seed, arm):
+    """
+    Run one episode.
+
+    arm: 'A' = normal obj-obj, 'B' = pass-through obj-obj
+    condition: 'ORACLE', 'RANDOM', 'PASSIVE'
+    """
+    env = FoveatedGazeSandbox(
+        N=N_OBJ, substeps=10, seed=seed,
+        pass_through=(arm == 'B'), gaze_radius=GAZE_RADIUS
+    )
+    # Deterministic per-condition RNG so conditions are comparable per seed
+    rng = np.random.RandomState(seed * 1000 + hash(condition + arm) % 10000)
+
+    # ORACLE policy state
+    if condition == 'ORACLE':
+        per_obj_probe_counts = [0, 0, 0]
+        prev_err = None
+        target = 0  # start with least-probed
+        probe_attempts = 0
+        probe_hits = 0
+
+    all_probe_events = []
+    prev_n_probe_events = 0  # track length of env.probe_events across steps
+    steps_in_bounds = 0
+
+    for step in range(N_STEPS):
+        # Compute action
+        if condition == 'ORACLE':
+            # PD-track least-probed object
+            target = int(np.argmin(per_obj_probe_counts))
+            error = env.positions[target] - env.pointer_pos
+            d_error = (error - prev_err) if prev_err is not None else 0.0
+            prev_err = error
+            acc = KP * error + KD * d_error
+
+            # Fire probe if within gaze_radius AND |error| ≤ threshold
+            do_probe = False
+            if abs(error) <= PROBE_ERROR_THRESH and env.probe_budget > 0:
+                do_probe = True
+                probe_attempts += 1
+
+            action = {'acc': acc, 'probe': do_probe}
+
+        elif condition == 'RANDOM':
+            acc = rng.uniform(-10, 10)
+            do_probe = rng.rand() < 0.01 and env.probe_budget > 0
+            action = {'acc': acc, 'probe': do_probe}
+
+        else:  # PASSIVE
+            action = {'acc': 0.0, 'probe': False}
+
+        obs, info = env.step(action)
+
+        # Collect new probe events (env.probe_events is cumulative)
+        new_events = env.probe_events[prev_n_probe_events:]
+        for e in new_events:
+            all_probe_events.append(e)
+            if condition == 'ORACLE':
+                per_obj_probe_counts[e[1]] += 1
+                probe_hits += 1
+        prev_n_probe_events = len(env.probe_events)
+
+        if 0 <= env.pointer_pos <= 128:
+            steps_in_bounds += 1
+
+    true_masses = env.masses.copy()
+    pomlre, per_obj_n_valid, per_obj_errors, branches = compute_pomlre_and_branches(
+        all_probe_events, true_masses
+    )
+
+    n_probe_events = len(all_probe_events)
+
+    # Build result dict
+    result = {
+        'condition': condition,
+        'seed': seed,
+        'arm': arm,
+        'pomlre': pomlre,
+        'per_obj_n_valid': per_obj_n_valid,
+        'per_obj_errors': per_obj_errors,
+        'true_masses': true_masses.tolist(),
+        'n_probe_events': n_probe_events,
+        'steps_in_bounds_frac': steps_in_bounds / N_STEPS,
+        'branches': branches,
+    }
+
+    if condition == 'ORACLE':
+        result['probe_attempts'] = probe_attempts
+        result['probe_hits'] = probe_hits
+        result['per_obj_probe_counts'] = per_obj_probe_counts
+
+    return result
+
+
+# ── Bootstrap CI for CV (Coefficient of Variation) ───────────────────────
+def compute_cv(values):
+    """Coefficient of variation = std / mean."""
+    m = np.mean(values)
+    if m == 0:
+        return float('inf')
+    return float(np.std(values) / m)
+
+
+# ── Main Flow ────────────────────────────────────────────────────────────
+def main():
+    os.makedirs(OUT, exist_ok=True)
+
+    print("=" * 70)
+    print("iter_036 Foveated Gaze Benchmark")
+    print("=" * 70)
+
+    # ── Test FoveatedGazeSandbox ──
+    print("\nQuick test of FoveatedGazeSandbox...")
+    env = FoveatedGazeSandbox(N=N_OBJ, substeps=10, seed=42, pass_through=False, gaze_radius=8)
+    # Verify pointer is ghostly: place pointer on top of an object, step without probe,
+    # object velocity should NOT change
+    env.positions = np.array([50.0, 60.0, 70.0])
+    env.velocities = np.array([1.0, -1.0, 2.0])
+    env.radii = np.array([5.0, 4.0, 3.0])
+    env.masses = np.array([5.0, 4.0, 3.0])
+    env.pointer_pos = 50.0  # right on object 0
+    env.pointer_vel = 5.0
+
+    pre_v = env.velocities.copy()
+    obs, info = env.step({'acc': 0.0, 'probe': False})
+    post_v = info['velocities'].copy()
+
+    v_changed = np.any(np.abs(post_v - pre_v) > 0.01)
+    print(f"  Pre obj velocities: {pre_v}")
+    print(f"  Post obj velocities: {post_v}")
+    print(f"  Pointer is ghostly (no obj vel change from no-probe step): "
+          f"{'YES' if not v_changed else 'NO (CHECK REQUIRED)'}")
+
+    # Verify probe works
+    env2 = FoveatedGazeSandbox(N=N_OBJ, substeps=10, seed=42, pass_through=False, gaze_radius=8)
+    env2.positions = np.array([50.0, 60.0, 70.0])
+    env2.velocities = np.array([1.0, -1.0, 2.0])
+    env2.radii = np.array([5.0, 4.0, 3.0])
+    env2.masses = np.array([5.0, 4.0, 3.0])
+    env2.pointer_pos = 50.0  # on object 0 (within gaze_radius=8)
+    env2.pointer_vel = 5.0
+
+    pre_v2 = env2.velocities.copy()
+    pre_gaze_v2 = float(env2.pointer_vel)
+    obs2, info2 = env2.step({'acc': 0.0, 'probe': True})
+    post_v2 = info2['velocities'].copy()
+    post_gaze_v2 = float(env2.pointer_vel)
+
+    probe_worked = (info2['probe_budget'] < env2.probe_budget) and len(info2['probe_events']) > 0
+    print(f"  Probe events recorded: {len(info2['probe_events'])}")
+    print(f"  Gaze vel: {pre_gaze_v2} -> {post_gaze_v2}")
+    print(f"  Obj 0 vel: {pre_v2[0]} -> {post_v2[0]}")
+    print(f"  Probe worked: {'YES' if probe_worked else 'NO'}")
+
+    if not probe_worked:
+        print("ERROR: probe mechanism not working. Aborting.")
+        return
+
+    print("FoveatedGazeSandbox test passed.\n")
+
+    # ── CV Gate (5 seeds × 2 arms) ──
+    print("=" * 70)
+    print("CV GATE: RANDOM condition across arms")
+    print("=" * 70)
+
+    gate_results = {arm: {seed: None for seed in GATE_SEEDS} for arm in ['A', 'B']}
+    for arm in ['A', 'B']:
+        for seed in GATE_SEEDS:
+            r = run_episode('RANDOM', seed, arm)
+            gate_results[arm][seed] = r
+            print(f"  Arm={arm} seed={seed}: POMLRE={r['pomlre']:.4f} "
+                  f"probe_events={r['n_probe_events']} valid={r['per_obj_n_valid']}")
+
+    # Compute per-arm RANDOM POMLRE CV
+    gate_cv = {}
+    gate_pass = {}
+    for arm in ['A', 'B']:
+        poms = [gate_results[arm][s]['pomlre'] for s in GATE_SEEDS]
+        cv = compute_cv(poms) if len(poms) > 1 else 0.0
+        gate_cv[arm] = cv
+        gate_pass[arm] = cv < 0.5  # CV < 0.5 for gate pass
+        print(f"  Arm={arm}: POMLRE mean={np.mean(poms):.4f}, std={np.std(poms):.4f}, CV={cv:.4f} "
+              f"— {'PASS' if gate_pass[arm] else 'FAIL'}")
+
+    arms_to_run = [arm for arm in ['A', 'B'] if gate_pass[arm]]
+
+    # Log gate decision BEFORE bracket
+    with open(os.path.join(OUT, 'cv_gate.txt'), 'w') as f:
+        f.write("iter_036 CV Gate\n")
+        f.write("=" * 50 + "\n\n")
+        for arm in ['A', 'B']:
+            f.write(f"Arm {arm} (obj-obj {'pass-through' if arm == 'B' else 'normal'}):\n")
+            poms = [gate_results[arm][s]['pomlre'] for s in GATE_SEEDS]
+            f.write(f"  Seeds: {GATE_SEEDS}\n")
+            f.write(f"  POMLRE values: {[round(p, 4) for p in poms]}\n")
+            f.write(f"  Mean: {np.mean(poms):.4f}, Std: {np.std(poms):.4f}, CV: {gate_cv[arm]:.4f}\n")
+            f.write(f"  Gate (CV < 0.5): {'PASS' if gate_pass[arm] else 'FAIL'}\n\n")
+        f.write(f"Arms proceeding to bracket: {arms_to_run}\n")
+
+    print(f"\nGate decision: arms {arms_to_run} proceed to full bracket.\n")
+
+    # ── Full Bracket (8 seeds × remaining arms × 3 conditions) ──
+    print("=" * 70)
+    print("FULL BRACKET")
+    print("=" * 70)
+
+    results = []
+    for arm in arms_to_run:
+        for cond in ['ORACLE', 'RANDOM', 'PASSIVE']:
+            for seed in SEEDS:
+                print(f"  Arm={arm} {cond:8s} seed={seed:3d} ...",
+                      end=" ", flush=True)
+                r = run_episode(cond, seed, arm)
+                results.append(r)
+                print(f"POMLRE={r['pomlre']:.4f}  probes={r['n_probe_events']:2d}  "
+                      f"valid={r['per_obj_n_valid']}")
+
+    by = {arm: {cond: [r for r in results
+                       if r['arm'] == arm and r['condition'] == cond]
+                for cond in ['ORACLE', 'RANDOM', 'PASSIVE']}
+          for arm in arms_to_run}
+
+    # ── Sanity Checks ──
+    print("\n" + "=" * 70)
+    print("SANITY CHECKS")
+    print("=" * 70)
+
+    sanity = {}
+    for arm in arms_to_run:
+        oracle = by[arm]['ORACLE']
+        s_details = []
+
+        # S1: ≥1 valid probe event per object on average (softer gate than iter_035)
+        s1_per_obj = np.array([r['per_obj_n_valid'] for r in oracle]).mean(axis=0)
+        s1_pass = bool(np.all(s1_per_obj >= 1))
+        s_details.append(('S1', s1_pass,
+                          f"Mean per-obj valid probes: {s1_per_obj.tolist()}"))
+
+        # S2: probe hits >= probe_attempts * 0.5
+        attempts = [r['probe_attempts'] for r in oracle]
+        hits = [r['probe_hits'] for r in oracle]
+        hit_ratio = float(np.sum(hits) / max(np.sum(attempts), 1))
+        s2_pass = hit_ratio >= 0.5
+        s_details.append(('S2', s2_pass,
+                          f"Probe hit ratio: {hit_ratio:.3f} "
+                          f"({np.sum(hits)}/{np.sum(attempts)})"))
+
+        # S3: RANDOM has fewer probe events than ORACLE
+        or_n = np.mean([r['n_probe_events'] for r in oracle])
+        rn_n = np.mean([r['n_probe_events'] for r in by[arm]['RANDOM']])
+        s3_pass = or_n > rn_n
+        s_details.append(('S3', s3_pass,
+                          f"Mean ORACLE probes={or_n:.1f} > RANDOM probes={rn_n:.1f}"))
+
+        # S4: PASSIVE has 0 probe events
+        ps_n = np.mean([r['n_probe_events'] for r in by[arm]['PASSIVE']])
+        s4_pass = ps_n == 0.0
+        s_details.append(('S4', s4_pass,
+                          f"PASSIVE mean probes: {ps_n:.1f}"))
+
+        # S5: pointer stays in bounds >= 95%
+        oob = [r['steps_in_bounds_frac'] for r in oracle]
+        s5_pass = all(f >= 0.95 for f in oob)
+        s_details.append(('S5', s5_pass,
+                          f"Min in-bounds frac: {min(oob):.4f}"))
+
+        sanity[arm] = {k: (p, d) for k, p, d in s_details}
+        all_sanity = all(p for _, p, d in s_details)
+        sanity[arm]['_all'] = all_sanity
+
+        for k, (p, d) in sanity[arm].items():
+            if not k.startswith('_'):
+                print(f"  Arm={arm} {k}: {'PASS' if p else 'FAIL'} — {d}")
+        print(f"  Arm={arm} All sanity: {'PASS' if all_sanity else 'FAIL'}")
+
+    # ── Metrics per arm ──
+    print("\n" + "=" * 70)
+    print("PER-CONDITION POMLRE")
+    print("=" * 70)
+
+    arm_metrics = {}
+    for arm in arms_to_run:
+        oracle_pom = np.array([r['pomlre'] for r in by[arm]['ORACLE']])
+        random_pom = np.array([r['pomlre'] for r in by[arm]['RANDOM']])
+        passive_pom = np.array([r['pomlre'] for r in by[arm]['PASSIVE']])
+
+        # F1: RANDOM - ORACLE >= 0.15
+        f1_gap = float(np.mean(random_pom - oracle_pom))
+        f1_pass = f1_gap >= 0.15
+
+        # F2: bootstrap CI lower > 0
+        f2_lo, f2_hi = bootstrap_ci(oracle_pom, random_pom)
+        f2_pass = f2_lo > 0
+
+        # F3: all sanity checks
+        f3_pass = sanity[arm]['_all']
+
+        # F4: ordering PASSIVE > RANDOM > ORACLE
+        f4_pass = (np.mean(passive_pom) > np.mean(random_pom) > np.mean(oracle_pom))
+
+        # Coverage-vs-Estimation Decomposition
+        oracle_n_valid = np.array([r['per_obj_n_valid'] for r in by[arm]['ORACLE']])
+        random_n_valid = np.array([r['per_obj_n_valid'] for r in by[arm]['RANDOM']])
+        passive_n_valid = np.array([r['per_obj_n_valid'] for r in by[arm]['PASSIVE']])
+
+        oracle_cov_mean = oracle_n_valid.mean()
+        random_cov_mean = random_n_valid.mean()
+        passive_cov_mean = passive_n_valid.mean()
+
+        # Estimation-only: matched cells (both have >=3 valid events)
+        est_oracle_errors = []
+        est_random_errors = []
+        branch_dist = {0: 0, 1: 0, 2: 0}  # overall branch counts for ORACLE
+        rand_branch_dist = {0: 0, 1: 0, 2: 0}
+        pass_branch_dist = {0: 0, 1: 0, 2: 0}
+
+        for si, seed in enumerate(SEEDS):
+            o_r = by[arm]['ORACLE'][si]
+            r_r = by[arm]['RANDOM'][si]
+            p_r = by[arm]['PASSIVE'][si]
+            for oi in range(N_OBJ):
+                # Track branches
+                branch_dist[o_r['branches'].get(oi, 0)] += 1
+                rand_branch_dist[r_r['branches'].get(oi, 0)] += 1
+                pass_branch_dist[p_r['branches'].get(oi, 0)] += 1
+
+                if (o_r['per_obj_n_valid'][oi] >= 3 and
+                        r_r['per_obj_n_valid'][oi] >= 3):
+                    est_oracle_errors.append(o_r['per_obj_errors'][oi])
+                    est_random_errors.append(r_r['per_obj_errors'][oi])
+
+        est_only_gap = float(np.mean(est_random_errors) - np.mean(est_oracle_errors)) \
+            if len(est_oracle_errors) > 0 else float('nan')
+        est_only_gate = est_only_gap >= 0.05 if not np.isnan(est_only_gap) else False
+
+        # Additional seeds×obj→branch tracking
+        cells_branch = []  # (seed, obj_idx, branch)
+        for si, seed in enumerate(SEEDS):
+            for cond in ['ORACLE', 'RANDOM', 'PASSIVE']:
+                r_data = by[arm][cond][si]
+                for oi in range(N_OBJ):
+                    cells_branch.append((seed, oi, r_data['branches'].get(oi, 0)))
+
+        arm_metrics[arm] = {
+            'oracle_pom': oracle_pom, 'random_pom': random_pom, 'passive_pom': passive_pom,
+            'f1_gap': f1_gap, 'f1_pass': f1_pass,
+            'f2_lo': f2_lo, 'f2_hi': f2_hi, 'f2_pass': f2_pass,
+            'f3_pass': f3_pass,
+            'f4_pass': f4_pass,
+            'oracle_cov_mean': oracle_cov_mean, 'random_cov_mean': random_cov_mean,
+            'passive_cov_mean': passive_cov_mean,
+            'est_only_gap': est_only_gap, 'est_only_gate': est_only_gate,
+            'n_matched_cells': len(est_oracle_errors),
+            'branch_dist_oracle': branch_dist,
+            'branch_dist_random': rand_branch_dist,
+            'branch_dist_passive': pass_branch_dist,
+            'cells_branch': cells_branch,
+        }
+
+        print(f"\n  === Arm {arm} (obj-obj {'pass-through' if arm == 'B' else 'normal'}) ===\n")
+        print(f"  ORACLE:  mean={np.mean(oracle_pom):.4f} std={np.std(oracle_pom):.4f}")
+        print(f"  RANDOM:  mean={np.mean(random_pom):.4f} std={np.std(random_pom):.4f}")
+        print(f"  PASSIVE: mean={np.mean(passive_pom):.4f} std={np.std(passive_pom):.4f}")
+
+        print(f"\n  Gates:")
+        print(f"    F1 (RANDOM-ORACLE >= 0.15):  {'PASS' if f1_pass else 'FAIL'}  gap={f1_gap:.4f}")
+        print(f"    F2 (CI lower > 0):           {'PASS' if f2_pass else 'FAIL'}  "
+              f"CI=[{f2_lo:.4f}, {f2_hi:.4f}]")
+        print(f"    F3 (sanity):                 {'PASS' if f3_pass else 'FAIL'}")
+        print(f"    F4 (PASSIVE>RANDOM>ORACLE):  {'PASS' if f4_pass else 'FAIL'}")
+        print(f"    Est-only gap >= 0.05:        {'PASS' if est_only_gate else 'FAIL'}  "
+              f"gap={est_only_gap:.4f}  n={len(est_oracle_errors)}")
+
+        print(f"\n  Coverage (mean valid per object):")
+        print(f"    ORACLE:  {oracle_cov_mean:.2f}")
+        print(f"    RANDOM:  {random_cov_mean:.2f}")
+        print(f"    PASSIVE: {passive_cov_mean:.2f}")
+
+        print(f"\n  Branch distribution (ORACLE): "
+              f"0-events={branch_dist[0]}, 1-2-events={branch_dist[1]}, >=3-events={branch_dist[2]}")
+
+    # ── Cross-arm comparison ──
+    if 'A' in arms_to_run and 'B' in arms_to_run:
+        print("\n" + "=" * 70)
+        print("CROSS-ARM COMPARISON")
+        print("=" * 70)
+
+        for cond in ['ORACLE', 'RANDOM', 'PASSIVE']:
+            a_poms = np.array([r['pomlre'] for r in by['A'][cond]])
+            b_poms = np.array([r['pomlre'] for r in by['B'][cond]])
+            diff = float(np.mean(b_poms - a_poms))
+            lo, hi = bootstrap_ci(a_poms, b_poms)
+            print(f"  {cond}: Arm A={np.mean(a_poms):.4f}, Arm B={np.mean(b_poms):.4f}, "
+                  f"B-A={diff:.4f} CI=[{lo:.4f},{hi:.4f}]")
+
+    # ── Overall Conclusion ──
+    print("\n" + "=" * 70)
+    print("OVERALL CONCLUSION")
+    print("=" * 70)
+
+    for arm in arms_to_run:
+        m = arm_metrics[arm]
+        all_gates = m['f1_pass'] and m['f2_pass'] and m['f3_pass'] and m['f4_pass']
+        hypothesis = all_gates and m['est_only_gate']
+
+        label = f"Arm {arm}"
+        if hypothesis:
+            print(f"\n  {label}: HYPOTHESIS SUPPORTED — perception-driven probing is "
+                  f"load-bearing for mass estimation under ghostly pointer dynamics.")
+        elif all_gates and not m['est_only_gate']:
+            print(f"\n  {label}: MIXED — ORACLE wins by coverage, not by "
+                  f"perception-quality discrimination. "
+                  f"Full gap={m['f1_gap']:.4f}, est-only gap={m['est_only_gap']:.4f}")
+        else:
+            print(f"\n  {label}: HYPOTHESIS FALSIFIED — perception not load-bearing "
+                  f"even with foveated gaze.")
+            if not m['f1_pass']:
+                print(f"    F1 failed: gap={m['f1_gap']:.4f} < 0.15")
+            if not m['f2_pass']:
+                print(f"    F2 failed: CI lower={m['f2_lo']:.4f} <= 0")
+            if not m['f3_pass']:
+                print(f"    F3 failed: sanity checks")
+            if not m['f4_pass']:
+                print(f"    F4 failed: ordering violated")
+
+    # ── Write Output Files ──
+
+    # per_run.csv
+    with open(os.path.join(OUT, 'per_run.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow([
+            'arm', 'condition', 'seed', 'pomlre',
+            'n_valid_0', 'n_valid_1', 'n_valid_2',
+            'err_0', 'err_1', 'err_2',
+            'true_m0', 'true_m1', 'true_m2',
+            'n_probe_events', 'steps_in_bounds_frac',
+            'probe_attempts', 'probe_hits', 'per_obj_probes_0',
+            'per_obj_probes_1', 'per_obj_probes_2',
+        ])
+        for r in results:
+            row = [
+                r['arm'], r['condition'], r['seed'], r['pomlre'],
+                *r['per_obj_n_valid'], *r['per_obj_errors'],
+                *r['true_masses'], r['n_probe_events'], r['steps_in_bounds_frac'],
+            ]
+            if r['condition'] == 'ORACLE':
+                row.extend([
+                    r['probe_attempts'], r['probe_hits'],
+                    *r.get('per_obj_probe_counts', [0, 0, 0]),
+                ])
+            else:
+                row.extend([0, 0, 0, 0, 0])
+            w.writerow(row)
+
+    # sanity_checks.txt
+    with open(os.path.join(OUT, 'sanity_checks.txt'), 'w') as f:
+        f.write("iter_036 Foveated Gaze Sanity Checks\n")
+        f.write("=" * 50 + "\n\n")
+        for arm in arms_to_run:
+            f.write(f"Arm {arm}:\n")
+            for k, (p, d) in sanity[arm].items():
+                if k.startswith('_'):
+                    continue
+                f.write(f"  {k}: {'PASS' if p else 'FAIL'} — {d}\n")
+            f.write(f"  All sanity: {'PASS' if sanity[arm]['_all'] else 'FAIL'}\n\n")
+
+    # branch_distribution.txt
+    with open(os.path.join(OUT, 'branch_distribution.txt'), 'w') as f:
+        f.write("iter_036 Branch Distribution\n")
+        f.write("=" * 50 + "\n\n")
+        f.write("Branch definitions:\n")
+        f.write("  0 = no valid probe events (error forced to 2.0)\n")
+        f.write("  1 = 1-2 valid events (mean of estimates)\n")
+        f.write("  2 = >=3 valid events (median of estimates)\n\n")
+
+        for arm in arms_to_run:
+            m = arm_metrics[arm]
+            f.write(f"Arm {arm}:\n\n")
+
+            for cond in ['ORACLE', 'RANDOM', 'PASSIVE']:
+                bd = m[f'branch_dist_{cond.lower()}']
+                total = sum(bd.values())
+                f.write(f"  {cond}:\n")
+                f.write(f"    Branch 0 (no events):  {bd[0]:2d}/{total}\n")
+                f.write(f"    Branch 1 (1-2 events): {bd[1]:2d}/{total}\n")
+                f.write(f"    Branch 2 (>=3 events): {bd[2]:2d}/{total}\n")
+                f.write(f"    Coverage rate: {(bd[1]+bd[2])}/{total} "
+                        f"= {(bd[1]+bd[2])/max(total,1):.3f}\n\n")
+
+            # Per-cell detail
+            f.write(f"  Per-cell branch assignments (seed, obj → branch):\n")
+            for (seed, oi, br) in m['cells_branch']:
+                f.write(f"    ({seed}, {oi}) → branch {br}\n")
+            f.write("\n")
+
+    # analysis.md
+    with open(os.path.join(OUT, 'analysis.md'), 'w') as f:
+        f.write("# iter_036 Foveated Gaze Benchmark Analysis\n\n")
+        f.write("## Environment\nGhostly pointer (passes through objects) with "
+                f"probe budget of {PROBE_BUDGET} and gaze radius of {GAZE_RADIUS}.\n")
+        f.write(f"N={N_OBJ} objects, {N_STEPS} steps, {PROBE_BUDGET} probe budget.\n\n")
+
+        f.write("## CV Gate\n\n")
+        for arm in ['A', 'B']:
+            f.write(f"- Arm {arm}: CV={gate_cv[arm]:.4f} "
+                    f"({'PASS' if gate_pass[arm] else 'FAIL'})\n")
+        f.write(f"\nArms proceeding: {arms_to_run}\n\n")
+
+        for arm in arms_to_run:
+            m = arm_metrics[arm]
+            f.write(f"---\n\n## Arm {arm} "
+                    f"(obj-obj {'pass-through' if arm == 'B' else 'normal'})\n\n")
+
+            f.write("### Per-Seed POMLRE\n\n")
+            f.write("| Seed | ORACLE | RANDOM | PASSIVE |\n"
+                    "|------|--------|--------|--------|\n")
+            for i, seed in enumerate(SEEDS):
+                o_r = by[arm]['ORACLE'][i]
+                r_r = by[arm]['RANDOM'][i]
+                p_r = by[arm]['PASSIVE'][i]
+                f.write(f"| {seed} | {o_r['pomlre']:.4f} "
+                        f"| {r_r['pomlre']:.4f} "
+                        f"| {p_r['pomlre']:.4f} |\n")
+
+            f.write(f"\n### Summary\n\n")
+            for cond in ['ORACLE', 'RANDOM', 'PASSIVE']:
+                vals = [r['pomlre'] for r in by[arm][cond]]
+                f.write(f"- {cond}: POMLRE={np.mean(vals):.4f}±{np.std(vals):.4f}\n")
+
+            f.write(f"\n### Gates\n\n")
+            f.write(f"- F1 (gap≥0.15): {'PASS' if m['f1_pass'] else 'FAIL'}, "
+                    f"gap={m['f1_gap']:.4f}\n")
+            f.write(f"- F2 (CI lower>0): {'PASS' if m['f2_pass'] else 'FAIL'}, "
+                    f"CI=[{m['f2_lo']:.4f},{m['f2_hi']:.4f}]\n")
+            f.write(f"- F3 (sanity): {'PASS' if m['f3_pass'] else 'FAIL'}\n")
+            f.write(f"- F4 (ordering): {'PASS' if m['f4_pass'] else 'FAIL'}\n")
+            f.write(f"- Est-only gap≥0.05: {'PASS' if m['est_only_gate'] else 'FAIL'}, "
+                    f"gap={m['est_only_gap']:.4f}, n={m['n_matched_cells']}\n")
+
+            f.write(f"\n### Coverage vs Estimation\n\n")
+            f.write(f"Mean valid events per object: "
+                    f"ORACLE={m['oracle_cov_mean']:.2f}, "
+                    f"RANDOM={m['random_cov_mean']:.2f}, "
+                    f"PASSIVE={m['passive_cov_mean']:.2f}\n")
+            f.write(f"Estimation-only (matched cells): "
+                    f"n={m['n_matched_cells']}, gap={m['est_only_gap']:.4f}\n")
+
+            f.write(f"\n### Branch Distribution (ORACLE)\n\n")
+            bd = m['branch_dist_oracle']
+            total = sum(bd.values())
+            f.write(f"- Branch 0 (no events): {bd[0]}/{total} = {bd[0]/max(total,1):.3f}\n")
+            f.write(f"- Branch 1 (1-2 events): {bd[1]}/{total} = {bd[1]/max(total,1):.3f}\n")
+            f.write(f"- Branch 2 (>=3 events): {bd[2]}/{total} = {bd[2]/max(total,1):.3f}\n")
+
+        f.write(f"\n## Conclusion\n\n")
+        for arm in arms_to_run:
+            m = arm_metrics[arm]
+            all_gates = m['f1_pass'] and m['f2_pass'] and m['f3_pass'] and m['f4_pass']
+            hyp = all_gates and m['est_only_gate']
+            if hyp:
+                f.write(f"- Arm {arm}: **HYPOTHESIS SUPPORTED**\n")
+            elif all_gates:
+                f.write(f"- Arm {arm}: **MIXED** — ORACLE wins by coverage, not "
+                        f"estimation quality (est-only gap = {m['est_only_gap']:.4f})\n")
+            else:
+                f.write(f"- Arm {arm}: **HYPOTHESIS FALSIFIED**\n")
+
+    print(f"\nResults saved to {OUT}/")
+
+
+if __name__ == '__main__':
+    main()
