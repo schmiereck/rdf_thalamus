@@ -1,0 +1,903 @@
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_blur = sigma_blur
+        self.seed = seed
+        self.pixel_noise_std = pixel_noise_std
+        self.noisy_tv = noisy_tv
+        self.structured_distractor = structured_distractor
+        
+        # State variables for standard objects
+        self.positions = np.zeros(N)
+        self.velocities = np.zeros(N)
+        self.radii = np.zeros(N)
+        self.masses = np.zeros(N)
+        self.colors = np.zeros((N, 3))
+        
+        # State variables for Noisy-TV entity
+        self.noisy_tv_pos = 64.0
+        self.noisy_tv_radius = 5.0
+        self.noisy_tv_color = np.array([0.5, 0.5, 0.5])
+        
+        # State variables for Structured Distractor (Sinusoidal Oscillator)
+        self.sd_center = 64.0
+        self.sd_amplitude = 10.0
+        self.sd_omega = 0.03
+        self.sd_phase = 0.0
+        self.sd_color = np.array([0.5, 0.5, 0.5])
+        self.sd_radius = 5.0
+        self.sd_t = 0
+        self.sd_pos = 64.0
+        
+        # Pointer state variables
+        self.pointer_pos = 64.0
+        self.pointer_vel = 0.0
+        self.pointer_radius = 4.0
+        self.pointer_mass = 10.0
+        self.pointer_color = np.array([1.0, 1.0, 1.0])
+        
+        self.reset(seed=seed)
+        
+    def reset(self, seed=None):
+        """
+        Reset environment with randomized parameters (sizes, colors, masses, positions, velocities)
+        and reset pointer position & velocity, then resolve all overlaps.
+        """
+        if seed is not None:
+            np.random.seed(seed)
+            self.seed = seed
+
+        W = 128.0 / self.N
+        for i in range(self.N):
+            # Sample radius and mass
+            r = np.random.uniform(3.0, 8.0)
+            self.radii[i] = r
+            self.masses[i] = r  # Mass is proportional to radius/size
+            
+            # Sample color from [0.3, 1.0] for each channel
+            self.colors[i] = np.random.uniform(0.3, 1.0, size=(3,))
+            
+            # Position inside the segmented interval to prevent initial overlaps
+            low = i * W + r
+            high = (i + 1) * W - r
+            # Just in case the segment is too small (should not happen with N=2 or 3, but let's be safe)
+            if low >= high:
+                low = i * W + W / 2.0
+                high = low
+            self.positions[i] = np.random.uniform(low, high)
+            
+            # Velocity from [-2.0, 2.0], non-zero
+            v = np.random.uniform(0.5, 2.0)
+            if np.random.rand() < 0.5:
+                v = -v
+            self.velocities[i] = v
+            
+        # Reset pointer position and velocity
+        self.pointer_pos = 64.0
+        self.pointer_vel = 0.0
+        self.pointer_radius = 4.0
+        self.pointer_mass = 10.0
+        self.pointer_color = np.array([1.0, 1.0, 1.0])
+        
+        # Reset Noisy-TV entity if active
+        if self.noisy_tv:
+            self.noisy_tv_radius = np.random.uniform(3.0, 8.0)
+            self.noisy_tv_pos = np.random.uniform(self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+        
+        # Reset Structured Distractor if active
+        if self.structured_distractor:
+            self.sd_center = np.random.uniform(32.0, 96.0)
+            self.sd_amplitude = np.random.uniform(5.0, 15.0)
+            self.sd_omega = np.random.uniform(0.02, 0.05)
+            self.sd_phase = np.random.uniform(0.0, 2.0 * np.pi)
+            self.sd_color = np.random.uniform(0.3, 1.0, size=(3,))
+            self.sd_radius = np.random.uniform(3.0, 8.0)
+            self.sd_t = 0
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_phase)
+        
+        # Resolve initial overlaps of both the objects and the pointer in a loop
+        temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+        temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+        temp_masses = np.concatenate([self.masses, [self.pointer_mass]])
+        
+        for _ in range(50):
+            # Boundary correction
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+            
+            # Overlap resolution
+            sort_idx = np.argsort(temp_positions)
+            for idx_in_sort in range(len(temp_positions) - 1):
+                i = sort_idx[idx_in_sort]
+                j = sort_idx[idx_in_sort + 1]
+                
+                dist = temp_positions[j] - temp_positions[i]
+                min_dist = temp_radii[i] + temp_radii[j]
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    m_inv_i = 1.0 / temp_masses[i]
+                    m_inv_j = 1.0 / temp_masses[j]
+                    sum_inv_m = m_inv_i + m_inv_j
+                    
+                    temp_positions[i] -= overlap * (m_inv_i / sum_inv_m)
+                    temp_positions[j] += overlap * (m_inv_j / sum_inv_m)
+
+        # Assign positions back
+        self.positions = temp_positions[:-1]
+        self.pointer_pos = temp_positions[-1]
+            
+        return self.render()
+
+    def step(self, action=None):
+        """
+        Step the environment by 1.0 time unit using self.substeps, incorporating optional actions.
+        
+        Args:
+            action (dict, optional): containing continuous acceleration 'acc' (float) and boolean 'push'.
+        Returns:
+            observation (np.ndarray): Shape (3, 128)
+            info (dict): Useful diagnostic info
+        """
+        if action is not None:
+            acc = action.get('acc', 0.0)
+            push = action.get('push', False)
+        else:
+            acc = 0.0
+            push = False
+            
+        if push:
+            if len(self.positions) > 0:
+                dists = self.positions - self.pointer_pos
+                nearest_idx = np.argmin(np.abs(dists))
+                diff = dists[nearest_idx]
+                direction = 1.0 if diff >= 0 else -1.0
+                self.pointer_vel = direction * 5.0
+                
+        dt = 1.0 / self.substeps
+        
+        for _ in range(self.substeps):
+            # Apply acceleration
+            self.pointer_vel += acc * dt
+            
+            # Pack all N+1 objects
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_velocities = np.concatenate([self.velocities, [self.pointer_vel]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_masses = np.concatenate([self.masses, [self.pointer_mass]])
+            
+            # 1. Update positions
+            temp_positions += temp_velocities * dt
+            
+            # 2. Boundary bounces & position correction
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                    if temp_velocities[i] < 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+                    if temp_velocities[i] > 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+            
+            # 3. Resolve elastic collisions between adjacent objects
+            sort_idx = np.argsort(temp_positions)
+            for idx_in_sort in range(len(temp_positions) - 1):
+                i = sort_idx[idx_in_sort]
+                j = sort_idx[idx_in_sort + 1]
+                
+                dist = temp_positions[j] - temp_positions[i]
+                min_dist = temp_radii[i] + temp_radii[j]
+                if dist < min_dist:
+                    overlap = min_dist - dist
+                    m_inv_i = 1.0 / temp_masses[i]
+                    m_inv_j = 1.0 / temp_masses[j]
+                    sum_inv_m = m_inv_i + m_inv_j
+                    
+                    # Resolve overlap proportionally to inverse masses
+                    temp_positions[i] -= overlap * (m_inv_i / sum_inv_m)
+                    temp_positions[j] += overlap * (m_inv_j / sum_inv_m)
+                    
+                    # Conserve momentum and kinetic energy if moving towards each other
+                    if temp_velocities[i] > temp_velocities[j]:
+                        v1 = temp_velocities[i]
+                        v2 = temp_velocities[j]
+                        m1 = temp_masses[i]
+                        m2 = temp_masses[j]
+                        
+                        temp_velocities[i] = (v1 * (m1 - m2) + 2.0 * m2 * v2) / (m1 + m2)
+                        temp_velocities[j] = (v2 * (m2 - m1) + 2.0 * m1 * v1) / (m1 + m2)
+                        
+            # Additional boundary check after collision resolution to ensure no object is pushed out
+            for i in range(len(temp_positions)):
+                if temp_positions[i] - temp_radii[i] < 0.0:
+                    temp_positions[i] = temp_radii[i]
+                    if temp_velocities[i] < 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                elif temp_positions[i] + temp_radii[i] > 128.0:
+                    temp_positions[i] = 128.0 - temp_radii[i]
+                    if temp_velocities[i] > 0.0:
+                        temp_velocities[i] = -temp_velocities[i]
+                        
+            # Unpack back to state variables
+            self.positions = temp_positions[:-1]
+            self.velocities = temp_velocities[:-1]
+            self.pointer_pos = temp_positions[-1]
+            self.pointer_vel = temp_velocities[-1]
+
+        # Update Noisy-TV state if active
+        if self.noisy_tv:
+            # Random walk motion: Gaussian step with std 2.0
+            step_noise = np.random.normal(0.0, 2.0)
+            self.noisy_tv_pos += step_noise
+            # Keep inside environment boundaries [radius, 128 - radius]
+            self.noisy_tv_pos = np.clip(self.noisy_tv_pos, self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            # Flicker with maximum entropy: color randomly sampled from [0.3, 1.0]
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+
+        # Update Structured Distractor state if active
+        if self.structured_distractor:
+            self.sd_t += 1
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_omega * self.sd_t + self.sd_phase)
+
+        obs = self.render()
+        
+        info = {
+            "positions": self.positions.copy(),
+            "velocities": self.velocities.copy(),
+            "radii": self.radii.copy(),
+            "masses": self.masses.copy(),
+            "colors": self.colors.copy(),
+            "pointer_pos": self.pointer_pos,
+            "pointer_vel": self.pointer_vel,
+            "pointer_radius": self.pointer_radius,
+            "pointer_mass": self.pointer_mass,
+            "pointer_color": self.pointer_color.copy(),
+        }
+        
+        if self.noisy_tv:
+            info["noisy_tv_pos"] = self.noisy_tv_pos
+            info["noisy_tv_color"] = self.noisy_tv_color.copy()
+            info["noisy_tv_radius"] = self.noisy_tv_radius
+        
+        if self.structured_distractor:
+            info["sd_pos"] = self.sd_pos
+            info["sd_color"] = self.sd_color.copy()
+            info["sd_radius"] = self.sd_radius
+            
+        return obs, info
+
+    def render(self):
+        """
+        Render continuous 1D space to a (3, 128) array with soft continuous blending.
+        Includes original objects, the white physical pointer, and optionally the Noisy-TV entity.
+        """
+        pixel_centers = np.arange(128) + 0.5  # shape (128,)
+        canvas = np.zeros((3, 128))
+        
+        # Combine objects, pointer, and optional Noisy-TV for rendering depth sorting
+        if self.noisy_tv:
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos], [self.noisy_tv_pos]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius], [self.noisy_tv_radius]])
+            temp_colors = np.concatenate([self.colors, [self.pointer_color], [self.noisy_tv_color]], axis=0)
+        else:
+            temp_positions = np.concatenate([self.positions, [self.pointer_pos]])
+            temp_radii = np.concatenate([self.radii, [self.pointer_radius]])
+            temp_colors = np.concatenate([self.colors, [self.pointer_color]], axis=0)
+        
+        # Sort objects and pointer by position to blend left-to-right (depth order)
+        sorted_indices = np.argsort(temp_positions)
+        for idx in sorted_indices:
+            pos = temp_positions[idx]
+            r = temp_radii[idx]
+            color = temp_colors[idx]  # shape (3,)
+            
+            # Distance from pixel centers to object center
+            d = np.abs(pixel_centers - pos)
+            
+            # Sigmoid continuous blending
+            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))  # shape (128,)
+            mask = mask[np.newaxis, :]  # shape (1, 128)
+            color_expanded = color[:, np.newaxis]  # shape (3, 1)
+            
+            # Alpha blend onto canvas
+            canvas = canvas * (1.0 - mask) + color_expanded * mask
+        
+        # Render structured distractor after all standard objects and pointer
+        if self.structured_distractor:
+            pos = self.sd_pos
+            r = self.sd_radius
+            color = self.sd_color
+            d = np.abs(pixel_centers - pos)
+            mask = 1.0 / (1.0 + np.exp((d - r) / self.sigma_blur))
+            mask = mask[np.newaxis, :]
+            color_expanded = color[:, np.newaxis]
+            canvas = canvas * (1.0 - mask) + color_expanded * mask
+            
+        # Apply global pixel noise if specified
+        if self.pixel_noise_std > 0.0:
+            noise = np.random.normal(0.0, self.pixel_noise_std, size=canvas.shape)
+            canvas = np.clip(canvas + noise, 0.0, 1.0)
+            
+        return canvas
+]
+
+[Tool Call: read_file({'path': 'src/run_iter034_v2.py'})]
+[Tool Result: #!/usr/bin/env python3
+"""iter_034 v2: Dynamics-Learning Benchmark with MALRE (Mean Absolute Log-Ratio Error).
+
+v1 MAPE was falsified: PASSIVE=0.597 < RANDOM=0.999 < ORACLE=1.005 (inverted).
+Root cause: pointer-object mass estimates are extremely noisy (m_i = 10*(-dv_ptr)/dv_obj
+blows up when dv_obj is small), and hundreds of such rows overwhelm least-squares.
+
+v2 fix: use MEDIAN of mass-RATIO estimates from object-object collisions only.
+This is robust because: (a) ratio = -dv_j/dv_i is stable across substep impulses,
+(b) MEDIAN filters outliers, (c) object-object collisions are more informative per event.
+"""
+import os, sys, csv, numpy as np
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from environment import PhysicsSandbox
+
+SEEDS = [7, 31, 53, 71, 83, 97, 113, 163]
+N_OBJECTS = 3
+N_STEPS = 2000
+THRESHOLD = 4.0
+DV_THRESHOLD = 0.5
+POINTER_IDX = N_OBJECTS
+POINTER_MASS = 10.0
+KP, KD = 2.0, 0.5
+PUSH_DISTANCE = 6.0
+PUSH_VEL = 5.0
+PUSH_COOLDOWN_STEPS = 15
+N_BOOTSTRAP = 10000
+OUTPUT_DIR = os.path.join('archive', 'iter_034', 'results_v2')
+
+
+def detect_collisions(step, pre_pos, pre_vel, post_pos, post_vel, radii):
+    colls = []
+    sort_idx = np.argsort(post_pos)
+    for k in range(len(sort_idx) - 1):
+        i, j = int(sort_idx[k]), int(sort_idx[k+1])
+        dist = post_pos[j] - post_pos[i]
+        if dist < radii[i] + radii[j] + THRESHOLD:
+            dvi = post_vel[i] - pre_vel[i]
+            dvj = post_vel[j] - pre_vel[j]
+            if abs(dvi) > DV_THRESHOLD and abs(dvj) > DV_THRESHOLD:
+                colls.append((step, i, j, float(pre_vel[i]), float(pre_vel[j]),
+                              float(post_vel[i]), float(post_vel[j])))
+    return colls
+
+
+def compute_malre(collisions, true_masses):
+    """Mean Absolute Log-Ratio Error from obj-obj collisions, using MEDIAN per pair."""
+    pair_errors = []
+    for i in range(N_OBJECTS):
+        for j in range(i+1, N_OBJECTS):
+            ratios = []
+            for c in collisions:
+                step, ci, cj, vi_pre, vj_pre, vi_post, vj_post = c
+                if (ci == i and cj == j) or (ci == j and cj == i):
+                    dvi = vi_post - vi_pre
+                    dvj = vj_post - vj_pre
+                    if abs(dvi) > 0.5 and abs(dvj) > 0.5:
+                        r = -dvj / dvi
+                        if r > 0:
+                            ratios.append(r)
+            if len(ratios) >= 1:
+                r_hat = np.median(ratios)
+                true_ratio = true_masses[i] / true_masses[j]
+                error = abs(np.log(r_hat) - np.log(true_ratio))
+            else:
+                error = 2.0
+            pair_errors.append(error)
+    return float(np.mean(pair_errors)), pair_errors
+
+
+def compute_mape_robust(collisions, true_masses):
+    """Absolute mass estimation using best pointer-object collision as anchor."""
+    # Step 1: Estimate mass ratios from obj-obj collisions
+    ratio_estimates = {}
+    for i in range(N_OBJECTS):
+        for j in range(i+1, N_OBJECTS):
+            ratios = []
+            for c in collisions:
+                step, ci, cj, vi_pre, vj_pre, vi_post, vj_post = c
+                if (ci == i and cj == j) or (ci == j and cj == i):
+                    dvi = vi_post - vi_pre
+                    dvj = vj_post - vj_pre
+                    if abs(dvi) > 0.5 and abs(dvj) > 0.5:
+                        r = -dvj / dvi
+                        if r > 0:
+                            ratios.append(r)
+            if ratios:
+                ratio_estimates[(i,j)] = np.median(ratios)
+    
+    # Step 2: Find best anchor per object
+    anchor_masses = {}
+    for obj_idx in range(N_OBJECTS):
+        best_dv = 0
+        best_mass = None
+        for c in collisions:
+            step, ci, cj, vi_pre, vj_pre, vi_post, vj_post = c
+            if ci == obj_idx and cj == POINTER_IDX:
+                dv_obj = vi_post - vi_pre
+                dv_ptr = vj_post - vj_pre
+            elif cj == obj_idx and ci == POINTER_IDX:
+                dv_obj = vj_post - vj_pre
+                dv_ptr = vi_post - vi_pre
+            else:
+                continue
+            if abs(dv_obj) > abs(best_dv) and abs(dv_obj) > 0.5:
+                m_est = 10.0 * (-dv_ptr) / dv_obj
+                if m_est > 0:
+                    best_dv = dv_obj
+                    best_mass = m_est
+        if best_mass is not None:
+            anchor_masses[obj_idx] = best_mass
+    
+    # Step 3: Build estimates
+    m_hat = np.full(N_OBJECTS, np.nan)
+    for idx, mass in anchor_masses.items():
+        m_hat[idx] = mass
+    for (i,j), ratio in ratio_estimates.items():
+        if not np.isnan(m_hat[i]) and np.isnan(m_hat[j]):
+            m_hat[j] = m_hat[i] / ratio
+        elif np.isnan(m_hat[i]) and not np.isnan(m_hat[j]):
+            m_hat[i] = m_hat[j] * ratio
+    for k in range(N_OBJECTS):
+        if np.isnan(m_hat[k]):
+            m_hat[k] = 5.5
+    
+    mape = float(np.mean(np.abs(m_hat - true_masses) / true_masses))
+    return mape, m_hat
+
+
+def compute_coverage(collisions):
+    """Fraction of pair types (obj-obj + pointer-obj) with >=3 collisions."""
+    n_covered = 0
+    n_total = 0
+    # Object-object pairs
+    for i in range(N_OBJECTS):
+        for j in range(i+1, N_OBJECTS):
+            n_total += 1
+            count = sum(1 for c in collisions if (c[1]==i and c[2]==j) or (c[1]==j and c[2]==i))
+            if count >= 3:
+                n_covered += 1
+    # Pointer-object pairs
+    for i in range(N_OBJECTS):
+        n_total += 1
+        count = sum(1 for c in collisions if (c[1]==i and c[2]==POINTER_IDX) or (c[1]==POINTER_IDX and c[2]==i))
+        if count >= 3:
+            n_covered += 1
+    return n_covered / n_total if n_total > 0 else 0.0
+
+
+def bootstrap_ci_gap(a_vals, b_vals, n_boot=N_BOOTSTRAP):
+    """Paired bootstrap CI for mean(b) - mean(a)."""
+    n = len(a_vals)
+    gaps = []
+    for _ in range(n_boot):
+        idx = np.random.randint(0, n, size=n)
+        gaps.append(np.mean(b_vals[idx]) - np.mean(a_vals[idx]))
+    gaps = np.array(gaps)
+    return float(np.percentile(gaps, 2.5)), float(np.percentile(gaps, 97.5))
+
+
+def run_single(condition, seed):
+    env = PhysicsSandbox(N=N_OBJECTS, substeps=10, seed=seed)
+    rng = np.random.RandomState(seed * 1000 + hash(condition) % 10000)
+    
+    obj_ptr_colls = [0, 0, 0]
+    push_cooldown = 0
+    prev_error = None
+    forced_target = None
+    collisions = []
+    ptr_oob = 0
+    
+    for step in range(N_STEPS):
+        pre_vel = np.concatenate([env.velocities.copy(), [env.pointer_vel]])
+        pre_pos = np.concatenate([env.positions.copy(), [env.pointer_pos]])
+        
+        if condition == 'ORACLE':
+            if forced_target is not None:
+                target = forced_target
+                forced_target = None
+            else:
+                target = int(np.argmin(obj_ptr_colls))
+            error = env.positions[target] - env.pointer_pos
+            d_error = (error - prev_error) if prev_error is not None else 0.0
+            prev_error = error
+            acc = KP * error + KD * d_error
+            if push_cooldown > 0:
+                push_cooldown -= 1
+            if abs(error) <= PUSH_DISTANCE and push_cooldown == 0:
+                env.pointer_vel = PUSH_VEL * np.sign(error)
+                push_cooldown = PUSH_COOLDOWN_STEPS
+                counts = np.array(obj_ptr_colls, dtype=float)
+                counts[target] = np.inf
+                forced_target = int(np.argmin(counts))
+            action = {'acc': acc, 'push': False}
+        elif condition == 'RANDOM':
+            acc = rng.uniform(-10, 10)
+            push = rng.rand() < 0.1
+            action = {'acc': acc, 'push': push}
+        else:  # PASSIVE
+            action = {'acc': 0.0, 'push': False}
+        
+        obs, info = env.step(action)
+        post_vel = np.concatenate([info["velocities"].copy(), [info["pointer_vel"]]])
+        post_pos = np.concatenate([info["positions"].copy(), [info["pointer_pos"]]])
+        radii = np.concatenate([env.radii.copy(), [env.pointer_radius]])
+        
+        if not (0 <= env.pointer_pos <= 128):
+            ptr_oob += 1
+        
+        step_colls = detect_collisions(step, pre_pos, pre_vel, post_pos, post_vel, radii)
+        collisions.extend(step_colls)
+        
+        if condition == 'ORACLE':
+            for c in step_colls:
+                _, ci, cj, *_ = c
+                if ci == POINTER_IDX and cj < N_OBJECTS:
+                    obj_ptr_colls[cj] += 1
+                elif cj == POINTER_IDX and ci < N_OBJECTS:
+                    obj_ptr_colls[ci] += 1
+    
+    true_masses = env.masses.copy()
+    malre, pair_errors = compute_malre(collisions, true_masses)
+    mape, m_hat = compute_mape_robust(collisions, true_masses)
+    coverage = compute_coverage(collisions)
+    
+    n_total = len(collisions)
+    n_ptr_obj = sum(1 for c in collisions if c[1]==POINTER_IDX or c[2]==POINTER_IDX)
+    n_obj_obj = n_total - n_ptr_obj
+    
+    per_obj_ptr = [0]*N_OBJECTS
+    for c in collisions:
+        if c[1]==POINTER_IDX and c[2]<N_OBJECTS: per_obj_ptr[c[2]] += 1
+        elif c[2]==POINTER_IDX and c[1]<N_OBJECTS: per_obj_ptr[c[1]] += 1
+    
+    per_pair_obj = {}
+    for i in range(N_OBJECTS):
+        for j in range(i+1, N_OBJECTS):
+            cnt = sum(1 for c in collisions if (c[1]==i and c[2]==j) or (c[1]==j and c[2]==i))
+            per_pair_obj[(i,j)] = cnt
+    
+    return {
+        'condition': condition, 'seed': seed,
+        'malre': malre, 'mape': mape, 'coverage': coverage,
+        'm_hat': m_hat.tolist(), 'true_masses': true_masses.tolist(),
+        'pair_errors': pair_errors,
+        'n_total': n_total, 'n_ptr_obj': n_ptr_obj, 'n_obj_obj': n_obj_obj,
+        'per_obj_ptr': per_obj_ptr, 'per_pair_obj': {f"{k[0]}_{k[1]}": v for k,v in per_pair_obj.items()},
+        'ptr_oob_frac': ptr_oob / N_STEPS,
+    }
+
+
+def main():
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print("iter_034 v2: MALRE Benchmark")
+    results = []
+    for cond in ['ORACLE', 'RANDOM', 'PASSIVE']:
+        for seed in SEEDS:
+            print(f"  {cond:8s} seed={seed:3d} ...", end=" ", flush=True)
+            r = run_single(cond, seed)
+            results.append(r)
+            print(f"MALRE={r['malre']:.4f} MAPE={r['mape']:.4f} cov={r['coverage']:.2f}")
+    
+    by_cond = {c: [r for r in results if r['condition']==c] for c in ['ORACLE','RANDOM','PASSIVE']}
+    
+    # Sanity checks
+    oracle_po_per_obj = np.array([r['per_obj_ptr'] for r in by_cond['ORACLE']])
+    s1 = bool(np.all(oracle_po_per_obj.mean(axis=0) >= 3))
+    
+    oracle_oo_per_pair = np.array([[r['per_pair_obj'][f"{i}_{j}"] for i,j in [(0,1),(0,2),(1,2)]] for r in by_cond['ORACLE']])
+    s2 = bool(np.all(oracle_oo_per_pair.mean(axis=0) >= 10))
+    s3 = True  # collision detector enforces this
+    s4 = bool(all(all(c >= 1 for c in r['per_obj_ptr']) for r in by_cond['ORACLE']))
+    s5 = bool(max(r['ptr_oob_frac'] for r in by_cond['ORACLE']) <= 0.05)
+    
+    all_sanity = s1 and s2 and s3 and s4 and s5
+    
+    # Extract metrics
+    oracle_malre = np.array([r['malre'] for r in by_cond['ORACLE']])
+    random_malre = np.array([r['malre'] for r in by_cond['RANDOM']])
+    passive_malre = np.array([r['malre'] for r in by_cond['PASSIVE']])
+    
+    oracle_mape = np.array([r['mape'] for r in by_cond['ORACLE']])
+    random_mape = np.array([r['mape'] for r in by_cond['RANDOM']])
+    passive_mape = np.array([r['mape'] for r in by_cond['PASSIVE']])
+    
+    oracle_cov = np.array([r['coverage'] for r in by_cond['ORACLE']])
+    passive_cov = np.array([r['coverage'] for r in by_cond['PASSIVE']])
+    
+    # Gates
+    g1_gap = float(np.mean(passive_malre - oracle_malre))
+    g1_lo, g1_hi = bootstrap_ci_gap(oracle_malre, passive_malre)
+    g1_pass = g1_gap >= 0.3 and g1_lo >= 0.1
+    
+    g2_gap = float(np.mean(passive_malre - random_malre))
+    g2_lo, g2_hi = bootstrap_ci_gap(random_malre, passive_malre)
+    g2_pass = g2_gap >= 0.1 and g2_lo > 0
+    
+    g3_pass = float(np.mean(oracle_malre)) < float(np.mean(random_malre)) < float(np.mean(passive_malre))
+    
+    g4_gap = float(np.mean(oracle_cov - passive_cov))
+    g4_pass = g4_gap >= 0.2
+    
+    # Print results
+    print("\n" + "="*70)
+    print("SANITY CHECKS")
+    for name, val in [("S1 (>=3 ptr-obj/object)", s1), ("S2 (>=10 obj-obj/pair)", s2),
+                       ("S3 (>=90% |dv|>0.5)", s3), ("S4 (>=1 ptr-obj/object/seed)", s4),
+                       ("S5 (ptr in bounds)", s5)]:
+        print(f"  {name}: {'PASS' if val else 'FAIL'}")
+    print(f"  All sanity: {'PASS' if all_sanity else 'FAIL'}")
+    
+    print("\nPER-CONDITION RESULTS")
+    for cond in ['ORACLE','RANDOM','PASSIVE']:
+        vals = [r['malre'] for r in by_cond[cond]]
+        mapes = [r['mape'] for r in by_cond[cond]]
+        covs = [r['coverage'] for r in by_cond[cond]]
+        print(f"  {cond:8s}: MALRE={np.mean(vals):.4f}±{np.std(vals):.4f}  "
+              f"MAPE={np.mean(mapes):.4f}±{np.std(mapes):.4f}  "
+              f"COV={np.mean(covs):.2f}")
+    
+    print("\nPER-SEED MALRE")
+    print(f"{'Seed':>6} | {'ORACLE':>8} | {'RANDOM':>8} | {'PASSIVE':>8}")
+    for i, seed in enumerate(SEEDS):
+        print(f"{seed:>6} | {oracle_malre[i]:.4f}   | {random_malre[i]:.4f}   | {passive_malre[i]:.4f}")
+    
+    print("\nGATES")
+    print(f"  G1 (PASSIVE-ORACLE MALRE>=0.3, CI>=0.1): {'PASS' if g1_pass else 'FAIL'}  gap={g1_gap:.4f} CI=[{g1_lo:.4f},{g1_hi:.4f}]")
+    print(f"  G2 (PASSIVE-RANDOM MALRE>=0.1, CI>0):    {'PASS' if g2_pass else 'FAIL'}  gap={g2_gap:.4f} CI=[{g2_lo:.4f},{g2_hi:.4f}]")
+    print(f"  G3 (ORACLE<RANDOM<PASSIVE):              {'PASS' if g3_pass else 'FAIL'}")
+    print(f"  G4 (ORACLE-PASSIVE coverage>=0.2):       {'PASS' if g4_pass else 'FAIL'}  gap={g4_gap:.2f}")
+    
+    validated = all_sanity and g1_pass and g2_pass and g3_pass and g4_pass
+    result_text = 'VALIDATED' if validated else 'FALSIFIED'
+    print(f"\nBENCHMARK {result_text}")
+    
+    # Save per_run.csv
+    with open(os.path.join(OUTPUT_DIR, 'per_run.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['condition','seed','malre','mape','coverage','n_total','n_ptr_obj','n_obj_obj',
+                     'po_obj0','po_obj1','po_obj2',
+                     'oo_01','oo_02','oo_12',
+                     'm_hat0','m_hat1','m_hat2',
+                     'true_m0','true_m1','true_m2'])
+        for r in results:
+            w.writerow([r['condition'], r['seed'], r['malre'], r['mape'], r['coverage'],
+                        r['n_total'], r['n_ptr_obj'], r['n_obj_obj'],
+                        *r['per_obj_ptr'],
+                        r['per_pair_obj']['0_1'], r['per_pair_obj']['0_2'], r['per_pair_obj']['1_2'],
+                        *r['m_hat'], *r['true_masses']])
+    
+    # Save analysis
+    with open(os.path.join(OUTPUT_DIR, 'analysis.md'), 'w') as f:
+        f.write("# iter_034 v2 Benchmark Analysis (MALRE)\n\n")
+        f.write("## v1 Failure\nMAPE was falsified (PASSIVE=0.597 < RANDOM=0.999 < ORACLE=1.005).\n")
+        f.write("Pointer-object collision mass estimates overwhelmed least-squares.\n\n")
+        f.write("## v2 Metric: MALRE\nMean Absolute Log-Ratio Error from MEDIAN of obj-obj collision ratios.\n\n")
+        f.write("## Per-Seed MALRE\n\n")
+        f.write("| Seed | ORACLE | RANDOM | PASSIVE |\n|------|--------|--------|--------|\n")
+        for i, seed in enumerate(SEEDS):
+            f.write(f"| {seed} | {oracle_malre[i]:.4f} | {random_malre[i]:.4f} | {passive_malre[i]:.4f} |\n")
+        f.write(f"\n## Summary\n\n")
+        for cond in ['ORACLE','RANDOM','PASSIVE']:
+            vals = [r['malre'] for r in by_cond[cond]]
+            f.write(f"- {cond}: MALRE={np.mean(vals):.4f}±{np.std(vals):.4f}\n")
+        f.write(f"\n## Gates\n- G1: gap={g1_gap:.4f} CI=[{g1_lo:.4f},{g1_hi:.4f}] {'PASS' if g1_pass else 'FAIL'}\n")
+        f.write(f"- G2: gap={g2_gap:.4f} CI=[{g2_lo:.4f},{g2_hi:.4f}] {'PASS' if g2_pass else 'FAIL'}\n")
+        f.write(f"- G3: {'PASS' if g3_pass else 'FAIL'}\n- G4: gap={g4_gap:.2f} {'PASS' if g4_pass else 'FAIL'}\n")
+        result_text2 = 'VALIDATED' if validated else 'FALSIFIED'
+        f.write(f"\n## Result: {result_text2}\n")
+    
+    print(f"\nResults saved to {OUTPUT_DIR}/")
+
+
+if __name__ == '__main__':
+    main()
+]
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 035
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+In a pass-through physics sandbox (N=3 objects that pass through each other; 
+only pointer-object collisions remain elastic) with a 15-push budget over 2000 steps, 
+the ORACLE targeted-exploration policy (PD-tracks the least-collided object, pushes 
+when within 6px) achieves a Per-Object Median Log-Ratio Error (POMLRE) at least 0.15 
+lower than a RANDOM policy, with the lower 95% paired bootstrap CI of 
+(RANDOM_POMLRE - ORACLE_POMLRE) clear of zero over 8 seeds. The ordering 
+ORACLE_POMLRE < RANDOM_POMLRE < PASSIVE_POMLRE holds in the mean.
+
+## 2. Falsification Criterion
+The hypothesis is falsified if ANY of:
+(F1) RANDOM_POMLRE - ORACLE_POMLRE < 0.15 (ORACLE does not substantially outperform RANDOM), OR
+(F2) The lower 95% bootstrap CI of (RANDOM_POMLRE - ORACLE_POMLRE) includes zero (gap not statistically reliable), OR
+(F3) Any ORACLE sanity check fails:
+  S1: ORACLE achieves ≥3 informative pointer-object collisions per object (mean across seeds),
+  S2: ORACLE push budget utilization ≥ 80% (≥12 of 15 pushes used),
+  S3: ≥80% of collision events used for mass estimation have |Δv_obj| > 1.0,
+  S4: No single object receives >80% of ORACLE's total pushes (even targeting),
+  S5: ORACLE pointer stays in bounds ≥95% of steps.
+If F3 fires, the ORACLE implementation is buggy and no comparison is interpreted.
+
+## 3. Proposed Method
+Step 1: Create src/run_iter035_benchmark.py implementing:
+
+A. PassThroughPhysicsSandbox — subclass of PhysicsSandbox where the step() method 
+   skips elastic collision resolution between non-pointer entities. Only collisions 
+   involving the pointer (index N) are resolved. Objects pass through each other 
+   but bounce off walls normally.
+
+B. Three conditions (NO learned representation — benchmark validation only):
+   - ORACLE: Custom controller that (a) maintains per-object pointer-collision count,
+     (b) PD-tracks the least-collided object (Kp=2.0, Kd=0.5), (c) when within 
+     |error|≤6.0, sets pointer_vel=5.0 toward target (1 push budget unit), 
+     (d) after push, switches target to next least-collided object, (e) after 
+     15 pushes exhausted, continues PD tracking without pushing.
+   - RANDOM: Random acceleration ∈ [-10,10], random push (p=0.1) until budget 
+     exhausted. No targeting.
+   - PASSIVE: No action (acc=0, push=False). Pointer only moves from incidental 
+     collisions with objects.
+
+C. Collision detection (same as iter_034): Before/after each env.step(), compare 
+   entity velocities. Log pointer-object collision events with pre/post velocities.
+
+D. Metric — POMLRE (Per-Object Median Log-Ratio Error):
+   For each object i:
+     1. Collect pointer-object collision events for object i
+     2. Compute m_est_k = -10 * Δv_ptr_k / Δv_obj_k for each event k
+     3. Filter: keep only events where |Δv_obj_k| > 1.0
+     4. If ≥3 valid events: m_hat_i = median(m_est_k), error_i = |log(m_hat_i / m_true_i)|
+     5. If 1-2 valid events: m_hat_i = mean(m_est_k), error_i = |log(m_hat_i / m_true_i)|
+     6. If 0 valid events: error_i = 2.0 (maximum penalty)
+   POMLRE = mean(error_i across 3 objects)
+
+E. Pre-run analytical ceiling: Before running, compute expected POMLRE for PASSIVE 
+   analytically (stationary pointer at 64, objects bouncing freely in [0,128], 
+   estimate expected informative collision count per object).
+
+F. Run 8 seeds × 3 conditions = 24 episodes, 2000 steps each.
+
+G. Compute bootstrap CI (10000 samples, paired by seed) for 
+   (RANDOM_POMLRE - ORACLE_POMLRE) and check all gates.
+
+Step 2: Run the experiment, analyze results, check all gates.
+
+Step 3: If gate passes → benchmark validated, proceed to iter_036 with LEARNED.
+        If gate fails → null finding: "perception is not behaviorally load-bearing 
+        under full observation even with pass-through dynamics." Escalate to 
+        foveated-gaze mechanism (goal.md Section 8.2) for partial observation.
+
+FILES CREATED:
+- src/run_iter035_benchmark.py (new, main experiment)
+- archive/iter_035/results/ (output directory)
+
+PRESERVED: iter_028 substrate (separate backbone), d_t=3 frozen, GDASR log-only (M3),
+decoder-free, no positional encoding, M2 not reopened. No LEARNED representation used.
+
+PRE-COMMITTED ESCALATION: If ORACLE-RANDOM gap < 0.15 on pass-through environment,
+that is itself the finding, and the project pulls foveated-gaze (Section 8.2) forward 
+from deferred. No additional environment tweaks before escalation.
+
+---
+*Created automatically by the RDF Orchestrator prior to iteration execution.*
+]
+
+[Tool Call: grep_search({'pattern': '8\\.2|foveated|gaze', 'include_pattern': '*.md'})]
+[Tool Result: experiment_log.md:330: auc_reduction_pct: 28.25
+experiment_log.md:351: **Metrics:** `{'clts_test_sim_loss': 0.048329, 'random_test_sim_loss': 0.092375, 'passive_test_sim_loss': 0.163344, 'loss_reduction_pct': 47.68, 'clts_soft_spatial_variance': 8.6726, 'clts_centroid_decoding_mse': 85.8466, 'clts_pointer_entropy': 3.9551, 'random_pointer_entropy': 2.9781, 'auc_reduction_pct': 28.25}`
+experiment_log.md:356: 2. Adaptation Efficiency: CLTS achieved a 28.25% reduc
+experiment_log.md:422: arm_k_mean_var_3_mean: 8.2807
+experiment_log.md:439: **Metrics:** `{'arm_g_mse_cent_mean': 64.5676, 'arm_k_mse_cent_mean': 62.6386, 'arm_g_test_sim_loss_mean': 0.084, 'arm_k_test_sim_loss_mean': 0.0901, 'arm_k_pointer_entropy_mean': 3.9584, 'arm_k_mean_var_3_mean': 8.2807, 'arm_k_std_vel_3_mean': 0.0409, 'welch_p_val_k_vs_g': 0.8329, 'levene_p_val_k_vs_g': 0.8962}`
+experiment_log.md:457: arm_k_mean_var_3_mean: 8.280742
+experiment_log.md:463: arm_m_mean_var_3_mean: 8.217082
+experiment_log.md:492: **Metrics:** `{'arm_k_mse_cent_mean': 62.638553, 'arm_l_mse_cent_mean': 65.525914, 'arm_m_mse_cent_mean': 64.081884, 'arm_n_mse_cent_mean': 130.392762, 'arm_k_test_sim_loss_mean': 0.090083, 'arm_l_test_sim_loss_mean': 14.879666, 'arm_m_test_sim_loss_mean': 0.147899, 'arm_n_test_sim_loss_mean': 0.1669, 'arm_k_mean_var_3_mean': 8.280742, 'arm_l_mean_var_3_mean': 8.130941, 'arm_m_mean_var_3_mean': 8.217082, 'arm_n_mean_var_3_mean': 33.78426, 'welch_L_vs_K_mse_p': 0.895003, 'welch_L_vs_K_sim_p': 0.373408, 'welch_M_vs_L_mse_p': 0.949795, 'welch_M_vs_L_sim_p': 0.375091, 'welch_N_vs_K_mse_p': 0.368471, 'welch_N_vs_K_sim_p': 0.244935, 'c1_falsified': 1, 'c2_falsified': 0, 'c3_falsified': 0, 'c4_falsified': 1, 'hypothesis_falsified': 1}`
+experiment_log.md:515: arm_o_pvu_500_mse_cent: 48.25358
+experiment_log.md:532: **Metrics:** `{'arm_k_mse_cent': 51.73128, 'arm_n_mse_cent': 130.39276, 'arm_o_pvu_100_mse_cent': 50.80498, 'arm_o_pvu_500_mse_cent': 48.25358, 'arm_p_mdl_100_mse_cent': 52.67607, 'arm_p_mdl_500_mse_cent': 49.56868, 'arm_p_mdl_100_sim_loss': 0.19589, 'arm_p_mdl_100_recruitment_rate': 1.0, 'arm_o_pvu_100_recruitment_rate': 0.0, 'arm_n_recruitment_rate': 0.0}`
+goal.md:415: **8.2 Gaze direction / foveated attention.** A gaze pointer controlling a
+goal.md:416: foveated receptive field (full resolution at fixation, downsampled periphery),
+goal.md:419: gaze shifts (high). Metrics: fixation stability, saccade efficiency, information
+manager_log.md:5110: 1. Directional — finish what iter_028 already started, do not redesign. The user has flagged that sub-agent 28.2 ran `python src/run_phase0_mask_dyn_sim_shared.py --sequential` and then issued taskkill before completion. The pre-registered C1/C2/C3 control matrix from the journal is still the correct experimental design; the planner should resume execution of that exact matrix (C1 first — `mask_dyn_sim=True` on the shared backbone, the missing control without which the Arm C signal cannot be interpreted), using longer per-seed timeouts and, if needed, per-seed checkpoints so a single hang does not require killing the whole run. Do not introduce new arms, new objectives, or migrate to SFA-on-z_dyn this iteration — iter_029 is conditional on a clean iter_028 outcome and must not be pulled forward.
+manager_log.md:5452: declaration and timeout protocol. Sub-agent 28.2 ran the remaining 27 seeds
+manager_log.md:8464: 3. Pre-commit the escalation — if a *single* perception-gated environment redesign still cannot open the bracket, **that null is itself the finding** ("perception is not behaviorally load-bearing under full observation") and the next iteration pulls the foveated-gaze mechanism (goal Section 8.2) forward from deferred, because partial observation is the principled way to make perception necessary. Cap this avenue at one environment-redesign iteration before escalation; do not loop on environment tweaks. Preserve the iter_028 substrate, separate backbone, d_t=3 frozen, GDASR log-only (M3), decoder-free, no positional encoding; do not revise M2.
+manager_log.md:8537: foveated-gaze mechanism (goal.md Section 8.2) for partial observation.
+manager_log.md:8547: that is itself the finding, and the project pulls foveated-gaze (Section 8.2) forward
+manager_log.md:8556: The plan is materially well-scoped — pass-through dynamics + finite push budget + median-of-ratios per-object metric is the right operationalization of the user-hint's "perception-gated information" redesign, and the pre-committed escalation to gaze on a null result is correctly inherited. Three corrections are required before execution.
+manager_log.md:8562: 3. **Language and pre-registration discipline.** The hypothesis as drafted is acceptable but the proposed_method narrates "benchmark validated, proceed to iter_036" as if the positive outcome were the default. Restate the success condition as "is consistent with the redesigned environment making perception-driven targeting load-bearing for mass-estimation under a finite budget" — not "perception sufficiency is established." The Orchestrator will write `src/pre_registration.md` from this plan; ensure that file commits, verbatim, (a) the hypothesis with the explicit CI tail, (b) F1–F4 plus the analytical-ceiling gate, (c) the coverage-vs-estimation decomposition rule from point 1, (d) the iter_033 ORACLE sanity checks (surprise-scale and event-timing alignment) — these are listed in the user hint and the journal but absent from the current F3 list, which only covers push-budget mechanics. Add them, or justify in the pre-registration why they don't apply once the metric no longer routes through CLTSMotorController. The pre-committed escalation to foveated gaze on a null result must also appear in the file so it cannot be re-litigated post-hoc.
+manager_log.md:8564: A clean null on this iteration (no perception-gated environment opens the bracket) is a first-class deliverable — it is the principled trigger to pull Section 8.2 forward, and should be reported as such rather than reframed as a partial success.
+RESEARCH-RESULT-028.md:19: declaration and timeout protocol. Sub-agent 28.2 ran the remaining 27 seeds
+src\pre_registration.md:73: foveated-gaze mechanism (goal.md Section 8.2) for partial observation.
+src\pre_registration.md:83: that is itself the finding, and the project pulls foveated-gaze (Section 8.2) forward
+archive\iter_028\manager_log.md:165: 1. Directional — finish what iter_028 already started, do not redesign. The user has flagged that sub-agent 28.2 ran `python src/run_phase0_mask_dyn_sim_shared.py --sequential` and then issued taskkill before completion. The pre-registered C1/C2/C3 control matrix from the journal is still the correct experimental design; the planner should resume execution of that exact matrix (C1 first — `mask_dyn_sim=True` on the shared backbone, the missing control without which the Arm C signal cannot be interpreted), using longer per-seed timeouts and, if needed, per-seed checkpoints so a single hang does not require killing the whole run. Do not introduce new arms, new objectives, or migrate to SFA-on-z_dyn this iteration — iter_029 is conditional on a clean iter_028 outcome and must not be pulled forward.
+archive\iter_028\manager_log.md:507: declaration and timeout protocol. Sub-agent 28.2 ran the remaining 27 seeds
+archive\iter_035\manager_log.md:11: 3. Pre-commit the escalation — if a *single* perception-gated environment redesign still cannot open the bracket, **that null is itself the finding** ("perception is not behaviorally load-bearing under full observation") and the next iteration pulls the foveated-gaze mechanism (goal Section 8.2) forward from deferred, because partial observation is the principled way to make perception necessary. Cap this avenue at one environment-redesign iteration before escalation; do not loop on environment tweaks. Preserve the iter_028 substrate, separate backbone, d_t=3 frozen, GDASR log-only (M3), decoder-free, no positional encoding; do not revise M2.
+archive\iter_035\manager_log.md:84: foveated-gaze mechanism (goal.md Section 8.2) for partial observation.
+archive\iter_035\manager_log.md:94: that is itself the finding, and the project pulls foveated-gaze (Section 8.2) forward
+archive\iter_035\manager_log.md:103: The plan is materially well-scoped — pass-through dynamics + finite push budget + median-of-ratios per-object metric is the right operationalization of the user-hint's "perception-gated information" redesign, and the pre-committed escalation to gaze on a null result is correctly inherited. Three corrections are required before execution.
+archive\iter_035\manager_log.md:109: 3. **Language and pre-registration discipline.** The hypothesis as drafted is acceptable but the proposed_method narrates "benchmark validated, proceed to iter_036" as if the positive outcome were the default. Restate the success condition as "is consistent with the redesigned environment making perception-driven targeting load-bearing for mass-estimation under a finite budget" — not "perception sufficiency is established." The Orchestrator will write `src/pre_registration.md` from this plan; ensure that file commits, verbatim, (a) the hypothesis with the explicit CI tail, (b) F1–F4 plus the analytical-ceiling gate, (c) the coverage-vs-estimation decomposition rule from point 1, (d) the iter_033 ORACLE sanity checks (surprise-scale and event-timing alignment) — these are listed in the user hint and the journal but absent from the current F3 list, which only covers push-budget mechanics. Add them, or justify in the pre-registration why they don't apply once the metric no longer routes through CLTSMotorController. The pre-committed escalation to foveated gaze on a null result must also appear in the file so it cannot be re-litigated post-hoc.
+archive\iter_035\manager_log.md:111: A clean null on this iteration (no perception-gated environment opens the bracket) is a first-class deliverable — it is the principled trigger to pull Section 8.2 forward, and should be reported as such rather than reframed as a partial success.
+archive\iter_017\results\phase17_report.md:102: | 42 | 0.019768860191106796 | 58.23984921845252 | 0.0303 | 55.6802 |
+archive\iter_017\results\phase17_report.md:132: | 2500 | 0.0776 | 58.2631 |
+archive\iter_018\iter_002\iter_001\task.md:1: You are an AI executor sub-agent for iter_id 18.2.1. Your task is to implement the EG-MDL experiments, run the full sweeps across all 5 seeds [42, 123, 456, 789, 999], analyze the results, and generate the results directory.
+archive\iter_018\iter_002\iter_002\task.md:1: You are an AI executor sub-agent for iter_id 18.2.2. Your task is to implement the EG-MDL experiments, run the full sweeps across all 5 seeds [42, 123, 456, 789, 999], analyze the results, and generate the results directory.
+archive\iter_018\iter_002\iter_003\task.md:1: You are an AI executor sub-agent for iter_id 18.2.3. Your task is to implement and run the EG-MDL experiments, analyze the results, and generate the results directory `archive/iter_018/results/`.
+archive\iter_018\iter_002\iter_003\task.md:1052: And make sure all artifacts are successfully saved to `archive/iter_018/results/`. Check for any warnings or errors. Ensure everything is done thoroughly! Task ID context: `18.2.3`. Good luck!
+archive\iter_018\iter_002\iter_004\task.md:1: You are an AI executor sub-agent for iter_id 18.2.4. Your task is to run the existing experiment script `src/run_phase18_experiments.py`, verify that it runs to completion without any encoding or execution errors, and check that all results are saved to `archive/iter_018/results/`.
+archive\iter_018\iter_002\iter_005\task.md:1: You are an AI executor sub-agent for iter_id 18.2.5. We have discovered a critical bug in `src/run_phase18_experiments.py`: when loading the passive model from disk cache, its `model.d_t` remains at 2 (since it was initialized to 2 and never set to 3), whereas passive pre-training ends with `d_t = 3`. This caused the active training sweep to start with `d_t = 2`, preventing proposals and WUP checks from executing correctly in the control sweep.
+archive\iter_018\iter_002\iter_006\task.md:1: You are an AI executor sub-agent for iter_id 18.2.6. Your task is to run the corrected experiment script `src/run_phase18_experiments.py` and save all results.
+archive\iter_018\iter_002\iter_007\task.md:1: You are an AI executor sub-agent for iter_id 18.2.7. Your task is to rewrite the "Conclusions and Discussion" section of `archive/iter_018/results/phase18_report.md` to accurately and honestly reflect the negative findings of Phase 18.
+archive\iter_024\results\phase0_multistep_sfa_report.md:62: | D (Contrastive, d=8) | 5 | 0.2 | -0.013 ± 0.178 | 0.630 ± 0.355 | 0.450 ± 0.212 | -0.015 ± 0.075 | 126.3 ± 58.2 |
+archive\iter_035\iter_001\task.md:26: - Ensure the pre-committed escalation to foveated gaze (goal.md Section 8.2) on a null result appears explicitly in the pre-registration file.
+archive\iter_035\iter_001\task.md:127: If the experiment produces a null result (ORACLE-RANDOM gap < 0.15 on pass-through environment), that is itself the finding: "perception is not behaviorally load-bearing under full observation even with pass-through dynamics." The project must pull the foveated-gaze mechanism (goal.md Section 8.2) forward from deferred. No additional environment tweaks before escalation.]
+
+[Tool Call: read_file({'path': 'goal.md', 'start_line': 410, 'end_line': 430})]
+[Tool Result: --- lines 410 to 430 of 462 ---
+characterize the emergent baseline before adding the structural prior.
+
+**8.1 RGB + explicit position encoding.** Linear, sinusoidal, or learnable
+position channels. Already pulled forward into Phase 0 as a measured comparison.
+
+**8.2 Gaze direction / foveated attention.** A gaze pointer controlling a
+foveated receptive field (full resolution at fixation, downsampled periphery),
+making the externally-primed -> self-generated attention transition operational.
+Subsumption extension: reflexive saccade (low), smooth pursuit (mid), deliberate
+gaze shifts (high). Metrics: fixation stability, saccade efficiency, information
+gain under reduced bandwidth.
+
+**8.3 Graph topology of layer-nodes.** Replace the linear stack with a DAG:
+lateral connections within a level, top-down predictive-coding projections,
+surprise-modulated edges, skip connections. Initialize as the linear chain
+(backward compatible), recruit/prune edges by information contribution, cap
+fan-in (e.g. K=4), keep the forward pass acyclic (recurrence via t-1 delay).
+Motivated by Iter 004 (tracking lag) and Iter 010 (DSDT semantic blindness).
+
+**8.4 Micro-columns (treat as hypothesis, not fix).** Lightweight sub-networks
+per node specializing on color/texture, motion/velocity, position, each with its]
+
+[Tool Call: write_file({'path': 'src/pre_registration.md', 'content': '# RDF Scientific Pre-Registration\n\n*   **Iteration:** 035\n*   **Pre-Registration File:** src/pre_registration.md\n\n## 1. Hypothesis\nIn a pass-through physics sandbox (N=3 objects that pass through each other; \nonly pointer-object collisions remain elastic) with a 15-push budget over 2000 steps, \nthe ORACLE targeted-exploration policy (PD-tracks the least-collided object, pushes \nwhen within 6px) achieves a Per-Object Median Log-Ratio Error (POMLRE) at least 0.15 \nlower than a RANDOM policy, with the lower bound of the two-sided 95% paired bootstrap \nCI of (RANDOM_POMLRE - ORACLE_POMLRE) clear of zero over 8 seeds. The ordering \nORACLE_POMLRE < RANDOM_POMLRE < PASSIVE_POMLRE holds in the mean.\n\nThe success condition is: the result is consistent with the redesigned environment \nmaking perception-driven targeting load-bearing for mass-estimation under a finite \nbudget — NOT "perception sufficiency is established."\n\n## 2. Falsification Criteria\nThe hypothesis is falsified if ANY of:\n\n(F1) RANDOM_POMLRE - ORACLE_POMLRE < 0.15 (ORACLE does not substantially outperform RANDOM), OR\n(F2) The lower bound of the two-sided 95% bootstrap CI of (RANDOM_POMLRE - ORACLE_POMLRE) includes zero (gap not statistically reliable), OR\n(F3) Any ORACLE sanity check fails:\n  S1: ORACLE achieves ≥3 informative pointer-object collisions per object (mean across seeds),\n  S2: ORACLE push budget utilization ≥ 80% (≥12 of 15 pushes used),\n  S3: ≥80% of collision events used for mass estimation have |Δv_obj| > 1.0,\n  S4: No single object receives >80% of ORACLE\'s total pushes (even targeting),\n  S5: ORACLE pointer stays in bounds ≥95% of steps.\n  If F3 fires, the ORACLE implementation is buggy and no comparison is interpreted.\n(F4) Ordering sanity check violated: mean PASSIVE_POMLRE > mean RANDOM_POMLRE > mean ORACLE_POMLRE. \n  If violated, the metric is rejected as in iter_034-v1, regardless of F1/F2.\n\n**NEW — Coverage-vs-Estimation Decomposition (Correction 1):**\nThe headline claim additionally requires the estimation-only gap to be non-trivial (≥0.05).\nIf the full POMLRE gap ≥ 0.15 but the estimation-only gap (on matched-coverage cells) \ncollapses to ~0, report honestly: "ORACLE wins by coverage, not by perception-quality \ndiscrimination" — which is still a valid benchmark-validation outcome, but must not be \nsold as the latter.\n\n## 3. Coverage-vs-Estimation Decomposition (Mandatory)\nFor each condition×seed, compute and report:\n\n**(i) Coverage-only:** Count valid events per object (no estimation). Compare mean \nvalid-event counts across ORACLE, RANDOM, and PASSIVE. This isolates the coverage \nadvantage of targeting.\n\n**(ii) Estimation-only:** Restrict to seed×object cells where BOTH RANDOM and ORACLE \nachieved ≥3 valid events. Compute per-object POMLRE error on this restricted set only. \nReport the gap between ORACLE and RANDOM on this estimation-only subset. The headline \nclaim requires this gap ≥ 0.05.\n\nIf the estimation-only gap < 0.05 but full POMLRE gap ≥ 0.15, the finding is: \n"ORACLE wins by coverage, not by perception-quality discrimination."\n\n## 4. Analytical Ceiling Gate (Step E)\nBefore running the full experiment, compute expected POMLRE for PASSIVE:\n- In the pass-through environment, the PASSIVE pointer starts at x=64 with no acceleration.\n- Objects bounce between walls freely and pass through each other.\n- Estimate the expected number of pointer-object collisions per object over 2000 steps \n  by simulating PASSIVE for a few seeds and counting collisions, then extrapolating.\n\n**Gate:** If expected PASSIVE valid collisions per object ≥ 3, the environment redesign \nhas failed (passive gets enough data without targeting). Do NOT proceed to full experiment. \nReport this as the finding.\n\nIf expected PASSIVE valid collisions per object < 3, proceed to the full experiment.\n\n## 5. Why iter_033 ORACLE Sanity Checks Don\'t Apply Here\nThe iter_033 sanity checks for surprise-scale calibration and event-timing alignment \nverified properties of the CLTSMotorController (surprise EMA, event detection timing). \nIn this iteration, the metric is computed directly from collision velocity deltas \n(m_est = -POINTER_MASS * Δv_ptr / Δv_obj). There is no CLTSMotorController in the loop, \nno surprise EMA, and no event-timing alignment issue. Therefore, the S1-S5 sanity checks \nin F3 cover all ORACLE implementation correctness requirements for this benchmark.\n\n## 6. Proposed Method\nStep 1: Create src/run_iter035_benchmark.py implementing:\n\nA. PassThroughPhysicsSandbox — subclass of PhysicsSandbox where the step() method \n   skips elastic collision resolution between non-pointer entities. Only collisions \n   involving the pointer (index N) are resolved. Objects pass through each other \n   but bounce off walls normally.\n\nB. Three conditions (NO learned representation — benchmark validation only):\n   - ORACLE: Custom controller that (a) maintains per-object pointer-collision count,\n     (b) PD-tracks the least-collided object (Kp=2.0, Kd=0.5), (c) when within \n     |error|≤6.0, sets pointer_vel=5.0 toward target (1 push budget unit), \n     (d) after push, switches target to next least-collided object, (e) after \n     15 pushes exhausted, continues PD tracking without pushing.\n   - RANDOM: Random acceleration ∈ [-10,10], random push (p=0.1) until budget \n     exhausted. No targeting.\n   - PASSIVE: No action (acc=0, push=False). Pointer only moves from incidental \n     collisions with objects.\n\nC. Collision detection (pointer-object only): Before/after each env.step(), compare \n   entity velocities. Log pointer-object collision events with pre/post velocities.\n\nD. Metric — POMLRE (Per-Object Median Log-Ratio Error):\n   For each object i:\n     1. Collect pointer-object collision events for object i\n     2. Compute m_est_k = -10 * Δv_ptr_k / Δv_obj_k for each event k\n     3. Filter: keep only events where |Δv_obj_k| > 1.0\n     4. If ≥3 valid events: m_hat_i = median(m_est_k), error_i = |log(m_hat_i / m_true_i)|\n     5. If 1-2 valid events: m_hat_i = mean(m_est_k), error_i = |log(m_hat_i / m_true_i)|\n     6. If 0 valid events: error_i = 2.0 (maximum penalty)\n   POMLRE = mean(error_i across 3 objects)\n\nE. Pre-run analytical ceiling: Before running, compute expected POMLRE for PASSIVE \n   by simulating PASSIVE for a few seeds and counting collisions.\n\nF. Run 8 seeds × 3 conditions = 24 episodes, 2000 steps each.\n\nG. Compute bootstrap CI (10000 samples, paired by seed) for \n   (RANDOM_POMLRE - ORACLE_POMLRE) and check all gates.\n\nStep 2: Run the experiment, analyze results, check all gates.\n\nStep 3: If gate passes → benchmark validated, proceed to iter_036 with LEARNED.\n        If gate fails → null finding: "perception is not behaviorally load-bearing \n        under full observation even with pass-through dynamics." Escalate to \n        foveated-gaze mechanism (goal.md Section 8.2) for partial observation.\n\nFILES CREATED:\n- src/run_iter035_benchmark.py (new, main experiment)\n- archive/iter_035/results/ (output directory)\n\nPRESERVED: iter_028 substrate (separate backbone), d_t=3 frozen, GDASR log-only (M3),\ndecoder-free, no positional encoding, M2 not reopened. No LEARNED representation used.\n\n## 7. Pre-Committed Escalation\nIf the experiment produces a null result (ORACLE-RANDOM gap < 0.15 on pass-through \nenvironment), that is itself the finding: "perception is not behaviorally load-bearing \nunder full observation even with pass-through dynamics." The project must pull the \nfoveated-gaze mechanism (goal.md Section 8.2) forward from deferred. No additional \nenvironment tweaks before escalation.\n\n---\n*Created automatically by the RDF Orchestrator prior to iteration execution.*\n*Updated with Research Manager corrections: Coverage-vs-Estimation Decomposition, \nF4 Ordering Sanity Check + Analytical Ceiling Gate, Language + Sanity Checks + Escalation.*\n'})]
+[Tool Result: Successfully wrote to src/pre_registration.md]
+
+
+[NUDGE RESPONSE]
+```yaml
+status: token_limit
+artifacts:
+  - src/pre_registration.md
+metrics: {}
+log_excerpt: |
+  No experiment executed. Pre-registration file updated with all three Research Manager corrections:
+  1. Coverage-vs-Estimation Decomposition gate added
+  2. F4 Ordering Sanity Check + Analytical Ceiling Gate added
+  3. Language tightened, iter_033 sanity check justification added, pre-committed escalation to foveated gaze preserved
+experimenter_view: |
+  The iteration was cut short before any code could be written or executed. The only deliverable completed is the updated pre-registration file (src/pre_registration.md), which now correctly incorporates all three manager corrections: coverage-vs-estimation decomposition with a ≥0.05 estimation-only gap requirement, the F4 ordering sanity check and analytical ceiling gate, and tightened language with justification for why iter_033 CLTSMotorController sanity checks do not apply. The main task—implementing PassThroughPhysicsSandbox, the three conditions, collision detection, POMLRE metric, and running the 24-episode benchmark—remains entirely unstarted. The next executor should begin by creating src/run_iter035_benchmark.py and running the analytical ceiling gate before proceeding to the full experiment.
+notes: "Execution limit reached before experiment code was written or run. Only pre-registration updated."
+```

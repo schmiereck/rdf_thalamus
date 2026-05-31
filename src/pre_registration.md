@@ -8,23 +8,73 @@ In a pass-through physics sandbox (N=3 objects that pass through each other;
 only pointer-object collisions remain elastic) with a 15-push budget over 2000 steps, 
 the ORACLE targeted-exploration policy (PD-tracks the least-collided object, pushes 
 when within 6px) achieves a Per-Object Median Log-Ratio Error (POMLRE) at least 0.15 
-lower than a RANDOM policy, with the lower 95% paired bootstrap CI of 
-(RANDOM_POMLRE - ORACLE_POMLRE) clear of zero over 8 seeds. The ordering 
+lower than a RANDOM policy, with the lower bound of the two-sided 95% paired bootstrap 
+CI of (RANDOM_POMLRE - ORACLE_POMLRE) clear of zero over 8 seeds. The ordering 
 ORACLE_POMLRE < RANDOM_POMLRE < PASSIVE_POMLRE holds in the mean.
 
-## 2. Falsification Criterion
+The success condition is: the result is consistent with the redesigned environment 
+making perception-driven targeting load-bearing for mass-estimation under a finite 
+budget — NOT "perception sufficiency is established."
+
+## 2. Falsification Criteria
 The hypothesis is falsified if ANY of:
+
 (F1) RANDOM_POMLRE - ORACLE_POMLRE < 0.15 (ORACLE does not substantially outperform RANDOM), OR
-(F2) The lower 95% bootstrap CI of (RANDOM_POMLRE - ORACLE_POMLRE) includes zero (gap not statistically reliable), OR
+(F2) The lower bound of the two-sided 95% bootstrap CI of (RANDOM_POMLRE - ORACLE_POMLRE) includes zero (gap not statistically reliable), OR
 (F3) Any ORACLE sanity check fails:
   S1: ORACLE achieves ≥3 informative pointer-object collisions per object (mean across seeds),
   S2: ORACLE push budget utilization ≥ 80% (≥12 of 15 pushes used),
   S3: ≥80% of collision events used for mass estimation have |Δv_obj| > 1.0,
   S4: No single object receives >80% of ORACLE's total pushes (even targeting),
   S5: ORACLE pointer stays in bounds ≥95% of steps.
-If F3 fires, the ORACLE implementation is buggy and no comparison is interpreted.
+  If F3 fires, the ORACLE implementation is buggy and no comparison is interpreted.
+(F4) Ordering sanity check violated: mean PASSIVE_POMLRE > mean RANDOM_POMLRE > mean ORACLE_POMLRE. 
+  If violated, the metric is rejected as in iter_034-v1, regardless of F1/F2.
 
-## 3. Proposed Method
+**NEW — Coverage-vs-Estimation Decomposition (Correction 1):**
+The headline claim additionally requires the estimation-only gap to be non-trivial (≥0.05).
+If the full POMLRE gap ≥ 0.15 but the estimation-only gap (on matched-coverage cells) 
+collapses to ~0, report honestly: "ORACLE wins by coverage, not by perception-quality 
+discrimination" — which is still a valid benchmark-validation outcome, but must not be 
+sold as the latter.
+
+## 3. Coverage-vs-Estimation Decomposition (Mandatory)
+For each condition×seed, compute and report:
+
+**(i) Coverage-only:** Count valid events per object (no estimation). Compare mean 
+valid-event counts across ORACLE, RANDOM, and PASSIVE. This isolates the coverage 
+advantage of targeting.
+
+**(ii) Estimation-only:** Restrict to seed×object cells where BOTH RANDOM and ORACLE 
+achieved ≥3 valid events. Compute per-object POMLRE error on this restricted set only. 
+Report the gap between ORACLE and RANDOM on this estimation-only subset. The headline 
+claim requires this gap ≥ 0.05.
+
+If the estimation-only gap < 0.05 but full POMLRE gap ≥ 0.15, the finding is: 
+"ORACLE wins by coverage, not by perception-quality discrimination."
+
+## 4. Analytical Ceiling Gate (Step E)
+Before running the full experiment, compute expected POMLRE for PASSIVE:
+- In the pass-through environment, the PASSIVE pointer starts at x=64 with no acceleration.
+- Objects bounce between walls freely and pass through each other.
+- Estimate the expected number of pointer-object collisions per object over 2000 steps 
+  by simulating PASSIVE for a few seeds and counting collisions, then extrapolating.
+
+**Gate:** If expected PASSIVE valid collisions per object ≥ 3, the environment redesign 
+has failed (passive gets enough data without targeting). Do NOT proceed to full experiment. 
+Report this as the finding.
+
+If expected PASSIVE valid collisions per object < 3, proceed to the full experiment.
+
+## 5. Why iter_033 ORACLE Sanity Checks Don't Apply Here
+The iter_033 sanity checks for surprise-scale calibration and event-timing alignment 
+verified properties of the CLTSMotorController (surprise EMA, event detection timing). 
+In this iteration, the metric is computed directly from collision velocity deltas 
+(m_est = -POINTER_MASS * Δv_ptr / Δv_obj). There is no CLTSMotorController in the loop, 
+no surprise EMA, and no event-timing alignment issue. Therefore, the S1-S5 sanity checks 
+in F3 cover all ORACLE implementation correctness requirements for this benchmark.
+
+## 6. Proposed Method
 Step 1: Create src/run_iter035_benchmark.py implementing:
 
 A. PassThroughPhysicsSandbox — subclass of PhysicsSandbox where the step() method 
@@ -43,7 +93,7 @@ B. Three conditions (NO learned representation — benchmark validation only):
    - PASSIVE: No action (acc=0, push=False). Pointer only moves from incidental 
      collisions with objects.
 
-C. Collision detection (same as iter_034): Before/after each env.step(), compare 
+C. Collision detection (pointer-object only): Before/after each env.step(), compare 
    entity velocities. Log pointer-object collision events with pre/post velocities.
 
 D. Metric — POMLRE (Per-Object Median Log-Ratio Error):
@@ -57,8 +107,7 @@ D. Metric — POMLRE (Per-Object Median Log-Ratio Error):
    POMLRE = mean(error_i across 3 objects)
 
 E. Pre-run analytical ceiling: Before running, compute expected POMLRE for PASSIVE 
-   analytically (stationary pointer at 64, objects bouncing freely in [0,128], 
-   estimate expected informative collision count per object).
+   by simulating PASSIVE for a few seeds and counting collisions.
 
 F. Run 8 seeds × 3 conditions = 24 episodes, 2000 steps each.
 
@@ -79,9 +128,14 @@ FILES CREATED:
 PRESERVED: iter_028 substrate (separate backbone), d_t=3 frozen, GDASR log-only (M3),
 decoder-free, no positional encoding, M2 not reopened. No LEARNED representation used.
 
-PRE-COMMITTED ESCALATION: If ORACLE-RANDOM gap < 0.15 on pass-through environment,
-that is itself the finding, and the project pulls foveated-gaze (Section 8.2) forward 
-from deferred. No additional environment tweaks before escalation.
+## 7. Pre-Committed Escalation
+If the experiment produces a null result (ORACLE-RANDOM gap < 0.15 on pass-through 
+environment), that is itself the finding: "perception is not behaviorally load-bearing 
+under full observation even with pass-through dynamics." The project must pull the 
+foveated-gaze mechanism (goal.md Section 8.2) forward from deferred. No additional 
+environment tweaks before escalation.
 
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
+*Updated with Research Manager corrections: Coverage-vs-Estimation Decomposition, 
+F4 Ordering Sanity Check + Analytical Ceiling Gate, Language + Sanity Checks + Escalation.*
