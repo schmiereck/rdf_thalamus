@@ -1,51 +1,6 @@
 
 ---
 ```yaml
-cached_tokens: 778778
-cost_usd: 0.52208
-hypothesis: 'phase-3: representation base stabilized; 100% unassisted dimension recruitment
-  and collapse prevention validated.'
-input_tokens: 1090258
-iter: 3
-metrics:
-  b1_collapse_rate: 0.6
-  b1_large_collapse_rate: 0.4
-  b1_large_mean_abs_corr: 0.24343
-  b1_large_mean_test_sim_loss: 0.16457
-  b1_mean_abs_corr: 0.38257
-  b1_mean_test_sim_loss: 0.07089
-  dynamic_collapse_rate: 0.2
-  dynamic_mean_abs_corr: 0.19098
-  dynamic_mean_r_0_2: -0.0389
-  dynamic_mean_r_1_2: -0.202
-  dynamic_mean_recruitment_step: 1489.8
-  dynamic_mean_test_sim_loss: 0.10037
-  dynamic_recruitment_rate: 1.0
-  dynamic_std_recruitment_step: 39.52
-output_tokens: 5302
-status: ok
-```
-
-## iter_003: phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
-
-**Analysis:** Phase 3 succeeded in solving the two major bottlenecks of Phase 2: representation collapse and error-threshold inflation. By increasing the covariance regularization weight to 25.0 and introducing a 1000-step warmup phase, we successfully reduced the mean cross-dimension correlation to r=0.19 (well below the r < 0.30 target). 
-
-The rolling sliding-window error buffer (size 500) successfully resolv
-
-**Status:** ok
-
-**Metrics:** `{'b1_mean_test_sim_loss': 0.07089, 'b1_mean_abs_corr': 0.38257, 'b1_collapse_rate': 0.6, 'b1_large_mean_test_sim_loss': 0.16457, 'b1_large_mean_abs_corr': 0.24343, 'b1_large_collapse_rate': 0.4, 'dynamic_mean_test_sim_loss': 0.10037, 'dynamic_mean_abs_corr': 0.19098, 'dynamic_collapse_rate': 0.2, 'dynamic_mean_recruitment_step': 1489.8, 'dynamic_std_recruitment_step': 39.52, 'dynamic_recruitment_rate': 1.0, 'dynamic_mean_r_0_2': -0.0389, 'dynamic_mean_r_1_2': -0.202}`
-
-**Experimenter view:** The Phase 3 evaluation successfully completed all 15 experiments (3 models x 5 seeds) under deterministic conditions with the updated hyperparameter envelope (cov_weight=25.0) and 1000-step representation-warmup.
-
-Key Findings:
-1. REPRESENTATION COLLAPSE RESOLVED: Increasing the VICReg covariance weight to 25.0 successfully prevented representation collapse. For the recruiting `DynamicJEPA`, the m
-
-**Notes:** Phase 3 successfully completed. Representation collapse resolved via high covariance regularization, and 100% unassisted recruitment achieved at the N=3 boundary.
-
-
----
-```yaml
 cached_tokens: 875937
 cost_usd: 0.68927
 hypothesis: 'phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed
@@ -1492,4 +1447,60 @@ The ORACLE predictor required three iterations to get right:
 **v1 Bug:** The ORACLE predictor had a timing error where prev_positions was updated AFTER env.step(), making z_pred_coord = current_pos + current_vel (one-step-ahead) rather than a genuine prediction of the current state fro
 
 **Notes:** Branch (c) definitively confirmed across three ORACLE implementations. Motor protocol is bottleneck.
+
+
+---
+```yaml
+cached_tokens: 219107
+cost_usd: 4.2133
+hypothesis: 'phase-34: v1 MAPE benchmark falsified (pointer-object noise sensitivity);
+  v2 MALRE benchmark validated as coverage-discrimination test (active-vs-passive
+  gap=0.83) but underpowered for ORACLE-vs-RANDOM discrimination (gap=0.031, 3/8 seeds)'
+input_tokens: 2277624
+iter: 34
+metrics:
+  n_runs: 24
+  oracle_wins_vs_random: 3/8 seeds
+  v1_mape_oracle: 1.005
+  v1_mape_passive: 0.597
+  v1_mape_random: 0.999
+  v1_result: FALSIFIED
+  v2_all_sanity_pass: true
+  v2_g1_pass: true
+  v2_g2_pass: true
+  v2_g3_pass: true
+  v2_g4_pass: true
+  v2_malre_oracle: 0.503
+  v2_malre_passive: 1.333
+  v2_malre_random: 0.534
+  v2_oracle_random_gap: 0.031
+  v2_passive_oracle_gap: 0.83
+  v2_result: VALIDATED_with_caveats
+output_tokens: 175152
+status: ok
+```
+
+## iter_034: phase-34: v1 MAPE benchmark falsified (pointer-object noise sensitivity); v2 MALRE benchmark validated as coverage-discrimination test (active-vs-passive gap=0.83) but underpowered for ORACLE-vs-RANDOM discrimination (gap=0.031, 3/8 seeds)
+
+**Analysis:** Phase 34 set out to validate a behavioral benchmark for iter_035's perception
+sufficiency test. Two metric designs were tested:
+
+v1 (MAPE): Used least-squares mass estimation from all collision types with
+velocity noise. Falsified because pointer-object collisions are too noisy —
+the formula m_i = 10*(-Δv_ptr)/Δv_obj has extreme sensitivity, and with
+hundreds of such rows, the least-squares system
+
+**Status:** ok
+
+**Metrics:** `{'v1_mape_oracle': 1.005, 'v1_mape_random': 0.999, 'v1_mape_passive': 0.597, 'v1_result': 'FALSIFIED', 'v2_malre_oracle': 0.503, 'v2_malre_random': 0.534, 'v2_malre_passive': 1.333, 'v2_oracle_random_gap': 0.031, 'v2_passive_oracle_gap': 0.83, 'v2_g1_pass': True, 'v2_g2_pass': True, 'v2_g3_pass': True, 'v2_g4_pass': True, 'v2_all_sanity_pass': True, 'v2_result': 'VALIDATED_with_caveats', 'oracle_wins_vs_random': '3/8 seeds', 'n_runs': 24}`
+
+**Experimenter view:** Two benchmark designs were tested. v1 (MAPE from least-squares mass estimation with
+velocity noise) was FALSIFIED: pointer-object collision mass estimates are extremely
+noise-sensitive (m_i = 10*(-Δv_ptr)/Δv_obj blows up when Δv_obj is small), causing
+inverted ordering (PASSIVE=0.597 < RANDOM=0.999 < ORACLE=1.005). The more the agent
+pushes objects, the worse the estimate gets.
+
+v2 (MALRE from MED
+
+**Notes:** Benchmark validated as coverage discrimination test; active-vs-passive gap is strong but ORACLE-vs-RANDOM gap is negligible.
 

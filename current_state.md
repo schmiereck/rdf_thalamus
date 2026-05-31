@@ -1,44 +1,56 @@
 # Current Research State
-Phase: Branch (c) confirmed — behavioral-pivot protocol invalidated
+Phase: Benchmark validation complete (v2 MALRE validated with caveats)
 
 ## Goal
-Achieve a training regime where the encoder collapses on ≤10% of seeds. Build a decoder-free, curiosity-driven representation agent with thalamic gating and motor. Currently: the behavioral-pivot strategy is invalidated because the primary metric (post-collision selectivity V-B on N=2) does not discriminate perception quality.
+Achieve a training regime where the encoder collapses on ≤10% of seeds. Build a
+decoder-free, curiosity-driven representation agent with thalamic gating and motor.
+Currently: the behavioral benchmark is validated as a coverage-discrimination test.
 
-## Confirmed (iter_033, agents 33.5 + 33.6)
-- **BRANCH (c) FIRED (definitive, v3 full-physics ORACLE):** ORACLE selectivity_vb = 0.5044, RANDOM = 0.5043, gap = 0.0001 (< 0.10 threshold). Perfect perception with a near-perfect physics predictor does NOT improve post-collision attention selectivity over random locus selection.
-- **ORACLE PREDICTOR BUG (v1/v2):** The original linear-extrapolation ORACLE predictor had (a) a timing bug where prev_positions was set from current info rather than saved before the step, and (b) cannot model wall bounces or elastic collisions, producing surprise ~146k-164k vs ~1-3 for LEARNED. Fixed in v3 with a full physics simulator.
-- **METRIC CEILING FOR N=2:** With 2 objects, every collision involves both objects, so random attention has ~50% chance of matching the max-velocity-change object. The metric's random baseline IS its ceiling.
-- **ORACLE TRACKING PARADOX:** ORACLE has HIGHER tracking error (58.08 px) than LEARNED-VICReg (33.26 px), despite perfect perception. The surprise distribution mismatch (clean zero between collisions for ORACLE vs. noisy baseline for LEARNED) causes different EMA calibration and attention switching.
-- **VICReg PERTURBATION SELECTIVITY:** LEARNED-VICReg has the best perturbation selectivity (0.6075 vs 0.4308 for ORACLE, 0.4658 for RANDOM), suggesting noisy perception can provide useful behavioral signals for this secondary metric.
-- **SFA STABILITY:** LEARNED-SFA has the most stable selectivity across seeds (std=0.011 vs 0.131 for VICReg, 0.068 for RANDOM, 0.015 for ORACLE).
+## Confirmed (iter_034)
+- **v1 MAPE BENCHMARK FALSIFIED (agent 34.2):** Pointer-object collision mass estimates
+  (m_i = 10*(-Δv_ptr)/Δv_obj) are extremely noise-sensitive, causing inverted ordering
+  (PASSIVE=0.597 < RANDOM=0.999 < ORACLE=1.005). More active probing = worse estimates.
+- **v2 MALRE BENCHMARK VALIDATED (agents 34.4/34.6):** All gates pass:
+  ORACLE=0.503 < RANDOM=0.534 < PASSIVE=1.333 (MALRE).
+  G1 gap=0.830 CI=[0.727,0.939], G2 gap=0.799 CI=[0.530,1.004],
+  G3 ordering correct, G4 coverage gap=0.50.
+  All sanity checks S1-S5 pass.
+- **ORACLE-vs-RANDOM GAP NEGLIGIBLE:** MALRE gap=0.031, ORACLE wins only 3/8 seeds.
+  The PASSIVE gap is a coverage artifact (no data → max penalty), not estimation quality.
+- **BENCHMARK IS A COVERAGE DISCRIMINATION TEST:** Discriminates active-vs-passive
+  exploration, NOT targeted-vs-random within active regime.
 
 ## Confirmed (prior iterations, still valid)
 - ΔR²_color ≥ 0.30 NOT achieved by ANY objective or architecture tested (iter_020-032)
 - Best ΔR²_color = 0.275 (iter_029 Arm B, SFA+VICReg sfa=5.0, separate backbone)
+- SIM_LOSS_DYN IS THE COLLAPSE DRIVER (iter_027); SEPARATE BACKBONE IS LOAD-BEARING (iter_028)
 - Mean-pooling z_dyn readout is a structural bottleneck for identity encoding (iter_031)
 - Cross-backbone attention coupling causes collapse (iter_032)
-- SIM_LOSS_DYN IS THE COLLAPSE DRIVER (iter_027); SEPARATE BACKBONE IS LOAD-BEARING (iter_028)
+- Behavioral-pivot protocol (N=2, post-collision selectivity V-B) is degenerate (iter_033)
+- M2 MANDATE: comprehensively falsified iter_023-030
+- CLTSMotorController EMA confound: different surprise distributions → different EMA
+  calibration → different tracking behavior (iter_033 ORACLE 58px vs LEARNED 33px)
 
 ## Refuted
+- v1 MAPE benchmark: falsified due to pointer-object collision noise sensitivity
 - M2 MANDATE: comprehensively falsified iter_023-030
-- Behavioral-pivot strategy with current protocol: INVALIDATED by branch (c) (iter_033)
-- Reconstruction+VICReg ceiling for identity encoding via mean-readout: falsified (iter_031)
-- Centroid-gated readout: FALSIFIED — causes collapse (iter_032)
+- Behavioral-pivot with N=2 selectivity: degenerate (iter_033)
 
-## Best Available Representations
-- **Stable baseline**: VICReg-only, mean-pool, separate backbone (ΔR²≈0.045, 0% collapse)
-- **Strongest identity**: SFA+VICReg sfa_weight=5.0, mean-pool, separate backbone (ΔR²≈0.275, 0% collapse)
-
-## Next Steps
-The behavioral-pivot protocol must be redesigned before another attempt. Options:
-1. Increase N to 3+ objects so collisions don't involve all objects
-2. Change primary metric (time-to-attend, surprise-ratio, or tracking-error differential)
-3. Shorten attention cooldown (15→5 steps) to allow faster attention switching
-4. Use a different environment or protocol entirely
+## Best Available
+- Representation: VICReg-only, mean-pool, separate backbone (ΔR²≈0.045, 0% collapse)
+- Strongest identity: SFA+VICReg sfa=5.0, mean-pool, separate backbone (ΔR²≈0.275, 0% collapse)
+- Behavioral benchmark: v2 MALRE (coverage discrimination, active-vs-passive gap=0.83)
 
 ## Open Questions
-1. Can a redesigned behavioral metric discriminate perception quality?
-2. Is the CLTSMotorController's 15-step attention cooldown appropriate?
-3. Why does ORACLE have worse tracking error than LEARNED-VICReg?
-4. Does noisy perception provide useful behavioral signals (perturbation selectivity)?
-5. Should the project redesign the motor protocol or try a different environment (N=3)?
+1. Can a coverage-time metric (steps to ≥3 pointer-collisions per object) discriminate
+   ORACLE from RANDOM? This would complement MALRE.
+2. Is the MALRE benchmark's active-vs-passive discrimination sufficient for iter_035,
+   or does iter_035 need a metric that discriminates within the active regime?
+3. For iter_035, should the LEARNED representation use a custom information-gain
+   controller (avoiding CLTSMotorController EMA confound) or CLTSMotorController?
+4. Can velocity-prediction MSE on held-out collisions complement MALRE by being more
+   sensitive to data quality (better coverage → more diverse training → better prediction)?
+5. Is the fundamental issue that N=3 objects in 1D naturally collide too much, making
+   active exploration less discriminating than in sparser environments?
+6. Should the project accept that the behavioral pivot (using motor behavior to evaluate
+   perception) may require a fundamentally different environment or task structure?
