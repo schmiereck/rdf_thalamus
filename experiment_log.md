@@ -1,46 +1,6 @@
 
 ---
 ```yaml
-cached_tokens: 692275
-cost_usd: 0.48612
-hypothesis: 'phase-7: evaluation of active-probing-driven emergent specialization
-  vs passive observation during the N=3 to N=4 transition'
-input_tokens: 985992
-iter: 7
-metrics:
-  active_mean_correlation: 0.2259
-  active_mean_cross_corr: 0.308335
-  active_mean_mse: 73.653446
-  active_recruitment_rate: 1.0
-  delta_mean_correlation: 0.056217
-  delta_mean_mse: -18.317362
-  passive_mean_correlation: 0.169683
-  passive_mean_cross_corr: 0.439078
-  passive_mean_mse: 91.970808
-  passive_recruitment_rate: 0.6
-output_tokens: 6445
-status: ok
-```
-
-## iter_007: phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
-
-**Analysis:** We successfully addressed the Research Manager's critique of the "Supervision Trap" by completely abandoning coordinate gradient backpropagation in favor of a 100% unsupervised learning paradigm. We compared Passive Observation against Active Probing (where the agent's actions are driven by closed-loop PD control targeting the 4th object, but the representation gradients are purely self-supervised
-
-**Status:** ok
-
-**Metrics:** `{'passive_mean_correlation': 0.169683, 'active_mean_correlation': 0.2259, 'delta_mean_correlation': 0.056217, 'passive_mean_mse': 91.970808, 'active_mean_mse': 73.653446, 'delta_mean_mse': -18.317362, 'passive_mean_cross_corr': 0.439078, 'active_mean_cross_corr': 0.308335, 'passive_recruitment_rate': 0.6, 'active_recruitment_rate': 1.0}`
-
-**Experimenter view:** We executed the Phase 7 evaluation comparing unsupervised Passive Observation (Control) vs. Active Probing (Experimental) during the N=3 -> N=4 generalization transition under a 5-seed sweep.
-
-Scientific Rigour Audit & Falsification Checklist:
-The pre-registered hypotheses were technically FALSIFIED. 
-- Falsification Criterion 1 (correlation delta >= 0.25) was triggered: the observed mean improvem
-
-**Notes:** Phase 7 complete. Unsupervised active-probing experiments run. Hypotheses technically falsified on correlation thresholds, but active interaction highly validated on recruitment stability (100% vs 60%), MSE (-19.9%), and cross-dimension decorrelation (-29.8%).
-
-
----
-```yaml
 cached_tokens: 1028187
 cost_usd: 0.64097
 hypothesis: 'phase-8: evaluate unsupervised spatial bottlenecks and closed-loop output-as-input
@@ -1525,4 +1485,92 @@ Pre-registration updated with three Manager-requested fixes:
 Four-iteration null finding document written to archive/iter_0
 
 **Notes:** Decision-support iteration complete. Two 2D gates fail; path (i) blocked at tested parameterization. Human go/no-go required.
+
+
+---
+```yaml
+cached_tokens: 681524
+campaign: collapse-elimination
+cost_usd: 4.43216
+hypothesis: 'phase-38: 2D navigation gate probe — Gate-1 and Gate-2 pass, Gate-1b
+  fails (std CV 0.320 > 0.25); behavioral-validation strategy declared not tractable;
+  project pivots to re-frame'
+input_tokens: 1939707
+iter: 38
+metrics:
+  all_gates_pass: false
+  exit_branch: FAIL
+  gate1_mean_probe_count: 1.4
+  gate1_pass: true
+  gate1b_mean_cv: 1.025
+  gate1b_pass: false
+  gate1b_std_cv: 0.32
+  gate2_n_pass_seeds: 5
+  gate2_pass: true
+  gate2_per_seed_cvs:
+  - 0.817
+  - 1.414
+  - 0.771
+  - 0.707
+  - 1.414
+  per_seed_collision_counts:
+  - - 223
+    - 162
+    - 215
+  - - 248
+    - 352
+    - 335
+  - - 338
+    - 267
+    - 219
+  - - 104
+    - 174
+    - 281
+  - - 197
+    - 353
+    - 281
+  per_seed_probe_counts:
+  - - 4
+    - 0
+    - 2
+  - - 2
+    - 0
+    - 0
+  - - 0
+    - 3
+    - 5
+  - - 1
+    - 1
+    - 0
+  - - 3
+    - 0
+    - 0
+  probe_budget_utilization_pct: 28.0
+  sanity_all_pass: false
+  total_probes_fired: 21
+  trajectory_coverage_mean: 0.3602
+output_tokens: 143722
+status: ok
+```
+
+## iter_038: phase-38: 2D navigation gate probe — Gate-1 and Gate-2 pass, Gate-1b fails (std CV 0.320 > 0.25); behavioral-validation strategy declared not tractable; project pivots to re-frame
+
+**Analysis:** This was the final sanctioned environment-design iteration (iter_038), executing a
+single bounded 2D navigation gate probe as pre-registered. The hypothesis was that
+a physically navigating pointer in a 2D arena would simultaneously relax the three
+structural constraints that blocked behavioral validation across iter_033-037:
+non-saturation (Gate-1), CV stability (Gate-1b), and heterogeneity (Gate
+
+**Status:** ok
+
+**Metrics:** `{'gate1_pass': True, 'gate1b_pass': False, 'gate2_pass': True, 'all_gates_pass': False, 'gate1_mean_probe_count': 1.4, 'gate1b_mean_cv': 1.025, 'gate1b_std_cv': 0.32, 'gate2_per_seed_cvs': [0.817, 1.414, 0.771, 0.707, 1.414], 'gate2_n_pass_seeds': 5, 'sanity_all_pass': False, 'per_seed_probe_counts': [[4, 0, 2], [2, 0, 0], [0, 3, 5], [1, 1, 0], [3, 0, 0]], 'per_seed_collision_counts': [[223, 162, 215], [248, 352, 335], [338, 267, 219], [104, 174, 281], [197, 353, 281]], 'exit_branch': 'FAIL', 'trajectory_coverage_mean': 0.3602, 'total_probes_fired': 21, 'probe_budget_utilization_pct': 28.0}`
+
+**Experimenter view:** The 2D navigation gate probe (iter_038) executed as pre-registered. A physically
+navigating pointer (random acceleration Uniform[-1.5, 1.5]², velocity cap 3.5
+px/step) in a 64×64 arena with N=3 uniformly-placed objects and a probe mechanism
+(PROBE_RADIUS=10, p=0.015, budget=15) was run over 5 seeds [7, 31, 53, 71, 83].
+
+Gate-1 (Non-saturation) PASSES: all 5 seeds have mean per-object probe count ≤
+
+**Notes:** Gate-1b FAIL at std CV 0.320 > 0.25. Exit rule FAIL branch applied. Six re-frame claims become iter_039 scope.
 
