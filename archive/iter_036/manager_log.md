@@ -1,9 +1,20 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 036
 
-*   **Iteration:** 036
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 036 -> Planner [Pre-Planning Hints]
 
-## 1. Hypothesis
+Manager's Pre-Planning Hints — iter_035
+
+1. **Honor the pre-commitment, do not re-litigate it.** iter_034's escalation rule forces iter_035 to be the foveated/non-physical-gaze redesign with RANDOM and ORACLE only (LEARNED deferred). Do not let the Planner reopen "should we try one more full-observation tweak" or expand scope to include LEARNED in the same iteration — the journal pre-registered exactly one foveation iteration before meta-escalation, and that budget must be respected. The Planner's job is to specify the foveated environment, the probe action, and the gates; not to redesign the strategy.
+
+2. **The analytical ceiling gate must be inverted for this iteration, and pre-registered before any training.** Under full observation the failure mode was "PASSIVE already saturates"; under foveation the symmetric failure mode is "RANDOM gaze already covers every object adequately, leaving ORACLE no room." Require the Planner to pre-declare (a) the coefficient-of-variation gate on per-object probe-event counts under RANDOM (journal: CV ≥ 0.5), (b) the ORACLE surprise-scale and event-alignment sanity checks from iter_033/034, and (c) the per-condition surprise-EMA recalibration protocol if any arm routes through CLTSMotorController. Gate evaluation must precede the full bracket, exactly as in iter_034.
+
+3. **Hold the line on scientific discipline around the metric.** The primary metric must be the median of repeated probe-induced events per object under a fixed probe budget — single-event least-squares is already falsified (iter_034.2) and must not reappear. The bracket-opening criterion stays ORACLE − RANDOM ≥ 0.15 with the lower CI clear of zero over ≥5 seeds (hard seeds 53/71 included); any softer language ("trend toward", "approaching") in the plan is to be rejected. Also require the Planner to pre-commit Arm A (foveation only) vs Arm B (foveation + pass-through obj-obj) as the factorial design the journal already specified, so the contribution of each lever is identifiable rather than confounded.
+
+---
+
+## Iteration 036 -> Manager [Proposed Research Plan]
+
+**Proposed Hypothesis:**
 In a foveated 1D physics sandbox (N=3 objects, ghostly gaze pointer with
 GAZE_RADIUS=8 pixels, probe action applying 1D elastic collision between
 gaze [M_gaze=10] and nearest object within gaze window, probe budget B=20
@@ -20,7 +31,7 @@ each arm. The success condition is: the result is consistent with foveated
 gaze making perception-driven targeting load-bearing for mass estimation
 under a finite probe budget — NOT "perception sufficiency is established."
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 The hypothesis is falsified if ANY of the following holds in EITHER arm:
 
 (F1) RANDOM_POMLRE - ORACLE_POMLRE < 0.15 (ORACLE does not substantially
@@ -53,7 +64,7 @@ The hypothesis is falsified if ANY of the following holds in EITHER arm:
      by perception-quality discrimination" — which is still a valid
      benchmark-validation outcome, but must not be sold as the latter.
 
-## 3. Proposed Method
+**Proposed Method:**
 Step 1: Create src/run_iter036_benchmark.py implementing:
 
 A. FoveatedGazeSandbox — subclass of PhysicsSandbox with:
@@ -180,4 +191,16 @@ adjustments (e.g., different GAZE_RADIUS) before meta-escalation — this is
 the one foveation iteration budgeted by the journal.
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 036 -> Planner [Strategic Guidance]
+
+Manager's Note — iter_036 (Skeptic Review of Proposed Plan)
+
+**1. The plan is broadly sound and honors the pre-commitment — endorse with three sharpenings, not a rewrite.** Foveated/non-physical gaze, RANDOM+ORACLE only (LEARNED deferred), POMLRE primary, factorial Arm A vs Arm B, analytical CV gate first, ≥5 seeds (you specified 8 including 53/71), and pre-committed meta-escalation on null — all required elements are present. Do not let this turn into another redesign cycle; lock the plan and run it. The pre-registration file `src/pre_registration.md` must be written and committed *before* any simulation code is executed (the Orchestrator will auto-write it from your hypothesis/falsification fields — confirm that fields F1–F6 and S1–S6 land in that file verbatim, including the 8 seeds, GAZE_RADIUS=8, B=20, 2000 steps, M_gaze=10, and the |Δv_obj|>1.0 cutoff).
+
+**2. Construction-vs-empirical check on the probe mechanism — this is the highest-risk flaw I see.** The probe is defined as "apply 1D elastic collision between gaze and the nearest object within the window," and the metric `m_est = -M_gaze · Δv_gaze / Δv_obj` inverts that same collision formula. If pre-step velocities are read at the instant of the probe, that estimator is a definitional identity and ORACLE will trivially win by getting more clean events — a constructional, not empirical, result. The plan partially acknowledges this by recording *post-substep* velocities (so wall bounces and obj-obj events in Arm A add noise), but you must pre-register **explicitly** which Δv enters the estimator and confirm it is the *across-substep* delta, not the across-collision-only delta. Furthermore, the F6 coverage-vs-estimation decomposition is the right instrument here and must be reported on equal footing with F1/F2, not as a footnote: if the estimation-only gap collapses to <0.05 in both arms, the honest framing is "ORACLE wins by coverage allocation, foveated gaze validates as a coverage-discrimination benchmark" — which is a perfectly respectable finding, but it is **not** "perception is load-bearing for mass estimation." State this explicitly in the pre-registration and in the eventual report.
+
+**3. Two tightenings before lock-in, and a language-hygiene flag.** (a) The CV gate threshold (≥0.5) and "mean per-object count ≥0.5" are reasonable but must be evaluated **only** on the analytical-gate seeds (the 5 short rollouts), with the gate decision made and logged *before* the 8-seed bracket is launched — no peeking at bracket data to retune the gate. (b) The ORACLE sanity check S1 (≥3 events/object) and the metric's "≥3 valid events → median" branch can interact: if RANDOM frequently falls into the "1–2 events → mean" or "0 events → 2.0" branches while ORACLE is in the median branch, the gap is partly a fallback-rule artifact. Pre-register the per-condition distribution over the three branches as a reported diagnostic, and require that the headline POMLRE gap be re-computed with all three conditions forced into the same branch (e.g., truncating to seed×object cells with ≥3 valid events for all three) — the F6 decomposition already partly does this; make it primary, not optional. (c) Language: drop "perception sufficiency is established" entirely from the hypothesis text — your draft already uses "is consistent with," which is correct; propagate that discipline to the eventual report. Avoid "validates," "demonstrates," "proves" regardless of outcome; the honest framings are "is consistent with foveated gaze making perception load-bearing under the declared protocol" or "does not refute the null that foveated gaze is insufficient." A clean null here, with the pre-committed meta-escalation to 2D / re-framing / decoder-revisit, is a first-class success of the method — treat it as such if it fires.
+
+---
+

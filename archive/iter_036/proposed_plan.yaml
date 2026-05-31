@@ -1,0 +1,142 @@
+falsification_criterion: "The hypothesis is falsified if ANY of the following holds\
+  \ in EITHER arm:\n\n(F1) RANDOM_POMLRE - ORACLE_POMLRE < 0.15 (ORACLE does not substantially\n\
+  \     outperform RANDOM on the primary metric).\n(F2) The lower bound of the two-sided\
+  \ 95% paired bootstrap CI (10000 resamples)\n     of (RANDOM_POMLRE - ORACLE_POMLRE)\
+  \ includes zero (gap not statistically\n     reliable).\n(F3) Any ORACLE sanity\
+  \ check fails (if F3 fires, the ORACLE implementation is\n     buggy and no comparison\
+  \ is interpreted):\n     S1: ORACLE achieves ≥3 probe-induced collision events per\
+  \ object\n         (mean across seeds) in the arm.\n     S2: ORACLE probe success\
+  \ rate ≥ 60% (≥12 of 20 probe attempts result\n         in a collision event — an\
+  \ object was found within the gaze window).\n     S3: ≥80% of ORACLE's probe-induced\
+  \ collision events have |Δv_obj| > 1.0\n         (informative velocity change for\
+  \ mass estimation).\n     S4: No single object receives >80% of ORACLE's total probe\
+  \ events\n         (even targeting should distribute across objects).\n     S5:\
+  \ ORACLE gaze stays in bounds ≥95% of steps.\n     S6: Each of the 3 objects receives\
+  \ ≥10% of ORACLE's total probe events\n         (targeting covers all objects, not\
+  \ just one).\n(F4) Ordering sanity check violated: mean(PASSIVE_POMLRE) > mean(RANDOM_POMLRE)\n\
+  \     > mean(ORACLE_POMLRE) does NOT hold within the arm. If violated, the\n   \
+  \  metric is rejected as in iter_034-v1, regardless of F1/F2.\n(F5) CV gate fails:\
+  \ coefficient of variation (std/mean) of per-object\n     probe-event counts under\
+  \ RANDOM < 0.5 in the arm. This means RANDOM\n     distributes probes too evenly\
+  \ for ORACLE to improve on coverage.\n(F6) Coverage-vs-estimation decomposition:\
+  \ if the estimation-only gap (on\n     seed×object cells where BOTH ORACLE and RANDOM\
+  \ have ≥3 valid events)\n     is < 0.05 in BOTH arms, the finding is \"ORACLE wins\
+  \ by coverage, not\n     by perception-quality discrimination\" — which is still\
+  \ a valid\n     benchmark-validation outcome, but must not be sold as the latter.\n"
+hypothesis: 'In a foveated 1D physics sandbox (N=3 objects, ghostly gaze pointer with
+
+  GAZE_RADIUS=8 pixels, probe action applying 1D elastic collision between
+
+  gaze [M_gaze=10] and nearest object within gaze window, probe budget B=20
+
+  over 2000 steps) — under both Arm A (normal obj-obj collisions retained)
+
+  and Arm B (pass-through obj-obj, only probe reveals dynamics) — the ORACLE
+
+  targeted-exploration policy (PD-tracks least-probed object, probes when
+
+  target center is within GAZE_RADIUS of gaze and |error|≤6.0) achieves
+
+  Per-Object Median Log-Ratio Error (POMLRE) at least 0.15 lower than a
+
+  RANDOM gaze+probe policy, with the lower bound of the two-sided 95% paired
+
+  bootstrap CI of (RANDOM_POMLRE - ORACLE_POMLRE) clear of zero over 8 seeds
+
+  (including hard seeds 53, 71). The ordering
+
+  ORACLE_POMLRE < RANDOM_POMLRE < PASSIVE_POMLRE holds in the mean within
+
+  each arm. The success condition is: the result is consistent with foveated
+
+  gaze making perception-driven targeting load-bearing for mass estimation
+
+  under a finite probe budget — NOT "perception sufficiency is established."
+
+  '
+pre_registration_file: src/pre_registration.md
+proposed_method: "Step 1: Create src/run_iter036_benchmark.py implementing:\n\nA.\
+  \ FoveatedGazeSandbox — subclass of PhysicsSandbox with:\n   - Ghostly pointer:\
+  \ during the physics substep loop, the pointer passes\n     through objects (no\
+  \ pointer-object collision resolution). The pointer\n     still bounces off walls\
+  \ at 0 and 128, and still receives acceleration\n     from action['acc']. This breaks\
+  \ the 1D geometric inevitability that\n     caused iter_035's ceiling gate failure.\n\
+  \   - Probe action: when action['probe']=True and probe_budget > 0:\n     1. Find\
+  \ the nearest object with center within GAZE_RADIUS=8 pixels\n        of the gaze\
+  \ center.\n     2. If found: apply 1D elastic collision between gaze (M_gaze=10.0)\n\
+  \        and that object using the standard formula. Update both gaze\n        velocity\
+  \ and object velocity. Record pre-step and post-step\n        velocities for mass\
+  \ estimation. Decrement probe_budget.\n     3. If not found: probe is wasted (no\
+  \ collision). Decrement\n        probe_budget.\n   - Foveated render: override render()\
+  \ so that only pixels within\n     [gaze_pos - GAZE_RADIUS, gaze_pos + GAZE_RADIUS]\
+  \ are visible.\n     Outside this window, canvas is zero. (For future LEARNED condition;\n\
+  \     does not affect ORACLE/RANDOM benchmark metrics.)\n   - pass_through parameter:\
+  \ if True, objects also pass through each\n     other (same as PassThroughPhysicsSandbox\
+  \ from iter_035). This\n     enables the Arm B factorial condition.\n   - Collision\
+  \ event recording: for each step where a probe occurs,\n     record (step, obj_idx,\
+  \ v_gaze_pre_step, v_obj_pre_step,\n     v_gaze_post_step, v_obj_post_step). Pre-step\
+  \ velocities are\n     recorded BEFORE the probe collision is applied. Post-step\n\
+  \     velocities are recorded AFTER the full physics substep loop\n     completes.\
+  \ The Δv values include confounding physics (wall\n     bounces, obj-obj collisions)\
+  \ — same noise structure as iter_035.\n\nB. Three conditions (NO learned representation\
+  \ — benchmark validation only):\n   - ORACLE: Perfect knowledge of all object positions\
+  \ and velocities.\n     * Maintains per-object probe-event count.\n     * PD-tracks\
+  \ the least-probed object (Kp=2.0, Kd=0.5).\n     * When the target's center is\
+  \ within GAZE_RADIUS=8 of the gaze center\n       AND |error| ≤ 6.0, probes.\n \
+  \    * After probing, switches target to next least-probed object.\n     * After\
+  \ probe budget exhausted, continues PD tracking without probing.\n   - RANDOM: Random\
+  \ gaze acceleration ∈ [-10, 10]. Random probe with\n     probability p = 0.01 per\
+  \ step (expected ~20 probes over 2000 steps)\n     until budget exhausted. No targeting.\n\
+  \   - PASSIVE: Gaze starts at 64.0, no acceleration, no probing.\n     0 probe events\
+  \ per object → POMLRE = 2.0 (metric ceiling).\n\nC. Metric — POMLRE (Per-Object\
+  \ Median Log-Ratio Error, same as iter_035):\n   For each object i:\n     1. Collect\
+  \ probe events for object i with |Δv_obj| > 1.0.\n     2. m_est_k = -M_gaze * Δv_gaze_k\
+  \ / Δv_obj_k for each event k.\n     3. If ≥3 valid events: m_hat_i = median(m_est_k),\n\
+  \        error_i = |log(m_hat_i / m_true_i)|.\n     4. If 1-2 valid events: m_hat_i\
+  \ = mean(m_est_k),\n        error_i = |log(m_hat_i / m_true_i)|.\n     5. If 0 valid\
+  \ events: error_i = 2.0 (maximum penalty).\n   POMLRE = mean(error_i across 3 objects).\n\
+  \nD. Factorial design:\n   - Arm A: Foveated gaze + normal obj-obj collisions (foveation\
+  \ lever alone).\n   - Arm B: Foveated gaze + pass-through obj-obj collisions (both\
+  \ levers:\n     foveation removes incidental pointer-object info; pass-through removes\n\
+  \     free obj-obj dynamics info).\n   Primary metric computed separately per arm.\
+  \ Factorial comparison\n   identifies the contribution of each lever to the ORACLE-RANDOM\
+  \ gap.\n\nStep 2: Analytical ceiling gate (pre-registered, computed first).\n  \
+  \ Run RANDOM for 5 seeds × 2 arms = 10 short episodes (2000 steps each).\n   For\
+  \ each arm, compute:\n   - Per-object probe-event counts under RANDOM.\n   - CV\
+  \ = std(counts) / mean(counts) across the 3 objects, averaged over seeds.\n   -\
+  \ Mean per-object event count.\n   Gate criteria (BOTH arms must pass):\n   - CV\
+  \ ≥ 0.5: RANDOM coverage is sufficiently uneven for ORACLE to improve.\n   - Mean\
+  \ per-object count ≥ 0.5: RANDOM gets at least some events.\n   If the gate fails\
+  \ in either arm, report: \"Foveated gaze with GAZE_RADIUS=8\n   does not create\
+  \ sufficient coverage imbalance under RANDOM policy in Arm\n   [A/B].\" Do NOT proceed\
+  \ to full bracket for that arm.\n\nStep 3: If gate passes for both arms, run full\
+  \ bracket.\n   8 seeds × 2 arms × 3 conditions = 48 episodes, 2000 steps each.\n\
+  \   Seeds: [7, 31, 53, 71, 83, 97, 113, 163] (hard seeds 53, 71 included).\n\nStep\
+  \ 4: Analysis.\n   - Per-seed POMLRE for each condition × arm.\n   - Bootstrap CI\
+  \ (10000 paired resamples, paired by seed).\n   - Sanity checks S1-S6.\n   - Coverage-vs-estimation\
+  \ decomposition: restrict to seed×object cells\n     where BOTH ORACLE and RANDOM\
+  \ have ≥3 valid events; compute estimation-\n     only gap.\n   - Factorial comparison:\
+  \ gap in Arm A vs gap in Arm B.\n\nStep 5: Report with honest null-finding protocol.\n\
+  \   - If all gates pass (F1-F6): hypothesis supported — foveated gaze makes\n  \
+  \   perception load-bearing.\n   - If F1/F2 fail but F5 passes: null — foveated\
+  \ gaze creates coverage\n     imbalance but this doesn't translate to a ≥0.15 POMLRE\
+  \ gap.\n   - If F5 fails: null — GAZE_RADIUS=8 too wide for RANDOM to have uneven\n\
+  \     coverage; triggers meta-escalation.\n   - If F6 fires: report \"ORACLE wins\
+  \ by coverage, not perception-quality\n     discrimination.\"\n   - No softer language\
+  \ (\"trend toward\", \"approaching\") per manager directive.\n\nFILES CREATED:\n\
+  - src/run_iter036_benchmark.py (new, main experiment)\n- archive/iter_036/results/\
+  \ (output directory)\n\nPRESERVED: iter_028 substrate (separate backbone, mask_dyn_sim,\
+  \ coord_vicreg,\n0% collapse), d_t=3 frozen, GDASR log-only (M3), decoder-free,\
+  \ no positional\nencoding, M2 not reopened. No LEARNED representation used. No CLTSMotorController\n\
+  in the loop (per-condition surprise-EMA recalibration therefore not required;\n\
+  the iter_033 surprise-scale and event-alignment sanity checks are replaced by\n\
+  probe-mechanics checks S1-S6, which verify that ORACLE's probes produce\nphysically\
+  \ sensible collision events rather than verifying surprise-signal\nproperties).\n\
+  \nPRE-COMMITTED ESCALATION:\nIf the experiment produces a null result (ORACLE-RANDOM\
+  \ gap < 0.15 in BOTH\narms, or CV gate fails in both arms), that finding triggers\
+  \ meta-escalation:\nthe project must confront whether the 1D sandbox itself is the\
+  \ structural\nconfound. Options: (i) 2D environment redesign, (ii) re-frame deliverable\n\
+  around representation+thalamic gating claims without behavioral validation,\n(iii)\
+  \ revisit decoder-free constraint. No additional foveated-gaze parameter\nadjustments\
+  \ (e.g., different GAZE_RADIUS) before meta-escalation — this is\nthe one foveation\
+  \ iteration budgeted by the journal.\n"

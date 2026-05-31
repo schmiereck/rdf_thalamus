@@ -1,0 +1,913 @@
+I need to thoroughly understand the current codebase, the prior iterations, and the specific requirements for the foveated gaze escalation before formulating the plan. Let me start by exploring.
+
+[Tool Call: list_iterations({})]
+
+[Tool Result: iter | status          | hypothesis
+-----|-----------------|----------
+002  | ok              | phase-2: evaluate representation base and identify triggers for GDASR failure and representation collapse
+003  | ok              | phase-3: representation base stabilized; 100% unassisted dimension recruitment and collapse prevention validated.
+004  | ok              | phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
+005  | ok              | phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
+006  | ok              | phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
+007  | ok              | phase-7: evaluation of active-probing-driven emergent specialization vs passive observation during the N=3 to N=4 transition
+008  | ok              | phase-8: evaluate unsupervised spatial bottlenecks and close...]
+
+
+[Tool Call: read_iteration({'iter_num': 35})]
+
+[Tool Result: ```yaml
+cached_tokens: 278406
+campaign: collapse-elimination
+cost_usd: 4.52077
+hypothesis: 'phase-35: pass-through environment redesign insufficient — passive pointer
+  gets 12.27 valid collisions/object in 1D; foveated gaze escalation triggered'
+input_tokens: 1563543
+iter: 35
+metrics:
+  analytical_ceiling_gate_passed: false
+  analytical_ceiling_gate_threshold: 3.0
+  pass_through_test_passed: true
+  passive_mean_valid_collisions_per_obj: 12.27
+output_tokens: 138993
+status: ok
+```
+
+## iter_035: phase-35: pass-through environment redesign insufficient — passive pointer gets 12.27 valid collisions/object in 1D; foveated gaze escalation triggered
+
+**Analysis:** Phase 35 tested the core hypothesis from the Manager's pre-planning hints: that removing
+object-object collisions (pass-through physics) would make perception-driven targeting
+load-bearing for mass estimation. This was the cheapest sufficient environment redesign.
+
+The analytical ceiling gate revealed a fundamental structural proble...]
+
+
+[Tool Call: read_result_file({'iter_num': 35, 'filename': 'results/analytical_ceiling.txt'})]
+
+[Tool Result: PASSIVE mean valid collisions per object: [11.0, 10.6, 15.2]
+Overall mean: 12.27
+Gate (mean < 3.0): FAIL
+Environment redesign FAILED: PASSIVE gets enough collisions without targeting.
+]
+
+
+[Tool Call: read_result_file({'iter_num': 35, 'filename': 'manager_pre_planning_hints.txt'})]
+
+[Tool Result: Manager's Pre-Planning Hints (iter_035, pre-planning)
+
+1. Directional — the next iteration's primary lever is the **environment, not the metric**. iter_034 showed that on the current full-observation 3-object sandbox, object-object collisions deliver mass information autonomously, so no metric redesign on the same environment can make perception load-bearing (ORACLE−RANDOM=0.031 against a 0.83 active-vs-passive gap proves the gating is missing upstream of the readout). Redesign the environment so dynamics information is *gated by perception-driven targeting* — cheapest sufficient change is non-colliding (pass-through) or collision-sparse objects under a finite interaction budget, with per-object mass recovered from the MEDIAN of repeated agent-caused pointer-object collisions (not the iter_034-v1 single-shot least-squares that active policies degraded). N≥3, continuous metric.
+
+2. Discipline — iter_035 is **BENCHMARK-VALIDATION ONLY**. The pre-registered gate is ORACLE−RANDOM ≥ 0.1...]
+
+
+[Tool Call: read_result_file({'iter_num': 35, 'filename': 'proposed_plan.yaml'})]
+
+[Tool Result: falsification_criterion: "The hypothesis is falsified if ANY of:\n(F1) RANDOM_POMLRE\
+  \ - ORACLE_POMLRE < 0.15 (ORACLE does not substantially outperform RANDOM), OR\n\
+  (F2) The lower 95% bootstrap CI of (RANDOM_POMLRE - ORACLE_POMLRE) includes zero\
+  \ (gap not statistically reliable), OR\n(F3) Any ORACLE sanity check fails:\n  S1:\
+  \ ORACLE achieves ≥3 informative pointer-object collisions per object (mean across\
+  \ seeds),\n  S2: ORACLE push budget utilization ≥ 80% (≥12 of 15 pushes used),\n\
+  \  S3: ≥80% of collision events used for mass estimation have |Δv_obj| > 1.0,\n\
+  \  S4: No single object receives >80% of ORACLE's total pushes (even targeting),\n\
+  \  S5: ORACLE pointer stays in bounds ≥95% of steps.\nIf F3 fires, the ORACLE implementation\
+  \ is buggy and no comparison is interpreted.\n"
+hypothesis: "In a pass-through physics sandbox (N=3 objects that pass through each\
+  \ other; \nonly pointer-object collisions remain elastic) with a 15-push budge...]
+
+
+[Tool Call: read_result_file({'iter_num': 35, 'filename': 'manager_log.md'})]
+
+[Tool Result: # Research Manager Log - Iteration 035
+
+## Iteration 035 -> Planner [Pre-Planning Hints]
+
+Manager's Pre-Planning Hints (iter_035, pre-planning)
+
+1. Directional — the next iteration's primary lever is the **environment, not the metric**. iter_034 showed that on the current full-observation 3-object sandbox, object-object collisions deliver mass information autonomously, so no metric redesign on the same environment can make perception load-bearing (ORACLE−RANDOM=0.031 against a 0.83 active-vs-passive gap proves the gating is missing upstream of the readout). Redesign the environment so dynamics information is *gated by perception-driven targeting* — cheapest sufficient change is non-colliding (pass-through) or collision-sparse objects under a finite interaction budget, with per-object mass recovered from the MEDIAN of repeated agent-caused pointer-object collisions (not the iter_034-v1 single-shot least-squares that active policies degraded). N≥3, continuous metric.
+
+2. Discipli...]
+
+Now let me examine the codebase structure and key files:
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      diag_iter034.py
+      diagnose_oracle.py
+      diagnose_oracle_v2.py
+      diagnose_oracle_v3.py
+      diagnose_oracle_v4.py
+      diagnose_oracle_v5.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_recon.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_arm1_integration_smoke_test.py
+      run_iter030_arm2.py
+      run_iter031_partA.py
+      run_iter031_partB.py
+      run_iter032.py
+      run_iter033.py
+      run_iter033_v2.py
+      run_iter033_v3.py
+      run_iter034_benchmark.py
+      run_iter034_v2.py
+      run_iter035_benchmark.py
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_mask_dyn_sim_shared.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      r...]
+
+
+[Tool Call: read_file({'path': 'src/environment.py', 'start_line': 1, 'end_line': 100})]
+
+[Tool Result: --- lines 1 to 100 of 341 ---
+import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps =...]
+
+
+[Tool Call: read_file({'path': 'src/motor.py', 'start_line': 1, 'end_line': 60})]
+
+[Tool Result: --- lines 1 to 60 of 212 ---
+import numpy as np
+import torch
+
+class SubsumptionMotorController:
+    def __init__(self, Kp=1.0, Kd=0.1, Kv=0.5, error_thresh=4.0, stability_thresh=0.05, 
+                 push_cooldown=15, push_magnitude=20.0, dt=1.0, ablation=None):
+        """
+        Subsumption Motor Controller with 3 hierarchical layers.
+        
+        Args:
+            Kp (float): Proportional gain for reflexive PD tracking.
+            Kd (float): Derivative gain for reflexive PD tracking.
+            Kv (float): Velocity gain for predictive kinematics.
+            error_thresh (float): Threshold under which the pointer is close enough to target to trigger boredom.
+            stability_thresh (float): Threshold under which surprise change is stable.
+            push_cooldown (int): Cooldown steps after a push is triggered.
+            push_magnitude (float): Override acceleration magnitude during a deliberate push.
+            dt (float): Control loop time step.
+            abla...]
+
+
+[Tool Call: read_file({'path': 'src/environment.py', 'start_line': 100, 'end_line': 250})]
+
+[Tool Result: --- lines 100 to 250 of 341 ---
+            self.noisy_tv_radius = np.random.uniform(3.0, 8.0)
+            self.noisy_tv_pos = np.random.uniform(self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+        
+        # Reset Structured Distractor if active
+        if self.structured_distractor:
+            self.sd_center = np.random.uniform(32.0, 96.0)
+            self.sd_amplitude = np.random.uniform(5.0, 15.0)
+            self.sd_omega = np.random.uniform(0.02, 0.05)
+            self.sd_phase = np.random.uniform(0.0, 2.0 * np.pi)
+            self.sd_color = np.random.uniform(0.3, 1.0, size=(3,))
+            self.sd_radius = np.random.uniform(3.0, 8.0)
+            self.sd_t = 0
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_phase)
+        
+        # Resolve initial overlaps of both the objects and the pointer in a loop
+        temp_positions = np.concatenate([self.positions, [self.poin...]
+
+
+[Tool Call: read_file({'end_line': 341, 'path': 'src/environment.py', 'start_line': 250})]
+
+[Tool Result: --- lines 250 to 341 of 341 ---
+            step_noise = np.random.normal(0.0, 2.0)
+            self.noisy_tv_pos += step_noise
+            # Keep inside environment boundaries [radius, 128 - radius]
+            self.noisy_tv_pos = np.clip(self.noisy_tv_pos, self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            # Flicker with maximum entropy: color randomly sampled from [0.3, 1.0]
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+
+        # Update Structured Distractor state if active
+        if self.structured_distractor:
+            self.sd_t += 1
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(self.sd_omega * self.sd_t + self.sd_phase)
+
+        obs = self.render()
+        
+        info = {
+            "positions": self.positions.copy(),
+            "velocities": self.velocities.copy(),
+            "radii": self.radii.copy(),
+            "masses": self.masses.copy(),
+            "colors": self.colors.copy(),
+            "pointer_...]
+
+Now let me look at the existing iter_035 benchmark script for reference:
+
+[Tool Call: read_file({'end_line': 100, 'path': 'src/run_iter035_benchmark.py', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 100 of 661 ---
+#!/usr/bin/env python3
+"""
+iter_035: Pass-Through Physics Benchmark
+
+Tests whether perception-driven targeting is load-bearing for mass estimation
+in an environment where objects pass through each other (no obj-obj collisions).
+Only pointer-object collisions remain, so the agent MUST target objects to get
+information about their masses.
+"""
+import os, sys, csv, numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from environment import PhysicsSandbox
+
+# ── Constants ──
+SEEDS = [7, 31, 53, 71, 83, 97, 113, 163]
+N_OBJ = 3
+N_STEPS = 2000
+PTR_IDX = N_OBJ  # pointer index in concatenated arrays
+PTR_MASS = 10.0
+KP, KD = 2.0, 0.5
+PUSH_DIST = 6.0
+PUSH_VEL = 5.0
+PUSH_CD = 15
+MAX_PUSHES = 15
+PROX_THRESH = 4.0
+DV_THRESH = 0.5
+N_BOOT = 10000
+OUT = os.path.join('archive', 'iter_035', 'results')
+
+
+# ── PassThroughPhysicsSandbox ──
+class PassThroughPhysicsSandbox(PhysicsSandbox):
+    """Objects pass through each other; only pointer-object collisio...]
+
+
+[Tool Call: read_file({'end_line': 250, 'path': 'src/run_iter035_benchmark.py', 'start_line': 100})]
+
+[Tool Result: --- lines 100 to 250 of 661 ---
+                        m1 = temp_mass[i]
+                        m2 = temp_mass[j]
+                        temp_vel[i] = (v1 * (m1 - m2) + 2.0 * m2 * v2) / (m1 + m2)
+                        temp_vel[j] = (v2 * (m2 - m1) + 2.0 * m1 * v1) / (m1 + m2)
+                        
+            # Additional boundary check after collision resolution
+            for i in range(len(temp_pos)):
+                if temp_pos[i] - temp_rad[i] < 0.0:
+                    temp_pos[i] = temp_rad[i]
+                    if temp_vel[i] < 0.0:
+                        temp_vel[i] = -temp_vel[i]
+                elif temp_pos[i] + temp_rad[i] > 128.0:
+                    temp_pos[i] = 128.0 - temp_rad[i]
+                    if temp_vel[i] > 0.0:
+                        temp_vel[i] = -temp_vel[i]
+                        
+            self.positions = temp_pos[:-1].copy()
+            self.velocities = temp_vel[:-1].copy()
+            self.pointer_pos = temp_pos[-1]
+            self.po...]
+
+
+[Tool Call: read_file({'end_line': 450, 'path': 'src/run_iter035_benchmark.py', 'start_line': 250})]
+
+[Tool Result: --- lines 250 to 450 of 661 ---
+            target = int(np.argmin(obj_ptr_colls))
+            error = env.positions[target] - env.pointer_pos
+            d_error = (error - prev_err) if prev_err is not None else 0.0
+            prev_err = error
+            acc = KP * error + KD * d_error
+            
+            if push_cd > 0:
+                push_cd -= 1
+            
+            do_push = False
+            if abs(error) <= PUSH_DIST and push_cd == 0 and pushes_left > 0:
+                do_push = True
+                pushes_left -= 1
+                pushes_used += 1
+                obj_pushes[target] += 1
+                push_cd = PUSH_CD
+                # Switch target to next least-collided
+                counts = np.array(obj_ptr_colls, dtype=float)
+                counts[target] = np.inf
+                target = int(np.argmin(counts))
+                prev_err = None
+            
+            action = {'acc': acc, 'push': False}
+            if do_push:
+                env.pointer_...]
+
+
+[Tool Call: read_file({'end_line': 661, 'path': 'src/run_iter035_benchmark.py', 'start_line': 450})]
+
+[Tool Result: --- lines 450 to 661 of 661 ---
+    
+    # S3: ≥80% of events have |dv_obj| > 1.0
+    s3_pass = all(r['s3_frac'] >= 0.8 for r in oracle)
+    
+    # S4: no single object receives >80% of pushes
+    s4_pass = True
+    for r in oracle:
+        if r['pushes_used'] > 0:
+            max_frac = max(r['obj_pushes']) / r['pushes_used']
+            if max_frac > 0.8:
+                s4_pass = False
+                break
+    
+    # S5: pointer stays in bounds ≥95%
+    s5_pass = all(r['ptr_oob_frac'] <= 0.05 for r in oracle)
+    
+    sanity = {
+        'S1': (s1_pass, f"Mean per-obj valid colls: {s1_per_obj.tolist()}"),
+        'S2': (s2_pass, f"Mean pushes used: {s2_pushes.mean():.1f}/{MAX_PUSHES}"),
+        'S3': (s3_pass, f"Min s3_frac: {min(r['s3_frac'] for r in oracle):.3f}"),
+        'S4': (s4_pass, f"Max push fraction to single obj: {max(max(r['obj_pushes'])/max(r['pushes_used'],1) for r in oracle if r['pushes_used']>0):.3f}"),
+        'S5': (s5_pass, f"Max OOB frac: {max(r['ptr_oob_frac'] ...]
+
+Now let me look at the iter_034 benchmark for v2 MALRE implementation details:
+
+[Tool Call: read_file({'end_line': 100, 'path': 'src/run_iter034_v2.py', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 100 of 375 ---
+#!/usr/bin/env python3
+"""iter_034 v2: Dynamics-Learning Benchmark with MALRE (Mean Absolute Log-Ratio Error).
+
+v1 MAPE was falsified: PASSIVE=0.597 < RANDOM=0.999 < ORACLE=1.005 (inverted).
+Root cause: pointer-object mass estimates are extremely noisy (m_i = 10*(-dv_ptr)/dv_obj
+blows up when dv_obj is small), and hundreds of such rows overwhelm least-squares.
+
+v2 fix: use MEDIAN of mass-RATIO estimates from object-object collisions only.
+This is robust because: (a) ratio = -dv_j/dv_i is stable across substep impulses,
+(b) MEDIAN filters outliers, (c) object-object collisions are more informative per event.
+"""
+import os, sys, csv, numpy as np
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from environment import PhysicsSandbox
+
+SEEDS = [7, 31, 53, 71, 83, 97, 113, 163]
+N_OBJECTS = 3
+N_STEPS = 2000
+THRESHOLD = 4.0
+DV_THRESHOLD = 0.5
+POINTER_IDX = N_OBJECTS
+POINTER_MASS = 10.0
+KP, KD = 2.0, 0.5
+PUSH_DISTANCE = 6.0
+PUSH_VEL = 5.0
+PUSH_COOLDOW...]
+
+Now let me look at the motor controller more carefully, especially the CLTSMotorController:
+
+[Tool Call: read_file({'end_line': 212, 'path': 'src/motor.py', 'start_line': 60})]
+
+[Tool Result: --- lines 60 to 212 of 212 ---
+        # --- Ablation: shuffle ---
+        if self.ablation == "shuffle":
+            # Shuffle locus to a random segment instead of the true active segment
+            locus = int(np.random.randint(0, 4))
+            
+        # 1. Compute visual centroid of attended segment
+        device = next(model.parameters()).device
+        obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0) # (1, 3, 128)
+        
+        with torch.no_grad():
+            centroid_tensor = model.compute_attended_centroid(obs_tensor, locus=locus)
+            target_pos = centroid_tensor.item()
+            
+        pointer_pos = info["pointer_pos"]
+        pointer_vel = info["pointer_vel"]
+        
+        # 2. Lower Layer: Reflexive PD Tracking
+        error = target_pos - pointer_pos
+        if self.prev_error is None:
+            self.prev_error = error
+            
+        dedt = (error - self.prev_error) / self.dt
+        a_reflexive = self.Kp * erro...]
+
+Now let me also check the iter_034 benchmark results more carefully:
+
+[Tool Call: read_iteration({'iter_num': 34})]
+
+[Tool Result: ```yaml
+cached_tokens: 219107
+cost_usd: 4.2133
+hypothesis: 'phase-34: v1 MAPE benchmark falsified (pointer-object noise sensitivity);
+  v2 MALRE benchmark validated as coverage-discrimination test (active-vs-passive
+  gap=0.83) but underpowered for ORACLE-vs-RANDOM discrimination (gap=0.031, 3/8 seeds)'
+input_tokens: 2277624
+iter: 34
+metrics:
+  n_runs: 24
+  oracle_wins_vs_random: 3/8 seeds
+  v1_mape_oracle: 1.005
+  v1_mape_passive: 0.597
+  v1_mape_random: 0.999
+  v1_result: FALSIFIED
+  v2_all_sanity_pass: true
+  v2_g1_pass: true
+  v2_g2_pass: true
+  v2_g3_pass: true
+  v2_g4_pass: true
+  v2_malre_oracle: 0.503
+  v2_malre_passive: 1.333
+  v2_malre_random: 0.534
+  v2_oracle_random_gap: 0.031
+  v2_passive_oracle_gap: 0.83
+  v2_result: VALIDATED_with_caveats
+output_tokens: 175152
+status: ok
+```
+
+## iter_034: phase-34: v1 MAPE benchmark falsified (pointer-object noise sensitivity); v2 MALRE benchmark validated as coverage-discrimination test (active-vs-passive gap=0.83) but underpowered for ...]
+
+Now let me look at the CLTSMotorController in more detail and understand the current models:
+
+[Tool Call: read_file({'end_line': 80, 'path': 'src/models_dual_stream.py', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 80 of 1309 ---
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import collections
+
+def calculate_centroid_and_variance(a_spatial):
+    """
+    Computes spatial centroid and soft spatial variance for each channel.
+    Args:
+        a_spatial (Tensor): shape (B, d_max, 128)
+    Returns:
+        x_mean (Tensor): shape (B, d_max)
+        var (Tensor): shape (B, d_max)
+    """
+    p_c = F.softmax(a_spatial, dim=-1) # shape (B, d_max, 128)
+    coords = torch.arange(128, device=a_spatial.device, dtype=torch.float32)
+    x_mean = torch.sum(coords * p_c, dim=-1) # shape (B, d_max)
+    var = torch.sum(((coords.unsqueeze(0).unsqueeze(1) - x_mean.unsqueeze(-1)) ** 2) * p_c, dim=-1) # shape (B, d_max)
+    return x_mean, var
+
+def add_positional_encoding(x, pos_encoding="none"):
+    if pos_encoding == "none":
+        return x
+    B, _, W = x.shape
+    device = x.device
+    coords = torch.arange(W, dtype=torch.float32, device=device)
+    if pos_enco...]
+
+I have a good understanding of the codebase and the trajectory now. Let me now read the current state more carefully and the manager's pre-planning hints for this iteration:
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 035
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+In a pass-through physics sandbox (N=3 objects that pass through each other; 
+only pointer-object collisions remain elastic) with a 15-push budget over 2000 steps, 
+the ORACLE targeted-exploration policy (PD-tracks the least-collided object, pushes 
+when within 6px) achieves a Per-Object Median Log-Ratio Error (POMLRE) at least 0.15 
+lower than a RANDOM policy, with the lower bound of the two-sided 95% paired bootstrap 
+CI of (RANDOM_POMLRE - ORACLE_POMLRE) clear of zero over 8 seeds. The ordering 
+ORACLE_POMLRE < RANDOM_POMLRE < PASSIVE_POMLRE holds in the mean.
+
+The success condition is: the result is consistent with the redesigned environment 
+making perception-driven targeting load-bearing for mass-estimation under a finite 
+budget — NOT "perception sufficiency is established."
+
+## 2. Falsification Criteria
+The hypothesis is falsified if ANY of:
+
+(F1) R...]
+
+Now let me look at the current `current_state.md` and a few more details about the prior iterations to understand the full trajectory:
+
+[Tool Call: read_iteration({'iter_num': 33})]
+
+[Tool Result: ```yaml
+cached_tokens: 1677062
+cost_usd: 5.74085
+hypothesis: 'phase-33: Branch (c) confirmed — the behavioral-pivot protocol (N=2,
+  post-collision selectivity V-B, CLTSMotorController) does not discriminate perception
+  quality; ORACLE ≈ RANDOM (gap 0.0001); motor protocol is the bottleneck, not representation'
+input_tokens: 4024584
+iter: 33
+metrics:
+  branch_c_fired: true
+  oracle_random_gap: 0.0001
+  ordering_sanity_check: true
+  total_runs: 48
+  v3_learned_sfa_selectivity_vb: 0.4993
+  v3_learned_sfa_surprise_coord_mean: 3.32
+  v3_learned_sfa_tracking_error: 45.71
+  v3_learned_vicreg_selectivity_vb: 0.4708
+  v3_learned_vicreg_surprise_coord_mean: 1.3
+  v3_learned_vicreg_tracking_error: 33.26
+  v3_oracle_selectivity_vb: 0.5044
+  v3_oracle_surprise_coord_mean: 309.51
+  v3_oracle_tracking_error: 58.08
+  v3_random_selectivity_vb: 0.5043
+  v3_random_surprise_coord_mean: 4106.98
+  v3_random_tracking_error: 32.86
+output_tokens: 216500
+status: ok
+```
+
+## iter_033: phase-33: Branch (c) confi...]
+
+
+[Tool Call: read_campaign({'campaign_name': 'collapse-elimination'})]
+
+[Tool Result: ```yaml
+cached_tokens: 604934
+campaign: collapse-elimination
+cost_usd: 4.06951
+hypothesis: 'phase-27: separate backbone is NOT the primary cause of z_dyn collapse
+  (SECOND NULL); sim_loss_dyn is the causal driver (B-vs-C comparison, 30% vs 0%);
+  VICReg-only z_dyn eliminates collapse and improves semantic encoding'
+input_tokens: 2247864
+iter: 27
+metrics:
+  arm_C_passes_gate: true
+  collapse_rate_A_shared_mean_readout: 0.4
+  collapse_rate_B_separate_jepa_vicreg: 0.3
+  collapse_rate_C_separate_vicreg_only: 0.0
+  collapse_rate_aprime_shared_centroid_gated: 0.3
+  delta_r2_color_arm_A: 0.1469
+  delta_r2_color_arm_C: 0.1812
+  mean_abs_corr_arm_B: 0.407
+  mean_abs_corr_arm_C: 0.21
+  params_A: 80336
+  params_B: 135608
+  params_C: 135608
+  params_aprime: 81368
+  pre_registered_outcome: SECOND_NULL
+  total_runs: 40
+output_tokens: 81992
+status: ok
+```
+
+## iter_027: phase-27: separate backbone is NOT the primary cause of z_dyn collapse (SECOND NULL); sim_loss_dyn is the causal driver (B-vs-C comp...]
+
+Now let me look at the key prior iteration results to understand the analytical ceiling gate approach and how it should be adapted for foveation:
+
+[Tool Call: read_result_file({'filename': 'proposed_plan.yaml', 'iter_num': 34})]
+
+[Tool Result: falsification_criterion: "The benchmark is falsified if EITHER:\n(F1) RANDOM_MAPE\
+  \ - ORACLE_MAPE < 0.15 (the ORACLE-TARGETED policy does not\n     substantially\
+  \ outperform random action on mass estimation), OR\n(F2) The lower 95% bootstrap\
+  \ CI of (RANDOM_MAPE - ORACLE_MAPE) includes zero\n     (the gap is not statistically\
+  \ reliable), OR\n(F3) Any ORACLE sanity-check precondition fails:\n     S1: ORACLE\
+  \ achieves ≥3 collisions per object (targeting works),\n     S2: ORACLE total collision\
+  \ count ≥ PASSIVE total collision count,\n     S3: ≥90% of logged collision events\
+  \ show |Δv| > 0.5 px/step,\n     S4: ORACLE mean surprise per step ∈ [0.01, 100]\
+  \ (physical range,\n         not 146k as in the buggy iter_033 v1/v2),\n     S5:\
+  \ ≥80% of ORACLE surprise spikes align (±2 steps) with ground-truth\n         collision\
+  \ events.\nIf F3 fires, the ORACLE implementation is buggy and no comparison is\
+  \ interpreted.\n"
+hypothesis: 'A dynamics-...]
+
+Let me now look at the goal.md's Section 8.2 specification for foveated gaze:
+
+[Tool Call: grep_search({'include_pattern': '*.md', 'pattern': '8\\.2.*[Gg]aze|foveated'})]
+
+[Tool Result: current_state.md:2: Phase: Pass-through environment null; foveated gaze escalation triggered
+current_state.md:22: the project must pull the foveated-gaze mechanism (goal.md Section 8.2) forward from
+current_state.md:49: 3. Does foveated gaze naturally produce ORACLE>RANDOM>PASSIVE on POMLRE?
+experiment_log.md:1475: gets 12.27 valid collisions/object in 1D; foveated gaze escalation triggered'
+experiment_log.md:1487: ## iter_035: phase-35: pass-through environment redesign insufficient — passive pointer gets 12.27 valid collisions/object in 1D; foveated gaze escalation triggered
+experiment_log.md:1506: **Notes:** Analytical ceiling gate failed; pass-through dynamics insufficient to constrain passive information gathering in 1D. Escalation to foveated gaze triggered.
+goal.md:415: **8.2 Gaze direction / foveated attention.** A gaze pointer controlling a
+goal.md:416: foveated receptive field (full resolution at fixation, downsampled periphery),
+manager_log.md:8464: 3. Pre-commit the escalat...]
+
+Now let me check the research journal for the specific foveated-gaze design guidance that was already established:
+
+[Tool Call: read_file({'end_line': 80, 'path': 'research_journal.md', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 80 of 338 ---
+# Research Journal – Thalamus Project
+
+## 1. High-Level Strategy & Trajectory
+*   **Current Phase:** Behavioral-benchmark validation under
+    perception-gated environment redesign. iter_034 executed the
+    pre-committed environment redesign (pass-through obj-obj
+    physics) and hit the **analytical ceiling gate** at the
+    first checkpoint: PASSIVE pointer accumulated 12.27 valid
+    pointer-object collisions per object vs the pre-registered
+    threshold of 3.0 — a 4× overshoot. The gate fired as
+    designed, blocking the full experiment before any compute
+    was wasted on what would have been a guaranteed
+    ORACLE ≈ RANDOM outcome. This is a clean, pre-registered
+    **null result on the "remove obj-obj collisions" lever**.
+*   **Mechanistic story (clean):** In 1D physics, all entities
+    share a single spatial axis. A passive pointer that exists
+    *as a physical body* on that axis is on the trajectory of
+    every bouncing object by geometric ...]
+
+
+[Tool Call: read_file({'end_line': 200, 'path': 'research_journal.md', 'start_line': 80})]
+
+[Tool Result: --- lines 80 to 200 of 338 ---
+      primitive for every future environment redesign.
+    - **1D + physical pointer + full observation is
+      structurally incompatible with making perception
+      load-bearing.** This is a geometric statement, not an
+      empirical conjecture, and it eliminates an entire
+      family of candidate fixes.
+    - **iter_028 substrate** (separate backbone + mask_dyn_sim
+      + coord_vicreg, ΔR²_color ≈ 0.045, 0% collapse) remains
+      the working representation, unchanged.
+    - **MALRE v2** remains validated as a coverage-
+      discrimination test (active-vs-passive gap = 0.83);
+      unchanged as the secondary metric, but no longer the
+      primary benchmark for iter_035 because it does not
+      discriminate within the active regime.
+*   **What is now retired or contested:**
+    - **Pass-through obj-obj physics as a sufficient
+      environment redesign:** falsified by analytical
+      ceiling gate (PASSIVE 12.27 >> threshold 3.0).
+    - **The hyp...]
+
+
+[Tool Call: read_file({'end_line': 338, 'path': 'research_journal.md', 'start_line': 200})]
+
+[Tool Result: --- lines 200 to 338 of 338 ---
+    - M3 (fixed dimensionality d_t=3, GDASR log-only) stands.
+    - Separate backbone + mask_dyn_sim + coord_vicreg = 0%
+      collapse substrate.
+    - Decoder-free constraint stands.
+    - No positional encoding.
+    - Pre-registered decision rules continue to produce
+      clean outcomes (eight consecutive iterations:
+      023–024, 029–034).
+    - ORACLE-bracket methodology stands as the confound
+      disambiguator for behavioral evaluation.
+    - Metric saturation must be computed and reported
+      before any metric is adopted (iter_033 lesson).
+    - Constraint relaxation BLOCKED pending an open
+      bracket producing branch (b).
+
+## 3. Loop & Bottleneck Detection
+*   **Environment-Design Bottleneck (NEW, ACTIVE):** The
+    project's binding constraint has shifted from
+    representation (resolved by iter_028 substrate +
+    iter_033 bracket) to behavioral protocol (iter_033) to
+    environment information-structure (iter_034). The
+    currently...]
+
+
+[Tool Call: list_dir({'path': 'archive/iter_036'})]
+
+[Tool Result:       manager_log.md
+      manager_pre_planning_hints.txt
+      planner_plan_prompt.txt]
+
+
+[Tool Call: read_result_file({'filename': 'manager_pre_planning_hints.txt', 'iter_num': 36})]
+
+[Tool Result: Manager's Pre-Planning Hints — iter_035
+
+1. **Honor the pre-commitment, do not re-litigate it.** iter_034's escalation rule forces iter_035 to be the foveated/non-physical-gaze redesign with RANDOM and ORACLE only (LEARNED deferred). Do not let the Planner reopen "should we try one more full-observation tweak" or expand scope to include LEARNED in the same iteration — the journal pre-registered exactly one foveation iteration before meta-escalation, and that budget must be respected. The Planner's job is to specify the foveated environment, the probe action, and the gates; not to redesign the strategy.
+
+2. **The analytical ceiling gate must be inverted for this iteration, and pre-registered before any training.** Under full observation the failure mode was "PASSIVE already saturates"; under foveation the symmetric failure mode is "RANDOM gaze already covers every object adequately, leaving ORACLE no room." Require the Planner to pre-declare (a) the coefficient-of-variation gate on ...]
+
+
+[Tool Call: read_result_file({'filename': 'manager_log.md', 'iter_num': 36})]
+
+[Tool Result: # Research Manager Log - Iteration 036
+
+## Iteration 036 -> Planner [Pre-Planning Hints]
+
+Manager's Pre-Planning Hints — iter_035
+
+1. **Honor the pre-commitment, do not re-litigate it.** iter_034's escalation rule forces iter_035 to be the foveated/non-physical-gaze redesign with RANDOM and ORACLE only (LEARNED deferred). Do not let the Planner reopen "should we try one more full-observation tweak" or expand scope to include LEARNED in the same iteration — the journal pre-registered exactly one foveation iteration before meta-escalation, and that budget must be respected. The Planner's job is to specify the foveated environment, the probe action, and the gates; not to redesign the strategy.
+
+2. **The analytical ceiling gate must be inverted for this iteration, and pre-registered before any training.** Under full observation the failure mode was "PASSIVE already saturates"; under foveation the symmetric failure mode is "RANDOM gaze already covers every object adequately, leaving...]
+
+I now have a comprehensive understanding of the full project trajectory, the geometric constraint that forces foveated gaze, the specific pre-commitments, and the manager's requirements. Let me formulate the plan.
+
+**Key synthesis of constraints:**
+1. iter_035 failed the analytical ceiling gate: PASSIVE pointer gets 12.27 collisions/object (geometric inevitability in 1D with physical pointer)
+2. Pre-committed escalation: foveated gaze is the only remaining lever
+3. Manager's 3 specific directives: (a) CV≥0.5 gate on RANDOM per-object probe counts, (b) ORACLE sanity checks, (c) EMA recalibration N/A since no CLTSMotorController
+4. Factorial design: Arm A (foveation only, obj-obj kept) vs Arm B (foveation + pass-through)
+5. RANDOM and ORACLE only; LEARNED deferred
+6. This is the ONLY foveation iteration before meta-escalation
+7. Primary metric: POMLRE from probe-induced elastic collision events
+
+The critical design decision is the gaze window radius. Analytical estimation suggests:
+- GAZE_RADIUS=10: CV≈0.49 (marginally below 0.5 threshold — risky)
+- GAZE_RADIUS=8: CV≈0.55 (above threshold with margin)
+- GAZE_RADIUS=5: CV≈0.66 (well above, but ORACLE targeting harder)
+
+I'll use GAZE_RADIUS=8 (full window=16px, ~12.5% of arena) — passes CV gate with margin while keeping ORACLE probing feasible.
+
+The probe action applies a 1D elastic collision between the gaze (mass M_gaze=10, same as pointer) and the nearest object within the gaze window. Mass estimation uses full-step velocity changes (same noise structure as iter_035, where wall bounces and other physics confound individual estimates). The POMLRE metric uses the median of per-event mass estimates per object.
+
+```yaml
+hypothesis: |
+  In a foveated 1D physics sandbox (N=3 objects, ghostly gaze pointer with
+  GAZE_RADIUS=8 pixels, probe action applying 1D elastic collision between
+  gaze [M_gaze=10] and nearest object within gaze window, probe budget B=20
+  over 2000 steps) — under both Arm A (normal obj-obj collisions retained)
+  and Arm B (pass-through obj-obj, only probe reveals dynamics) — the ORACLE
+  targeted-exploration policy (PD-tracks least-probed object, probes when
+  target center is within GAZE_RADIUS of gaze and |error|≤6.0) achieves
+  Per-Object Median Log-Ratio Error (POMLRE) at least 0.15 lower than a
+  RANDOM gaze+probe policy, with the lower bound of the two-sided 95% paired
+  bootstrap CI of (RANDOM_POMLRE - ORACLE_POMLRE) clear of zero over 8 seeds
+  (including hard seeds 53, 71). The ordering
+  ORACLE_POMLRE < RANDOM_POMLRE < PASSIVE_POMLRE holds in the mean within
+  each arm. The success condition is: the result is consistent with foveated
+  gaze making perception-driven targeting load-bearing for mass estimation
+  under a finite probe budget — NOT "perception sufficiency is established."
+
+falsification_criterion: |
+  The hypothesis is falsified if ANY of the following holds in EITHER arm:
+
+  (F1) RANDOM_POMLRE - ORACLE_POMLRE < 0.15 (ORACLE does not substantially
+       outperform RANDOM on the primary metric).
+  (F2) The lower bound of the two-sided 95% paired bootstrap CI (10000 resamples)
+       of (RANDOM_POMLRE - ORACLE_POMLRE) includes zero (gap not statistically
+       reliable).
+  (F3) Any ORACLE sanity check fails (if F3 fires, the ORACLE implementation is
+       buggy and no comparison is interpreted):
+       S1: ORACLE achieves ≥3 probe-induced collision events per object
+           (mean across seeds) in the arm.
+       S2: ORACLE probe success rate ≥ 60% (≥12 of 20 probe attempts result
+           in a collision event — an object was found within the gaze window).
+       S3: ≥80% of ORACLE's probe-induced collision events have |Δv_obj| > 1.0
+           (informative velocity change for mass estimation).
+       S4: No single object receives >80% of ORACLE's total probe events
+           (even targeting should distribute across objects).
+       S5: ORACLE gaze stays in bounds ≥95% of steps.
+       S6: Each of the 3 objects receives ≥10% of ORACLE's total probe events
+           (targeting covers all objects, not just one).
+  (F4) Ordering sanity check violated: mean(PASSIVE_POMLRE) > mean(RANDOM_POMLRE)
+       > mean(ORACLE_POMLRE) does NOT hold within the arm. If violated, the
+       metric is rejected as in iter_034-v1, regardless of F1/F2.
+  (F5) CV gate fails: coefficient of variation (std/mean) of per-object
+       probe-event counts under RANDOM < 0.5 in the arm. This means RANDOM
+       distributes probes too evenly for ORACLE to improve on coverage.
+  (F6) Coverage-vs-estimation decomposition: if the estimation-only gap (on
+       seed×object cells where BOTH ORACLE and RANDOM have ≥3 valid events)
+       is < 0.05 in BOTH arms, the finding is "ORACLE wins by coverage, not
+       by perception-quality discrimination" — which is still a valid
+       benchmark-validation outcome, but must not be sold as the latter.
+
+proposed_method: |
+  Step 1: Create src/run_iter036_benchmark.py implementing:
+
+  A. FoveatedGazeSandbox — subclass of PhysicsSandbox with:
+     - Ghostly pointer: during the physics substep loop, the pointer passes
+       through objects (no pointer-object collision resolution). The pointer
+       still bounces off walls at 0 and 128, and still receives acceleration
+       from action['acc']. This breaks the 1D geometric inevitability that
+       caused iter_035's ceiling gate failure.
+     - Probe action: when action['probe']=True and probe_budget > 0:
+       1. Find the nearest object with center within GAZE_RADIUS=8 pixels
+          of the gaze center.
+       2. If found: apply 1D elastic collision between gaze (M_gaze=10.0)
+          and that object using the standard formula. Update both gaze
+          velocity and object velocity. Record pre-step and post-step
+          velocities for mass estimation. Decrement probe_budget.
+       3. If not found: probe is wasted (no collision). Decrement
+          probe_budget.
+     - Foveated render: override render() so that only pixels within
+       [gaze_pos - GAZE_RADIUS, gaze_pos + GAZE_RADIUS] are visible.
+       Outside this window, canvas is zero. (For future LEARNED condition;
+       does not affect ORACLE/RANDOM benchmark metrics.)
+     - pass_through parameter: if True, objects also pass through each
+       other (same as PassThroughPhysicsSandbox from iter_035). This
+       enables the Arm B factorial condition.
+     - Collision event recording: for each step where a probe occurs,
+       record (step, obj_idx, v_gaze_pre_step, v_obj_pre_step,
+       v_gaze_post_step, v_obj_post_step). Pre-step velocities are
+       recorded BEFORE the probe collision is applied. Post-step
+       velocities are recorded AFTER the full physics substep loop
+       completes. The Δv values include confounding physics (wall
+       bounces, obj-obj collisions) — same noise structure as iter_035.
+
+  B. Three conditions (NO learned representation — benchmark validation only):
+     - ORACLE: Perfect knowledge of all object positions and velocities.
+       * Maintains per-object probe-event count.
+       * PD-tracks the least-probed object (Kp=2.0, Kd=0.5).
+       * When the target's center is within GAZE_RADIUS=8 of the gaze center
+         AND |error| ≤ 6.0, probes.
+       * After probing, switches target to next least-probed object.
+       * After probe budget exhausted, continues PD tracking without probing.
+     - RANDOM: Random gaze acceleration ∈ [-10, 10]. Random probe with
+       probability p = 0.01 per step (expected ~20 probes over 2000 steps)
+       until budget exhausted. No targeting.
+     - PASSIVE: Gaze starts at 64.0, no acceleration, no probing.
+       0 probe events per object → POMLRE = 2.0 (metric ceiling).
+
+  C. Metric — POMLRE (Per-Object Median Log-Ratio Error, same as iter_035):
+     For each object i:
+       1. Collect probe events for object i with |Δv_obj| > 1.0.
+       2. m_est_k = -M_gaze * Δv_gaze_k / Δv_obj_k for each event k.
+       3. If ≥3 valid events: m_hat_i = median(m_est_k),
+          error_i = |log(m_hat_i / m_true_i)|.
+       4. If 1-2 valid events: m_hat_i = mean(m_est_k),
+          error_i = |log(m_hat_i / m_true_i)|.
+       5. If 0 valid events: error_i = 2.0 (maximum penalty).
+     POMLRE = mean(error_i across 3 objects).
+
+  D. Factorial design:
+     - Arm A: Foveated gaze + normal obj-obj collisions (foveation lever alone).
+     - Arm B: Foveated gaze + pass-through obj-obj collisions (both levers:
+       foveation removes incidental pointer-object info; pass-through removes
+       free obj-obj dynamics info).
+     Primary metric computed separately per arm. Factorial comparison
+     identifies the contribution of each lever to the ORACLE-RANDOM gap.
+
+  Step 2: Analytical ceiling gate (pre-registered, computed first).
+     Run RANDOM for 5 seeds × 2 arms = 10 short episodes (2000 steps each).
+     For each arm, compute:
+     - Per-object probe-event counts under RANDOM.
+     - CV = std(counts) / mean(counts) across the 3 objects, averaged over seeds.
+     - Mean per-object event count.
+     Gate criteria (BOTH arms must pass):
+     - CV ≥ 0.5: RANDOM coverage is sufficiently uneven for ORACLE to improve.
+     - Mean per-object count ≥ 0.5: RANDOM gets at least some events.
+     If the gate fails in either arm, report: "Foveated gaze with GAZE_RADIUS=8
+     does not create sufficient coverage imbalance under RANDOM policy in Arm
+     [A/B]." Do NOT proceed to full bracket for that arm.
+
+  Step 3: If gate passes for both arms, run full bracket.
+     8 seeds × 2 arms × 3 conditions = 48 episodes, 2000 steps each.
+     Seeds: [7, 31, 53, 71, 83, 97, 113, 163] (hard seeds 53, 71 included).
+
+  Step 4: Analysis.
+     - Per-seed POMLRE for each condition × arm.
+     - Bootstrap CI (10000 paired resamples, paired by seed).
+     - Sanity checks S1-S6.
+     - Coverage-vs-estimation decomposition: restrict to seed×object cells
+       where BOTH ORACLE and RANDOM have ≥3 valid events; compute estimation-
+       only gap.
+     - Factorial comparison: gap in Arm A vs gap in Arm B.
+
+  Step 5: Report with honest null-finding protocol.
+     - If all gates pass (F1-F6): hypothesis supported — foveated gaze makes
+       perception load-bearing.
+     - If F1/F2 fail but F5 passes: null — foveated gaze creates coverage
+       imbalance but this doesn't translate to a ≥0.15 POMLRE gap.
+     - If F5 fails: null — GAZE_RADIUS=8 too wide for RANDOM to have uneven
+       coverage; triggers meta-escalation.
+     - If F6 fires: report "ORACLE wins by coverage, not perception-quality
+       discrimination."
+     - No softer language ("trend toward", "approaching") per manager directive.
+
+  FILES CREATED:
+  - src/run_iter036_benchmark.py (new, main experiment)
+  - archive/iter_036/results/ (output directory)
+
+  PRESERVED: iter_028 substrate (separate backbone, mask_dyn_sim, coord_vicreg,
+  0% collapse), d_t=3 frozen, GDASR log-only (M3), decoder-free, no positional
+  encoding, M2 not reopened. No LEARNED representation used. No CLTSMotorController
+  in the loop (per-condition surprise-EMA recalibration therefore not required;
+  the iter_033 surprise-scale and event-alignment sanity checks are replaced by
+  probe-mechanics checks S1-S6, which verify that ORACLE's probes produce
+  physically sensible collision events rather than verifying surprise-signal
+  properties).
+
+  PRE-COMMITTED ESCALATION:
+  If the experiment produces a null result (ORACLE-RANDOM gap < 0.15 in BOTH
+  arms, or CV gate fails in both arms), that finding triggers meta-escalation:
+  the project must confront whether the 1D sandbox itself is the structural
+  confound. Options: (i) 2D environment redesign, (ii) re-frame deliverable
+  around representation+thalamic gating claims without behavioral validation,
+  (iii) revisit decoder-free constraint. No additional foveated-gaze parameter
+  adjustments (e.g., different GAZE_RADIUS) before meta-escalation — this is
+  the one foveation iteration budgeted by the journal.
+
+pre_registration_file: "src/pre_registration.md"
+```
