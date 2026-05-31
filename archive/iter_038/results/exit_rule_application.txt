@@ -1,0 +1,170 @@
+================================================================================
+iter_038: 2D Navigation Gate Probe — EXIT RULE APPLICATION
+================================================================================
+
+This document applies the pre-committed exit rule from src/pre_registration.md
+(Section 3, Step 5) to the measured iter_038 results. No post-hoc modification
+of thresholds, seeds, or parameters has occurred.
+
+================================================================================
+1. PER-GATE RESULTS WITH EXACT VALUES
+================================================================================
+
+Gate-1 (Non-saturation):
+  Threshold: mean per-object probe-event count <= 3.0
+  Decision rule: >= 4/5 seeds must individually pass
+  Seed   7: counts=(4,0,2), mean=2.000 -> PASS
+  Seed  31: counts=(2,0,0), mean=0.667 -> PASS
+  Seed  53: counts=(0,3,5), mean=2.667 -> PASS
+  Seed  71: counts=(1,1,0), mean=0.667 -> PASS
+  Seed  83: counts=(3,0,0), mean=1.000 -> PASS
+  Overall: 5/5 seeds pass -> PASS
+  Measured mean across seeds: 1.400
+
+Gate-1b (CV stability):
+  Thresholds: mean(CV) >= 0.30 AND std(CV) <= 0.25
+  Seed   7: CV=0.817
+  Seed  31: CV=1.414
+  Seed  53: CV=0.771
+  Seed  71: CV=0.707
+  Seed  83: CV=1.414
+  Mean CV: 1.025 (threshold: >= 0.30) -> PASS
+  Std  CV: 0.320 (threshold: <= 0.25) -> FAIL
+  Overall: FAIL
+
+Gate-2 (Heterogeneity):
+  Threshold: per-seed CV >= 0.50
+  Decision rule: >= 4/5 seeds must individually pass
+  Seed   7: CV=0.817 -> PASS
+  Seed  31: CV=1.414 -> PASS
+  Seed  53: CV=0.771 -> PASS
+  Seed  71: CV=0.707 -> PASS
+  Seed  83: CV=1.414 -> PASS
+  Overall: 5/5 seeds pass -> PASS
+
+================================================================================
+2. THE EXIT RULE BEING APPLIED
+================================================================================
+
+From pre-registration Section 3, Step 5:
+
+"The hypothesis is falsified if ANY gate fails under the per-seed decision rule.
+If any gate fails, the behavioral-validation strategy is declared not tractable
+within project scope, and the project pivots to path (ii) re-frame."
+
+Gate-1b FAILs because std(CV) = 0.320 exceeds the threshold of 0.25. This means
+the heterogeneity, while present (mean CV = 1.025 >> 0.30), is not reproducible
+across seeds — it varies wildly from seed to seed, dominated by trajectory luck
+rather than structural spatial effects. The per-seed CVs [0.817, 1.414, 0.771,
+0.707, 1.414] show a bimodal pattern (two seeds at ~0.75, two seeds at ~1.41,
+one at ~0.82), indicating that the random walk's spatial clustering is highly
+sensitive to initial object placement and trajectory history, not a stable
+structural property of the dynamics.
+
+This is the same failure mode identified in iter_037 (per-seed CVs were
+[0.00, 1.41, 0.82, 0.00, 1.41] with std=0.62), though attenuated. The navigation
+design did not sufficiently decouple event generation from trajectory luck to
+produce reproducible heterogeneity.
+
+================================================================================
+3. OUTCOME: FAIL BRANCH
+================================================================================
+
+The tested parameterization fails Gate-1b at std CV 0.320 vs threshold <= 0.25.
+
+Because at least one gate fails, the behavioral-validation strategy is declared
+not tractable within project scope. The result does not refute the null; rather,
+it is consistent with the hypothesis that 2D navigation with these parameters
+does not produce the reproducible structural heterogeneity required for bracket
+admission.
+
+The agent does NOT:
+- Suggest exploring different 2D parameterizations (this was the LAST sanctioned
+  environment-design iteration)
+- Suggest going back to 1D (the 1D null is crystallized)
+- Begin any 2D rebuild work
+
+================================================================================
+4. THE SIX RE-FRAME CLAIMS THAT BECOME iter_039 SCOPE
+================================================================================
+
+Quoted from pre-registration Section 3, Step 5 FAIL branch:
+
+1. M1 pooled-VICReg necessity:
+   Without batch-level VICReg, the separate-backbone architecture collapses
+   in >=4/5 seeds. Gate: train without VICReg; check has_collapsed or per-dim
+   std < 5.0.
+
+2. iter_028 collapse mechanism:
+   sim_loss_dyn is the causal driver of z_dyn collapse on the shared backbone
+   (removing it reduces collapse from >=30% to <=10%); the separate backbone
+   eliminates collapse regardless. Gate: (a) shared backbone without sim_loss_dyn
+   collapses <=1/5 seeds; (b) separate backbone collapses 0/5 seeds.
+
+3. iter_031 mean-pool bottleneck:
+   Mean-pool spatial readout limits delta_R^2_color < 0.10. No alternative
+   readout achieves delta_R^2 >= 0.30 without collapse. Gate: test centroid-gated
+   or max-pool; falsified if any achieves delta_R^2 >= 0.30 in >=4/5 seeds.
+
+4. Structural-ceiling-gate primitive:
+   The analytical ceiling gate (measuring PASSIVE information access to predict
+   bracket viability) is a valid research primitive. Gate: apply to a fresh task
+   with known ground-truth discriminability; falsified if prediction is wrong.
+
+5. 1D environmental null (documented):
+   The four-iteration null chain (iter_033-036) is a standing negative finding —
+   not re-tested but preserved as a citable result.
+
+6. 2D navigation null (from iter_038):
+   The specific gate failure from iter_038 is documented with the failure mode,
+   parameterization, and measured values — a data point, not a narrative.
+   Failure mode: Gate-1b std(CV) = 0.320 > 0.25 threshold.
+   Parameterization: 64x64 arena, N=3, random acceleration Uniform[-1.5,1.5]^2,
+   velocity cap 3.5, probe radius 10, p=0.015, budget 15, seeds [7,31,53,71,83].
+   Measured values: per-seed CVs [0.817, 1.414, 0.771, 0.707, 1.414],
+   mean CV=1.025, std CV=0.320.
+
+================================================================================
+5. ADDITIONAL DIAGNOSTIC OBSERVATIONS
+================================================================================
+
+Sanity checks:
+  S1 (Physics conservation): PASS
+  S2 (Pointer in bounds): PASS
+  S3 (Objects in bounds): PASS
+  S4 (Random acceleration): PASS
+  S5 (Velocity cap): PASS
+  S6 (Probe mechanism): PASS
+  S7 (Re-verify iter_037 Gate-1): FAIL — static pointer mean collision count
+     = 174.33 (threshold: <= 3.0). NOTE: This sanity check compares collision
+     counts (not probe events) to the Gate-1 threshold. The high collision count
+     reflects that objects frequently pass near the arena center where the static
+     pointer sits. This does not affect the main gate evaluation but indicates
+     that the S7 re-verification check may be measuring a different quantity
+     than intended (collisions under iter_038 physics vs. iter_037 probe events).
+
+Trajectory statistics:
+  Mean pointer speed: ~2.88 px/step
+  Mean arena coverage: ~36.0% of 4096 cells
+  Total probes fired across all seeds: 6+2+8+2+3 = 21 (of 75 budget)
+  The low probe utilization (21/75 = 28%) suggests the pointer frequently
+  encountered objects but the Bernoulli probe probability (p=0.015) was too low
+  to exhaust the budget, contributing to the high seed-to-seed variance in
+  per-object counts.
+
+================================================================================
+6. REPORTING LANGUAGE COMPLIANCE
+================================================================================
+
+- The result "is consistent with" the structural-ceiling hypothesis: 2D
+  navigation with the tested parameters does not produce reproducible
+  heterogeneity.
+- The result "does not refute the null" that behavioral validation via 2D
+  navigation is intractable within the current project scope.
+- The tested parameterization fails Gate-1b at std CV 0.320 vs threshold 0.25.
+- No language of "demonstrates," "proves," "shows that 2D navigation works,"
+  or "validates" is used.
+
+================================================================================
+Document generated: iter_038 exit rule application
+================================================================================

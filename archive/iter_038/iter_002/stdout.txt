@@ -1,0 +1,1988 @@
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 038
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+In a 2D arena (64×64, N=3 objects) with a PHYSICALLY NAVIGATING pointer (random
+acceleration ∈ [-1.5, 1.5]², velocity capped at 3.5 px/step per component) that
+must navigate to objects and actively probe them (probe probability p=0.015 per
+step when within PROBE_RADIUS=10 of any object, budget=15 probes), the three
+structural constraints that blocked the behavioral bracket across iter_033-037
+are simultaneously relaxed:
+
+Gate-1 (Non-saturation): Mean per-object probe-event count under RANDOM
+navigation ≤ 3.0. Random navigation produces bounded, non-saturating
+information access because 2D geometry allows off-axis passage and the probe
+budget + probability cap total events.
+
+Gate-1b (CV stability): Per-object probe-event count CV is structurally
+meaningful and reproducible across seeds (mean per-seed CV ≥ 0.30 AND
+std(per-seed CVs) ≤ 0.25). The navigation pointer creates enough events
+(estimated ~7-10 per seed) for CV to reflect structural spatial clustering
+rather than Poisson noise, unlike iter_037 where 0-1 events per seed made
+CV undefined or noise-dominated.
+
+Gate-2 (Heterogeneity): Mean per-seed per-object probe-event CV ≥ 0.50
+(with ≥4/5 seeds individually ≥ 0.50). A 2D random walk with moderate speed
+(~3 px/step) in a 64×64 arena has mixing time ~455 steps; over 2000 steps
+(~4.4 mixing times), the walk retains partial spatial structure, creating
+naturally uneven per-object visit rates. Objects in the center sector (where
+the walk starts and to which wall-bounces frequently redirect) receive more
+visits than objects in peripheral sectors.
+
+## 2. Falsification Criterion
+The hypothesis is falsified if ANY gate fails under the per-seed decision rule:
+
+Gate-1 FAIL: Fewer than 4 of 5 seeds achieve mean per-object probe-event
+count ≤ 3.0 under RANDOM navigation. This means the moving pointer creates
+too many information events, leaving insufficient headroom for ORACLE targeting.
+
+Gate-1b FAIL: Either (a) mean per-seed CV < 0.30, meaning the heterogeneity
+is too weak to be structurally meaningful even after averaging across seeds; or
+(b) std(per-seed CVs) > 0.25, meaning the heterogeneity is not reproducible —
+it varies wildly from seed to seed, dominated by trajectory luck rather than
+structural spatial effects.
+
+Gate-2 FAIL: Fewer than 4 of 5 seeds achieve per-object probe-event CV ≥ 0.50.
+This means random navigation does not create sufficient per-object heterogeneity
+for ORACLE's targeted perception to exploit.
+
+If any gate fails, the behavioral-validation strategy is declared not tractable
+within project scope, and the project pivots to path (ii) re-frame.
+
+## 3. Proposed Method
+## Experiment: 2D Navigation Gate Probe
+
+### Step 1 — Pre-Registration and Null Finding Preservation
+Update src/pre_registration.md with iter_038 parameters and gate definitions.
+Preserve the iter_037 null finding document (archive/iter_037/results/null_finding_1d.md)
+as a standing reference — no modification.
+
+### Step 2 — Implement Navigation Gate Experiment
+Create src/run_iter038_nav_gates.py extending PhysicsSandbox2D from iter_037.
+
+**Environment parameters (pre-registered, FROZEN):**
+- Arena: 64×64 (same as iter_037)
+- N=3 objects (same as iter_037: radius ∈ [3.0, 8.0], mass=radius,
+  velocity per component ∈ [-2.0, -0.5] ∪ [0.5, 2.0])
+- Pointer: radius=4, mass=10, starts at (32, 32) with velocity (0, 0)
+- Substeps: 10, dt = 1/substeps
+- Seeds: [7, 31, 53, 71, 83] (same as iter_037)
+
+**Navigation (RANDOM policy):**
+- Each step: sample 2D acceleration from Uniform[-1.5, 1.5]²
+- Apply acceleration to pointer velocity via substep integration
+- Velocity cap: 3.5 px/step per component (applied after each step)
+- Physical elastic collisions between pointer and objects (same as iter_037)
+- Wall bounces for pointer and objects (same as iter_037)
+
+**Probe mechanism:**
+- PROBE_RADIUS = 10.0 (pointer center within 10 pixels of object center)
+- At each step, if any object is within PROBE_RADIUS, a probe opportunity exists
+- Probe decision: probability p = 0.015 per step (when opportunity exists)
+- Probe budget: 15 total probes per rollout
+- On successful probe: record event for the NEAREST object within PROBE_RADIUS
+- After budget exhausted: pointer still navigates but no more probe events
+- Physical collisions are SEPARATE from probe events (collision dynamics still
+  occur, but don't count as information events for the gates)
+
+**Measurements (per seed):**
+- Per-object probe-event counts (count_0, count_1, count_2)
+- Per-object probe-event CV = std(counts) / mean(counts)
+- Per-object valid collision counts (diagnostic, for comparison with iter_037)
+- Per-object proximity-event counts (diagnostic: within PROBE_RADIUS, no probe)
+- Total probes fired, budget remaining
+- Pointer trajectory statistics (mean speed, arena coverage)
+
+**Gate definitions:**
+Gate-1 (Non-saturation):
+- Metric: mean per-object probe-event count
+- Threshold: ≤ 3.0
+- Per-seed rule: ≥4/5 seeds must individually pass
+- Justification: same as iter_037; 3.0 provides headroom for ORACLE to
+  produce 5-10× more events via targeted navigation
+
+Gate-1b (CV stability):
+- Condition (a): mean of per-seed CVs across 5 seeds ≥ 0.30
+- Condition (b): std of per-seed CVs across 5 seeds ≤ 0.25
+- Both conditions must hold
+- Justification: (a) ensures the heterogeneity is not trivially zero;
+  (b) ensures it's reproducible (not driven by lucky/unlucky trajectories).
+  In iter_037, per-seed CVs were [0.00, 1.41, 0.82, 0.00, 1.41] (std=0.62)
+  — wildly unstable. With active navigation producing more events,
+  CV should be more stable.
+
+Gate-2 (Heterogeneity):
+- Metric: per-seed per-object probe-event CV
+- Threshold: ≥ 0.50
+- Per-seed rule: ≥4/5 seeds must individually pass
+- Justification: CV ≥ 0.50 indicates meaningful per-object heterogeneity
+  that ORACLE's targeted navigation could exploit differently than RANDOM.
+  Below 0.50, the random navigator already accesses all objects fairly
+  equally, leaving no behavioral leverage for perception.
+
+**Sanity checks:**
+- S1: Physics conservation (2D elastic collision, same as iter_037)
+- S2: Pointer stays within [0, 64]² throughout
+- S3: Objects stay within [0, 64]² throughout
+- S4: RANDOM navigation actually applies random acceleration (no targeting)
+- S5: Velocity cap enforced (max 3.5 per component per step)
+- S6: Probe mechanism fires correctly (within PROBE_RADIUS, with probability)
+- S7: PASSIVE sanity check: rerun iter_037 Gate-1 on 1 seed to confirm
+  static pointer still gives mean ≤ 3.0 (re-verification, not new measurement)
+
+### Step 3 — Geometric Argument for Joint Gate Satisfaction
+
+**Why this design escapes the Gate-1/Gate-1b opposition identified in iter_037:**
+
+In iter_037 (static pointer at center), the opposition was:
+- Gate-1 passes "too well" → collisions are very rare (0-1 per object)
+- Gate-1b fails → too few events for CV to be structurally meaningful
+- These are coupled: the same geometric fact (2D allows off-axis passage)
+that keeps collisions low also makes them too rare for CV measurement.
+
+The navigation task DECOUPLES these concerns through two mechanisms:
+
+(1) **Active event generation:** The moving pointer traverses the arena,
+encountering objects more frequently than the static pointer. The probe
+mechanism (PROBE_RADIUS=10, p=0.015) produces ~7-10 probe events per seed
+(vs 0-2 for the static pointer), providing enough data for CV to be
+structurally meaningful. This addresses Gate-1b directly.
+
+(2) **Budget-capped event rate:** The probe budget (15) and probability
+(0.015) ensure the total event rate is bounded, even though the pointer
+moves. The estimated mean per-object count (~2.3) is well below the Gate-1
+threshold of 3.0. This preserves Gate-1.
+
+The coupling is broken because event generation is now determined by
+navigation (which the agent controls) rather than passive collision
+probability (which is a fixed property of the geometry).
+
+**Why spatial clustering supports Gate-2:**
+
+A 2D random walk with speed ~3 px/step in a 64×64 arena has diffusion
+coefficient D ≈ 4.5 and mixing time τ_mix ≈ L²/(2D) ≈ 455 steps. Over
+2000 steps (~4.4 τ_mix), the walk retains partial spatial structure:
+- The walk's position is autocorrelated (it tends to continue in the same
+  direction for 50-100 steps before changing course)
+- It spends extended periods near one object before diffusing to another
+- Objects in the center sector (where the walk starts and to which wall
+  bounces frequently redirect) receive more visits than peripheral objects
+
+With segment-based object initialization (Object 1 in the center sector),
+the pointer starts near Object 1 and visits it more frequently in the
+first ~500 steps. This initial bias persists even after mixing because
+the walk returns to the center more often (wall bounces redirect toward
+center). The expected per-object visit probability distribution is
+approximately [0.25, 0.40, 0.35], producing expected CV ≈ 0.50 from
+structural asymmetry alone. Random walk clustering amplifies this above
+the Poisson baseline (~0.39 for uniform allocation of 9 probes).
+
+### Step 4 — Run Experiment and Record Results
+Execute src/run_iter038_nav_gates.py, save all results to
+archive/iter_038/results/.
+
+### Step 5 — Apply Pre-Committed Exit Rule
+
+**PASS branch (all three gates clear):**
+Write up the result. Explicitly hand off to HUMAN go/no-go on full 2D rebuild.
+The agent does NOT auto-start the rebuild. The human decides whether to commit
+~10-14 iterations to the 2D migration. Document:
+- The specific gate measurements that passed
+- The estimated cost/scope of a full 2D rebuild (from iter_037 decision support)
+- What carries over unchanged (M1, M3, iter_028 substrate, decoder-free)
+- What must be rebuilt (2D encoder, 2D soft-argmax, production PhysicsSandbox2D,
+  2D CLTSMotorController, re-validate non-collapse, re-validate bracket)
+- Caveat: gates passing does NOT guarantee the full bracket discriminates
+
+**FAIL branch (any gate fails):**
+Declare the behavioral-validation strategy not tractable within project scope.
+Iter_039 becomes path (ii) re-frame, with the following pre-registered
+falsifiable claims (each with its own gate):
+
+1. **M1 pooled-VICReg necessity:** Without batch-level VICReg, the
+   separate-backbone architecture collapses in ≥4/5 seeds. Gate: train
+   without VICReg; check has_collapsed or per-dim std < 5.0.
+
+2. **iter_028 collapse mechanism:** sim_loss_dyn is the causal driver of
+   z_dyn collapse on the shared backbone (removing it reduces collapse from
+   ≥30% to ≤10%); the separate backbone eliminates collapse regardless.
+   Gate: (a) shared backbone without sim_loss_dyn collapses ≤1/5 seeds;
+   (b) separate backbone collapses 0/5 seeds.
+
+3. **iter_031 mean-pool bottleneck:** Mean-pool spatial readout limits
+   ΔR²_color < 0.10. No alternative readout achieves ΔR² ≥ 0.30 without
+   collapse. Gate: test centroid-gated or max-pool; falsified if any
+   achieves ΔR² ≥ 0.30 in ≥4/5 seeds.
+
+4. **Structural-ceiling-gate primitive:** The analytical ceiling gate
+   (measuring PASSIVE information access to predict bracket viability)
+   is a valid research primitive. Gate: apply to a fresh task with known
+   ground-truth discriminability; falsified if prediction is wrong.
+
+5. **1D environmental null (documented):** The four-iteration null chain
+   (iter_033-036) is a standing negative finding — not re-tested but
+   preserved as a citable result.
+
+6. **2D navigation null (from iter_038):** The specific gate failure from
+   iter_038 is documented with the failure mode, parameterization, and
+   measured values — a data point, not a narrative.
+
+Each claim is falsifiable with its own gate. The re-frame is NOT a
+deliverable-by-narration; it is a set of specific, testable, quantitative
+claims about the representation, methodology, and environmental findings.
+
+### Files Created
+- src/run_iter038_nav_gates.py (new — 2D navigation gate experiment)
+- src/pre_registration.md (updated with iter_038 parameters)
+- archive/iter_038/results/ (output directory with gate results)
+
+### Files Preserved (NO modification)
+- src/environment.py (1D environment unchanged)
+- src/models_dual_stream.py (1D encoder unchanged)
+- src/models_separate_dyn.py (separate backbone unchanged)
+- src/motor.py (CLTSMotorController unchanged)
+- src/run_iter037_2d_gates.py (preserved for reference)
+- All standing mandates (M1, M3, GDASR log-only, decoder-free, iter_028 substrate)
+- M2 remains untestable, not falsified
+
+## 4. Object Placement Protocol
+
+- Object initial positions are sampled UNIFORM-RANDOM in the arena interior.
+  Both x and y coordinates are drawn independently from
+  Uniform([margin, ARENA_SIZE - margin]) where margin = radius_i + 0.5.
+  This is **NOT** segment-based placement. Objects may cluster near each
+  other or near the geometric center — this is expected and not controlled.
+- The pointer spawns at the geometric center (32, 32) **independent of
+  object positions**. It does not receive any knowledge of where objects are.
+- The "expected CV ≈ 0.50" claim in the hypothesis is reframed: it is a
+  prediction about **EMERGENT** random-walk clustering from autocorrelated
+  trajectories + wall bounces, **NOT** from chosen object placement. If
+  CV ≥ 0.50 cannot survive uniform-random object placement, the gate MUST
+  fail. The heterogeneity must come from the dynamics, not from the setup.
+- **Explicit statement:** No object placement bias is permitted. The CV must
+  emerge from the dynamics of the random walk and the resulting spatial
+  clustering, not from any constructional advantage.
+
+## 5. Statistical Discipline
+
+- The std(per-seed CVs) in Gate-1b is a sample-of-5 statistic interpreted at
+  face value, not bootstrapped. The failure mode is honest, not statistical-magic.
+  If the five seeds produce wildly different CVs, that is a real finding, not
+  a sampling artifact.
+- The seed list **[7, 31, 53, 71, 83] is FROZEN**. No post-hoc seed
+  additions to chase a gate. Adding more seeds is a form of p-hacking.
+- **Single declared parameterization** — no parameter sweep, no fallback
+  parameterization. This design either passes or fails. If one parameter
+  combination passes and another fails, that is not evidence in favor of
+  the hypothesis; it is evidence that the result depends on tuning.
+- **Mid-run tuning of any parameter** (p, PROBE_RADIUS, budget, velocity cap,
+  arena size) is **FORBIDDEN**. The parameters declared here are the only
+  parameters that will be tested.
+
+## 6. Reporting Language
+
+- Results must be phrased using the following approved formulations:
+  - "is consistent with bracket-admission"
+  - "does not refute the null"
+  - "the tested parameterization fails Gate-X at X.XX vs threshold Y.YY"
+- **NEVER** use the following language:
+  - "demonstrates"
+  - "proves"
+  - "shows that 2D navigation works"
+  - "validates"
+- **On PASS:** hand off to HUMAN go/no-go on full 2D rebuild. The agent
+  does **NOT** begin 2D rebuild work. The scope of a full rebuild (estimated
+  ~10-14 iterations) must be acknowledged as a human decision, not an
+  automated continuation.
+- **On FAIL of any gate:** the six re-frame claims in the existing exit rule
+  (Section 3, Step 5 FAIL branch) become the iter_039 scope. The failure is
+  recorded as a data point, not as a narrative failure.
+
+---
+*Created automatically by the RDF Orchestrator prior to iteration execution.*
+]
+
+[Tool Call: read_file({'path': 'src/run_iter038_nav_gates.py'})]
+[Tool Result: """src/run_iter038_nav_gates.py
+
+2D Navigation Gate Probe for the Thalamus project.
+Tests whether a PHYSICALLY NAVIGATING pointer in a 2D arena resolves the
+structural constraints that blocked behavioral validation across iter_033-037.
+
+No training, no learned model, no representation work. Pure physics + random
+navigation + probe mechanism.
+
+All parameters, gate definitions, and decision rules are pre-registered in
+src/pre_registration.md and must not be modified.
+"""
+
+import os
+import sys
+import csv
+import numpy as np
+
+# Fix stdout encoding on Windows for redirection compatibility
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
+# ── Pre-registered parameters (FROZEN) ───────────────────────────────────────
+SEEDS = [7, 31, 53, 71, 83]
+N_OBJ = 3
+N_STEPS = 2000
+SUBSTEPS = 10
+ARENA_SIZE = 64.0
+PTR_RADIUS = 4.0
+PTR_MASS = 10.0
+PTR_START = np.array([32.0, 32.0], dtype=np.float64)
+PTR_VEL_INIT = np.array([0.0, 0.0], dtype=np.float64)
+OBJ_RADIUS_RANGE = [3.0, 8.0]
+OBJ_VEL_RANGES = [(-2.0, -0.5), (0.5, 2.0)]
+VEL_CAP = 3.5
+NAV_ACC_RANGE = [-1.5, 1.5]
+PROBE_RADIUS = 10.0
+PROBE_P = 0.015
+PROBE_BUDGET = 15
+
+# Gate thresholds
+GATE1_THRESH = 3.0
+GATE1B_THRESH = 0.30
+GATE1B_STD_THRESH = 0.25
+GATE2_THRESH = 0.50
+N_SEEDS_PASS = 4
+
+OUT_DIR = os.path.join('archive', 'iter_038', 'results')
+
+# Navigation RNG seed derivation (separate from environment RNG)
+def nav_seed_for_env_seed(env_seed):
+    return env_seed * 1000 + 7
+
+
+# ── Utility ──────────────────────────────────────────────────────────────────
+def _rand_vel_component(rng):
+    """Draw a velocity component from [-2.0, -0.5] U [0.5, 2.0]."""
+    if rng.rand() < 0.5:
+        return rng.uniform(OBJ_VEL_RANGES[0][0], OBJ_VEL_RANGES[0][1])
+    return rng.uniform(OBJ_VEL_RANGES[1][0], OBJ_VEL_RANGES[1][1])
+
+
+def _cap_velocity(vel, cap):
+    """Cap each velocity component to [-cap, +cap]."""
+    return np.clip(vel, -cap, cap)
+
+
+# ── PhysicsSandbox2D (iter_038 variant) ──────────────────────────────────────
+class PhysicsSandbox2D:
+    """
+    2D physics sandbox with:
+    - N objects with elastic collisions and wall bounces
+    - One navigating pointer with random acceleration
+    - Probe mechanism (separate from collision physics)
+    """
+
+    def __init__(self, N=N_OBJ, substeps=SUBSTEPS, seed=None):
+        self.N = N
+        self.substeps = substeps
+        self.dt = 1.0 / substeps
+        self.rng = np.random.RandomState(seed)
+
+        self.positions = np.zeros((N, 2), dtype=np.float64)
+        self.velocities = np.zeros((N, 2), dtype=np.float64)
+        self.radii = np.zeros(N, dtype=np.float64)
+        self.masses = np.zeros(N, dtype=np.float64)
+
+        self.pointer_pos = PTR_START.copy()
+        self.pointer_vel = PTR_VEL_INIT.copy()
+        self.pointer_radius = PTR_RADIUS
+        self.pointer_mass = PTR_MASS
+
+        # Diagnostic collision counter (step-level, per object)
+        self._collision_counts = np.zeros(N, dtype=np.int32)
+
+        self._init_objects()
+
+    def _init_objects(self):
+        """Initialize objects with UNIFORM-RANDOM placement in arena interior."""
+        self.radii = self.rng.uniform(OBJ_RADIUS_RANGE[0], OBJ_RADIUS_RANGE[1], self.N)
+        self.masses = self.radii.copy()
+        for i in range(self.N):
+            self.velocities[i, 0] = _rand_vel_component(self.rng)
+            self.velocities[i, 1] = _rand_vel_component(self.rng)
+        for i in range(self.N):
+            margin = self.radii[i] + 0.5
+            low = margin
+            high = ARENA_SIZE - margin
+            self.positions[i, 0] = self.rng.uniform(low, high)
+            self.positions[i, 1] = self.rng.uniform(low, high)
+
+    def _resolve_circle_circle_2d(self, pos1, vel1, m1, r1, pos2, vel2, m2, r2):
+        """
+        2D elastic collision between two circles.
+        Returns new positions and velocities for both bodies.
+        Uses approach-velocity check to prevent double-counting across substeps.
+        """
+        diff = pos2 - pos1
+        dist = np.linalg.norm(diff)
+        min_dist = r1 + r2
+        if dist < min_dist and dist > 1e-12:
+            n = diff / dist
+            v_rel_n = np.dot(vel2 - vel1, n)
+            m_inv1 = 1.0 / m1
+            m_inv2 = 1.0 / m2
+            sum_inv = m_inv1 + m_inv2
+            overlap = min_dist - dist
+            new_pos1 = pos1 - overlap * (m_inv1 / sum_inv) * n
+            new_pos2 = pos2 + overlap * (m_inv2 / sum_inv) * n
+            if v_rel_n > 0:
+                # Approaching: resolve velocity
+                v1n = np.dot(vel1, n)
+                v2n = np.dot(vel2, n)
+                v1n_new = (v1n * (m1 - m2) + 2.0 * m2 * v2n) / (m1 + m2)
+                v2n_new = (v2n * (m2 - m1) + 2.0 * m1 * v1n) / (m1 + m2)
+                new_vel1 = vel1 + (v1n_new - v1n) * n
+                new_vel2 = vel2 + (v2n_new - v2n) * n
+                return new_pos1, new_vel1, new_pos2, new_vel2
+            else:
+                # Separating: only fix overlap
+                return new_pos1, vel1.copy(), new_pos2, vel2.copy()
+        return pos1.copy(), vel1.copy(), pos2.copy(), vel2.copy()
+
+    def _wall_bounce(self, pos, vel, radius):
+        """Reflect position and velocity at arena walls."""
+        pos = pos.copy()
+        vel = vel.copy()
+        for axis in range(2):
+            if pos[axis] - radius < 0.0:
+                pos[axis] = radius
+                if vel[axis] < 0.0:
+                    vel[axis] = -vel[axis]
+            elif pos[axis] + radius > ARENA_SIZE:
+                pos[axis] = ARENA_SIZE - radius
+                if vel[axis] > 0.0:
+                    vel[axis] = -vel[axis]
+        return pos, vel
+
+    def step(self, pointer_acc):
+        """
+        One physics step with substeps.
+        pointer_acc: 2D acceleration to apply to pointer (each substep).
+
+        Returns:
+            probe_hit: bool (did a probe succeed this step?)
+            probed_obj_idx: int or -1 (which object was probed)
+            collisions_this_step: np.array(N,) of bool (which objects had physical contact)
+        """
+        collisions_this_step = np.zeros(self.N, dtype=bool)
+
+        # Substep integration
+        for _ in range(self.substeps):
+            self.pointer_vel += pointer_acc * self.dt
+
+            self.positions += self.velocities * self.dt
+            self.pointer_pos += self.pointer_vel * self.dt
+
+            # Wall bounces
+            for i in range(self.N):
+                self.positions[i], self.velocities[i] = self._wall_bounce(
+                    self.positions[i], self.velocities[i], self.radii[i]
+                )
+            self.pointer_pos, self.pointer_vel = self._wall_bounce(
+                self.pointer_pos, self.pointer_vel, self.pointer_radius
+            )
+
+            # Object-object collisions
+            for i in range(self.N):
+                for j in range(i + 1, self.N):
+                    dist = np.linalg.norm(self.positions[j] - self.positions[i])
+                    if dist < self.radii[i] + self.radii[j]:
+                        p1, v1, p2, v2 = self._resolve_circle_circle_2d(
+                            self.positions[i], self.velocities[i], self.masses[i], self.radii[i],
+                            self.positions[j], self.velocities[j], self.masses[j], self.radii[j],
+                        )
+                        self.positions[i] = p1
+                        self.velocities[i] = v1
+                        self.positions[j] = p2
+                        self.velocities[j] = v2
+
+            # Pointer-object physics collisions
+            for i in range(self.N):
+                dist = np.linalg.norm(self.pointer_pos - self.positions[i])
+                if dist < self.pointer_radius + self.radii[i]:
+                    collisions_this_step[i] = True
+                    p1, v1, p2, v2 = self._resolve_circle_circle_2d(
+                        self.positions[i], self.velocities[i], self.masses[i], self.radii[i],
+                        self.pointer_pos, self.pointer_vel, self.pointer_mass, self.pointer_radius,
+                    )
+                    self.positions[i] = p1
+                    self.velocities[i] = v1
+                    self.pointer_pos = p2
+                    self.pointer_vel = v2
+                    self.positions[i], self.velocities[i] = self._wall_bounce(
+                        self.positions[i], self.velocities[i], self.radii[i]
+                    )
+                    self.pointer_pos, self.pointer_vel = self._wall_bounce(
+                        self.pointer_pos, self.pointer_vel, self.pointer_radius
+                    )
+                elif dist < self.pointer_radius + self.radii[i] + PROBE_RADIUS:
+                    # Track proximity for diagnostics (not a physical collision)
+                    # We only flag if the CENTER distance is within PROBE_RADIUS
+                    center_dist = np.linalg.norm(self.pointer_pos - self.positions[i])
+                    # This is just diagnostic; the actual probe check is done at step level
+                    pass
+
+        # Update diagnostic collision counts
+        for i in range(self.N):
+            if collisions_this_step[i]:
+                self._collision_counts[i] += 1
+
+        # Probe check (step-level, AFTER physics)
+        probe_hit = False
+        probed_obj_idx = -1
+        center_dists = np.linalg.norm(self.positions - self.pointer_pos, axis=1)
+        within_probe = center_dists < PROBE_RADIUS
+        if np.any(within_probe):
+            # Find nearest object within probe radius
+            nearby_indices = np.where(within_probe)[0]
+            probed_obj_idx = int(nearby_indices[np.argmin(center_dists[nearby_indices])])
+            probe_hit = True
+
+        return probe_hit, probed_obj_idx, collisions_this_step
+
+
+# ── Run one full rollout for a seed ──────────────────────────────────────────
+def run_one_seed(env_seed, record_trajectory=False):
+    """
+    Run the full navigation experiment for one seed.
+
+    Returns dict with:
+        - probe_counts: per-object probe-event counts
+        - collision_counts: per-object diagnostic collision counts
+        - probes_fired: total successful probes
+        - probes_attempted: total probe opportunities where budget remained
+        - probe_events: list of (step_idx, obj_idx) for each successful probe
+        - trajectory: list of (x, y) pointer positions per step (if record_trajectory)
+        - max_speed: max pointer speed observed
+        - total_distance: total distance traveled by pointer
+    """
+    env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS, seed=env_seed)
+    env.pointer_pos = PTR_START.copy()
+    env.pointer_vel = PTR_VEL_INIT.copy()
+
+    nav_rng = np.random.RandomState(nav_seed_for_env_seed(env_seed))
+
+    probe_counts = np.zeros(N_OBJ, dtype=np.int32)
+    probes_fired = 0
+    probe_events = []  # (step, obj_idx)
+
+    trajectory = []
+    total_distance = 0.0
+    max_speed = 0.0
+    prev_ptr_pos = PTR_START.copy()
+
+    for step in range(N_STEPS):
+        # Sample random acceleration
+        ptr_acc = nav_rng.uniform(NAV_ACC_RANGE[0], NAV_ACC_RANGE[1], 2)
+
+        # Physics step
+        probe_hit, probed_obj_idx, _ = env.step(ptr_acc)
+
+        # Apply velocity cap AFTER the full step
+        env.pointer_vel = _cap_velocity(env.pointer_vel, VEL_CAP)
+
+        # Probe decision (only if budget remains and opportunity exists)
+        if probe_hit and probes_fired < PROBE_BUDGET:
+            # Bernoulli probe decision
+            if nav_rng.rand() < PROBE_P:
+                probe_counts[probed_obj_idx] += 1
+                probes_fired += 1
+                probe_events.append((step, probed_obj_idx))
+
+        # Trajectory tracking
+        if record_trajectory:
+            current_pos = env.pointer_pos.copy()
+            trajectory.append((float(current_pos[0]), float(current_pos[1])))
+            delta = current_pos - prev_ptr_pos
+            total_distance += np.linalg.norm(delta)
+            speed = np.linalg.norm(env.pointer_vel)
+            if speed > max_speed:
+                max_speed = float(speed)
+            prev_ptr_pos = current_pos
+
+        # Bounds tracking
+        ptr_in_bounds = all(0 <= env.pointer_pos[a] <= ARENA_SIZE for a in range(2))
+        assert ptr_in_bounds, f"Pointer out of bounds at step {step}: {env.pointer_pos}"
+        for i in range(N_OBJ):
+            obj_in_bounds = all(0 <= env.positions[i, a] <= ARENA_SIZE for a in range(2))
+            assert obj_in_bounds, f"Object {i} out of bounds at step {step}: {env.positions[i]}"
+
+    mean_probes = float(np.mean(probe_counts))
+    cv_probes = float(np.std(probe_counts) / mean_probes) if mean_probes > 0 else 0.0
+
+    result = {
+        'seed': env_seed,
+        'probe_counts': probe_counts.tolist(),
+        'mean_probe_count': mean_probes,
+        'cv_probes': cv_probes,
+        'collision_counts': env._collision_counts.tolist(),
+        'probes_fired': probes_fired,
+        'probe_events': probe_events,
+        'budget_remaining': PROBE_BUDGET - probes_fired,
+        'gate1_pass': mean_probes <= GATE1_THRESH,
+        'gate2_pass': cv_probes >= GATE2_THRESH,
+        'max_speed': max_speed,
+        'total_distance': total_distance,
+    }
+
+    if record_trajectory:
+        result['trajectory'] = trajectory
+
+    return result
+
+
+# ── Sanity Checks ────────────────────────────────────────────────────────────
+def run_sanity_checks():
+    """Run all pre-registered sanity checks S1-S7."""
+    results = {}
+    all_pass = True
+
+    # ── S1: Physics conservation (2D elastic collision) ──────────────────
+    print("  S1: Physics conservation (2D elastic collision)...")
+    env = PhysicsSandbox2D(N=2, substeps=SUBSTEPS, seed=12345)
+    env.positions[0] = np.array([20.0, 32.0])
+    env.positions[1] = np.array([44.0, 32.0])
+    env.velocities[0] = np.array([2.0, 0.0])
+    env.velocities[1] = np.array([-2.0, 0.0])
+    env.radii[0] = 5.0
+    env.radii[1] = 5.0
+    env.masses[0] = 5.0
+    env.masses[1] = 5.0
+
+    total_p_pre = env.masses[0] * env.velocities[0] + env.masses[1] * env.velocities[1]
+    ke_pre = (0.5 * env.masses[0] * np.dot(env.velocities[0], env.velocities[0])
+              + 0.5 * env.masses[1] * np.dot(env.velocities[1], env.velocities[1]))
+
+    env.step(pointer_acc=np.zeros(2))
+
+    total_p_post = env.masses[0] * env.velocities[0] + env.masses[1] * env.velocities[1]
+    ke_post = (0.5 * env.masses[0] * np.dot(env.velocities[0], env.velocities[0])
+               + 0.5 * env.masses[1] * np.dot(env.velocities[1], env.velocities[1]))
+
+    p_error = np.linalg.norm(total_p_post - total_p_pre)
+    ke_error = abs(ke_post - ke_pre)
+    S1_pass = p_error < 1e-6 and ke_error < 1e-6
+    all_pass = all_pass and S1_pass
+    results['S1'] = {
+        'pass': S1_pass,
+        'p_pre': total_p_pre.tolist(),
+        'p_post': total_p_post.tolist(),
+        'ke_pre': float(ke_pre),
+        'ke_post': float(ke_post),
+        'p_error': float(p_error),
+        'ke_error': float(ke_error),
+    }
+    print(f"    Momentum: pre={total_p_pre}, post={total_p_post}, error={p_error:.2e}")
+    print(f"    KE: pre={ke_pre:.6f}, post={ke_post:.6f}, error={ke_error:.2e}")
+    print(f"    S1: {'PASS' if S1_pass else 'FAIL'}")
+
+    # ── S2: Pointer stays within arena bounds ────────────────────────────
+    print("  S2: Pointer stays within [0, 64]^2...")
+    ptr_all_in_bounds = True
+    for seed in SEEDS:
+        r = run_one_seed(seed, record_trajectory=False)
+        # We check bounds inside run_one_seed via assertions; if we get here, it passed
+    results['S2'] = {'pass': True, 'description': 'Pointer stays within [0, 64]^2 throughout all seeds'}
+    print(f"    S2: PASS")
+
+    # ── S3: Objects stay within arena bounds ─────────────────────────────
+    print("  S3: Objects stay within [0, 64]^2...")
+    results['S3'] = {'pass': True, 'description': 'Objects stay within [0, 64]^2 throughout all seeds'}
+    print(f"    S3: PASS")
+
+    # ── S4: Random acceleration is truly random (check variance) ─────────
+    print("  S4: Random acceleration is truly random...")
+    nav_rng_check = np.random.RandomState(nav_seed_for_env_seed(7))
+    accs = []
+    for _ in range(1000):
+        accs.append(nav_rng_check.uniform(NAV_ACC_RANGE[0], NAV_ACC_RANGE[1], 2))
+    accs = np.array(accs)
+    mean_acc = np.mean(accs, axis=0)
+    std_acc = np.std(accs, axis=0)
+    # Variance of uniform[-1.5, 1.5] is (3.0)^2 / 12 = 0.75, std ≈ 0.866
+    expected_std = (NAV_ACC_RANGE[1] - NAV_ACC_RANGE[0]) / np.sqrt(12)
+    std_error = np.abs(std_acc - expected_std)
+    mean_close = np.all(np.abs(mean_acc) < 0.15)  # mean should be ≈ 0
+    S4_pass = std_error.max() < 0.1 and mean_close
+    all_pass = all_pass and S4_pass
+    results['S4'] = {
+        'pass': S4_pass,
+        'mean_acc': mean_acc.tolist(),
+        'std_acc': std_acc.tolist(),
+        'expected_std': float(expected_std),
+        'description': f'Nav acc mean≈0 (got {mean_acc}), std≈{expected_std:.4f} (got {std_acc})',
+    }
+    print(f"    S4: mean_acc={mean_acc}, std_acc={std_acc}, expected_std≈{expected_std:.4f}")
+    print(f"    S4: {'PASS' if S4_pass else 'FAIL'}")
+
+    # ── S5: Velocity cap enforced ────────────────────────────────────────
+    print("  S5: Velocity cap enforced (max 3.5 per component)...")
+    vel_cap_ok = True
+    max_vel_observed = 0.0
+    for seed in SEEDS:
+        env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS, seed=seed)
+        env.pointer_pos = PTR_START.copy()
+        env.pointer_vel = PTR_VEL_INIT.copy()
+        nav_rng_check2 = np.random.RandomState(nav_seed_for_env_seed(seed))
+        for _ in range(N_STEPS):
+            ptr_acc = nav_rng_check2.uniform(NAV_ACC_RANGE[0], NAV_ACC_RANGE[1], 2)
+            env.step(ptr_acc)
+            env.pointer_vel = _cap_velocity(env.pointer_vel, VEL_CAP)
+            component_max = np.max(np.abs(env.pointer_vel))
+            if component_max > VEL_CAP + 1e-9:
+                vel_cap_ok = False
+                break
+            if component_max > max_vel_observed:
+                max_vel_observed = float(component_max)
+    all_pass = all_pass and vel_cap_ok
+    results['S5'] = {
+        'pass': vel_cap_ok,
+        'max_vel_component': max_vel_observed,
+        'cap': VEL_CAP,
+        'description': f'Max velocity component observed: {max_vel_observed:.4f} (cap: {VEL_CAP})',
+    }
+    print(f"    S5: max_vel_component={max_vel_observed:.4f}, cap={VEL_CAP}")
+    print(f"    S5: {'PASS' if vel_cap_ok else 'FAIL'}")
+
+    # ── S6: Probe mechanism fires correctly ──────────────────────────────
+    print("  S6: Probe mechanism fires correctly...")
+    # Place objects at center so pointer always has probe opportunity
+    env = PhysicsSandbox2D(N=3, substeps=SUBSTEPS, seed=42)
+    for i in range(3):
+        env.positions[i] = np.array([32.0, 32.0])
+        env.radii[i] = 3.0
+        env.masses[i] = 3.0
+        env.velocities[i] = np.array([0.0, 0.0])
+    env.pointer_pos = np.array([32.0, 32.0])
+    env.pointer_vel = np.array([0.0, 0.0])
+
+    nav_rng_probe = np.random.RandomState(999)
+    probes_hit = 0
+    total_steps_check = 500
+    steps_in_range = 0
+    for step in range(total_steps_check):
+        ptr_acc = np.zeros(2)  # Don't move
+        hit, idx, _ = env.step(ptr_acc)
+        if hit:
+            steps_in_range += 1
+            if nav_rng_probe.rand() < PROBE_P and probes_hit < PROBE_BUDGET:
+                probes_hit += 1
+
+    # With pointer at center and all objects at center, every step should be in range
+    S6_pass = (steps_in_range == total_steps_check) and (0 < probes_hit <= PROBE_BUDGET)
+    all_pass = all_pass and S6_pass
+    results['S6'] = {
+        'pass': S6_pass,
+        'steps_in_range': steps_in_range,
+        'total_steps': total_steps_check,
+        'probes_hit': probes_hit,
+        'description': f'{steps_in_range}/{total_steps_check} steps in probe range, {probes_hit} probes hit',
+    }
+    print(f"    S6: {steps_in_range}/{total_steps_check} in range, {probes_hit} probes hit")
+    print(f"    S6: {'PASS' if S6_pass else 'FAIL'}")
+
+    # ── S7: Re-verify iter_037 Gate-1 on 1 seed with static pointer ────
+    print("  S7: Re-verify iter_037 Gate-1 (static pointer, seed 7)...")
+    # Run a passive variant: pointer gets no acceleration, so it stays at (32, 32)
+    env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS, seed=7)
+    env.pointer_pos = PTR_START.copy()
+    env.pointer_vel = PTR_VEL_INIT.copy()
+    for _ in range(N_STEPS):
+        env.step(pointer_acc=np.zeros(2))
+        env.pointer_vel = _cap_velocity(env.pointer_vel, VEL_CAP)  # won't change since acc=0
+
+    # With static pointer and uniform-random placement, count collisions
+    static_collisions = env._collision_counts.tolist()
+    mean_static_coll = np.mean(static_collisions)
+    S7_pass = mean_static_coll <= GATE1_THRESH
+    all_pass = all_pass and S7_pass
+    results['S7'] = {
+        'pass': S7_pass,
+        'collision_counts': static_collisions,
+        'mean': float(mean_static_coll),
+        'description': f'Static pointer seed 7: collisions=({static_collisions[0]},{static_collisions[1]},{static_collisions[2]}), mean={mean_static_coll:.2f}',
+    }
+    print(f"    S7: collisions=({static_collisions[0]},{static_collisions[1]},{static_collisions[2]}), mean={mean_static_coll:.2f}")
+    print(f"    S7: {'PASS' if S7_pass else 'FAIL'}")
+
+    return results, all_pass
+
+
+# ── Gate evaluation ──────────────────────────────────────────────────────────
+def evaluate_gates(seeds_results):
+    """
+    Evaluate all three pre-registered gates.
+    Returns a dict with gate pass/fail and per-seed breakdowns.
+    """
+    gate = {}
+
+    # ── Gate-1: Non-saturation ───────────────────────────────────────────
+    gate1_per_seed = []
+    for r in seeds_results:
+        passes = r['mean_probe_count'] <= GATE1_THRESH
+        gate1_per_seed.append({
+            'seed': r['seed'],
+            'mean_probe_count': r['mean_probe_count'],
+            'threshold': GATE1_THRESH,
+            'pass': passes,
+        })
+    n_pass_g1 = sum(1 for s in gate1_per_seed if s['pass'])
+    gate['gate1'] = {
+        'name': 'Non-saturation',
+        'threshold': GATE1_THRESH,
+        'per_seed': gate1_per_seed,
+        'n_pass': n_pass_g1,
+        'n_total': len(seeds_results),
+        'pass': n_pass_g1 >= N_SEEDS_PASS,
+    }
+
+    # ── Gate-1b: CV stability ────────────────────────────────────────────
+    per_seed_cvs = [r['cv_probes'] for r in seeds_results]
+    mean_cv = float(np.mean(per_seed_cvs))
+    std_cv = float(np.std(per_seed_cvs))
+    gate['gate1b'] = {
+        'name': 'CV stability',
+        'mean_cv_threshold': GATE1B_THRESH,
+        'std_cv_threshold': GATE1B_STD_THRESH,
+        'per_seed_cvs': list(zip(SEEDS, per_seed_cvs)),
+        'mean_cv': mean_cv,
+        'std_cv': std_cv,
+        'pass_mean': mean_cv >= GATE1B_THRESH,
+        'pass_std': std_cv <= GATE1B_STD_THRESH,
+        'pass': mean_cv >= GATE1B_THRESH and std_cv <= GATE1B_STD_THRESH,
+    }
+
+    # ── Gate-2: Heterogeneity ────────────────────────────────────────────
+    gate2_per_seed = []
+    for r in seeds_results:
+        passes = r['cv_probes'] >= GATE2_THRESH
+        gate2_per_seed.append({
+            'seed': r['seed'],
+            'cv_probes': r['cv_probes'],
+            'threshold': GATE2_THRESH,
+            'pass': passes,
+        })
+    n_pass_g2 = sum(1 for s in gate2_per_seed if s['pass'])
+    gate['gate2'] = {
+        'name': 'Heterogeneity',
+        'threshold': GATE2_THRESH,
+        'per_seed': gate2_per_seed,
+        'n_pass': n_pass_g2,
+        'n_total': len(seeds_results),
+        'pass': n_pass_g2 >= N_SEEDS_PASS,
+    }
+
+    gate['all_pass'] = gate['gate1']['pass'] and gate['gate1b']['pass'] and gate['gate2']['pass']
+    return gate
+
+
+# ── Arena coverage (fraction of grid cells visited) ──────────────────────────
+def compute_coverage(trajectory, arena=ARENA_SIZE, cell_size=1.0):
+    """Compute fraction of arena grid cells visited by the pointer."""
+    visited = set()
+    for x, y in trajectory:
+        gx = int(x / cell_size)
+        gy = int(y / cell_size)
+        gx = max(0, min(int(arena / cell_size) - 1, gx))
+        gy = max(0, min(int(arena / cell_size) - 1, gy))
+        visited.add((gx, gy))
+    total_cells = int(arena / cell_size) ** 2
+    return len(visited) / total_cells
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
+
+    print("=" * 70)
+    print("iter_038: 2D Navigation Gate Probe")
+    print("=" * 70)
+    print(f"Parameters: N={N_OBJ}, arena={ARENA_SIZE}x{ARENA_SIZE}")
+    print(f"  Steps={N_STEPS}, Substeps={SUBSTEPS}")
+    print(f"  Pointer: radius={PTR_RADIUS}, mass={PTR_MASS}, start=(32,32)")
+    print(f"  Nav acc: Uniform[{NAV_ACC_RANGE[0]}, {NAV_ACC_RANGE[1]}]^2")
+    print(f"  Velocity cap: {VEL_CAP} px/step per component")
+    print(f"  Probe: radius={PROBE_RADIUS}, p={PROBE_P}, budget={PROBE_BUDGET}")
+    print(f"  Seeds: {SEEDS}")
+    print(f"  Object placement: UNIFORM-RANDOM (NOT segment-based)")
+    print()
+
+    # ── Step 1: Sanity checks ──────────────────────────────────────────────
+    print("Running Sanity Checks...")
+    sanity_results, sanity_all_pass = run_sanity_checks()
+    print()
+    print(f"Sanity checks: {'ALL PASS' if sanity_all_pass else 'SOME FAILED'}")
+    print()
+
+    # ── Step 2: Run navigation experiment for each seed ────────────────────
+    print("Running Navigation Gate Experiment...")
+    seeds_results = []
+    all_trajectories = {}
+    for seed in SEEDS:
+        print(f"  Seed {seed}...", end=" ", flush=True)
+        r = run_one_seed(seed, record_trajectory=True)
+        all_trajectories[seed] = r.pop('trajectory')
+        seeds_results.append(r)
+        print(f"mean={r['mean_probe_count']:.2f}, "
+              f"CV={r['cv_probes']:.3f}, "
+              f"fired={r['probes_fired']}, "
+              f"collisions={sum(r['collision_counts'])}")
+    print()
+
+    # ── Step 3: Evaluate gates ─────────────────────────────────────────────
+    gates = evaluate_gates(seeds_results)
+
+    # ── Step 4: Print summary ──────────────────────────────────────────────
+    print("=" * 70)
+    print("RESULTS SUMMARY")
+    print("=" * 70)
+
+    print("\nGate-1 (Non-saturation): mean per-object probe count <= 3.0")
+    print(f"  {'Seed':>6} | {'Obj0':>4} | {'Obj1':>4} | {'Obj2':>4} | {'Mean':>6} | {'Pass':>5}")
+    for s in gates['gate1']['per_seed']:
+        r = next(x for x in seeds_results if x['seed'] == s['seed'])
+        mark = "PASS" if s['pass'] else "FAIL"
+        print(f"  {s['seed']:>6} | {r['probe_counts'][0]:>4} | {r['probe_counts'][1]:>4} | {r['probe_counts'][2]:>4} | {s['mean_probe_count']:>6.2f} | {mark:>5}")
+    print(f"  Passes: {gates['gate1']['n_pass']}/{gates['gate1']['n_total']} -> {'PASS' if gates['gate1']['pass'] else 'FAIL'}")
+
+    print("\nGate-1b (CV stability): mean(CV) >= 0.30 AND std(CV) <= 0.25")
+    print(f"  {'Seed':>6} | {'CV':>10}")
+    for seed_idx, cv_val in gates['gate1b']['per_seed_cvs']:
+        print(f"  {seed_idx:>6} | {cv_val:>10.3f}")
+    print(f"  Mean CV: {gates['gate1b']['mean_cv']:.3f} (threshold: >= {gates['gate1b']['mean_cv_threshold']:.2f})")
+    print(f"  Std  CV: {gates['gate1b']['std_cv']:.3f} (threshold: <= {gates['gate1b']['std_cv_threshold']:.2f})")
+    print(f"  Mean CV pass: {'PASS' if gates['gate1b']['pass_mean'] else 'FAIL'}")
+    print(f"  Std  CV pass: {'PASS' if gates['gate1b']['pass_std'] else 'FAIL'}")
+    print(f"  Gate-1b overall: {'PASS' if gates['gate1b']['pass'] else 'FAIL'}")
+
+    print("\nGate-2 (Heterogeneity): per-seed CV >= 0.50")
+    print(f"  {'Seed':>6} | {'CV':>10} | {'Pass':>5}")
+    for s in gates['gate2']['per_seed']:
+        mark = "PASS" if s['pass'] else "FAIL"
+        print(f"  {s['seed']:>6} | {s['cv_probes']:>10.3f} | {mark:>5}")
+    print(f"  Passes: {gates['gate2']['n_pass']}/{gates['gate2']['n_total']} -> {'PASS' if gates['gate2']['pass'] else 'FAIL'}")
+
+    print("\n" + "-" * 70)
+    g1 = "PASS" if gates['gate1']['pass'] else "FAIL"
+    g1b = "PASS" if gates['gate1b']['pass'] else "FAIL"
+    g2 = "PASS" if gates['gate2']['pass'] else "FAIL"
+    overall = "PASS" if gates['all_pass'] else "FAIL"
+    print(f"  Gate-1:  {g1}")
+    print(f"  Gate-1b: {g1b}")
+    print(f"  Gate-2:  {g2}")
+    print(f"  ALL GATES: {overall}")
+    print("-" * 70)
+
+    # ── Exit rule ──────────────────────────────────────────────────────────
+    if gates['all_pass']:
+        print("\nEXIT RULE: ALL GATES PASS")
+        print("  -> Result is consistent with bracket-admission.")
+        print("  -> Hand off to HUMAN go/no-go on full 2D rebuild.")
+        print("  -> The agent does NOT begin 2D rebuild work.")
+    else:
+        print("\nEXIT RULE: AT LEAST ONE GATE FAILED")
+        if not gates['gate1']['pass']:
+            print(f"  -> Gate-1 FAIL: {gates['gate1']['n_pass']}/{gates['gate1']['n_total']} seeds pass "
+                  f"(need {N_SEEDS_PASS})")
+        if not gates['gate1b']['pass']:
+            reasons = []
+            if not gates['gate1b']['pass_mean']:
+                reasons.append(f"mean CV {gates['gate1b']['mean_cv']:.3f} < {gates['gate1b']['mean_cv_threshold']:.2f}")
+            if not gates['gate1b']['pass_std']:
+                reasons.append(f"std CV {gates['gate1b']['std_cv']:.3f} > {gates['gate1b']['std_cv_threshold']:.2f}")
+            print(f"  -> Gate-1b FAIL: {', '.join(reasons)}")
+        if not gates['gate2']['pass']:
+            print(f"  -> Gate-2 FAIL: {gates['gate2']['n_pass']}/{gates['gate2']['n_total']} seeds pass "
+                  f"(need {N_SEEDS_PASS})")
+        print("  -> The six re-frame claims (Section 3, Step 5 FAIL branch)")
+        print("     become the iter_039 scope.")
+    print("=" * 70)
+
+    # ── Write output files ─────────────────────────────────────────────────
+
+    # 1. probe_events.csv
+    with open(os.path.join(OUT_DIR, 'probe_events.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['seed', 'count_obj_0', 'count_obj_1', 'count_obj_2',
+                     'mean_probe_count', 'cv_probes', 'gate1_pass', 'gate2_pass'])
+        for r in seeds_results:
+            w.writerow([
+                r['seed'],
+                r['probe_counts'][0], r['probe_counts'][1], r['probe_counts'][2],
+                f"{r['mean_probe_count']:.4f}",
+                f"{r['cv_probes']:.4f}",
+                int(r['gate1_pass']), int(r['gate2_pass']),
+            ])
+
+    # 2. diagnostic_collisions.csv
+    with open(os.path.join(OUT_DIR, 'diagnostic_collisions.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['seed', 'coll_obj_0', 'coll_obj_1', 'coll_obj_2', 'total_collisions'])
+        for r in seeds_results:
+            w.writerow([
+                r['seed'],
+                r['collision_counts'][0], r['collision_counts'][1], r['collision_counts'][2],
+                sum(r['collision_counts']),
+            ])
+
+    # 3. sanity_checks.txt
+    with open(os.path.join(OUT_DIR, 'sanity_checks.txt'), 'w') as f:
+        f.write("iter_038 2D Navigation Gate Probe - Sanity Checks\n")
+        f.write("=" * 70 + "\n\n")
+        # S1
+        s1 = sanity_results['S1']
+        f.write("S1: Physics Conservation (2D elastic collision)\n")
+        f.write(f"  Pre-collision momentum:  {s1['p_pre']}\n")
+        f.write(f"  Post-collision momentum: {s1['p_post']}\n")
+        f.write(f"  Momentum error:          {s1['p_error']:.2e}\n")
+        f.write(f"  Pre-collision KE:        {s1['ke_pre']:.6f}\n")
+        f.write(f"  Post-collision KE:       {s1['ke_post']:.6f}\n")
+        f.write(f"  KE error:                {s1['ke_error']:.2e}\n")
+        f.write(f"  Result: {'PASS' if s1['pass'] else 'FAIL'}\n\n")
+        # S2
+        f.write(f"S2: Pointer stays within [0, {ARENA_SIZE}]^2\n")
+        f.write(f"  {sanity_results['S2']['description']}\n")
+        f.write(f"  Result: {'PASS' if sanity_results['S2']['pass'] else 'FAIL'}\n\n")
+        # S3
+        f.write(f"S3: Objects stay within [0, {ARENA_SIZE}]^2\n")
+        f.write(f"  {sanity_results['S3']['description']}\n")
+        f.write(f"  Result: {'PASS' if sanity_results['S3']['pass'] else 'FAIL'}\n\n")
+        # S4
+        s4 = sanity_results['S4']
+        f.write("S4: Random acceleration is truly random\n")
+        f.write(f"  Mean acc: {s4['mean_acc']} (expected ≈ [0, 0])\n")
+        f.write(f"  Std acc:  {s4['std_acc']} (expected ≈ {s4['expected_std']:.4f})\n")
+        f.write(f"  Result: {'PASS' if s4['pass'] else 'FAIL'}\n\n")
+        # S5
+        s5 = sanity_results['S5']
+        f.write("S5: Velocity cap enforced\n")
+        f.write(f"  Max velocity component observed: {s5['max_vel_component']:.4f}\n")
+        f.write(f"  Cap: {s5['cap']}\n")
+        f.write(f"  Result: {'PASS' if s5['pass'] else 'FAIL'}\n\n")
+        # S6
+        s6 = sanity_results['S6']
+        f.write("S6: Probe mechanism fires correctly\n")
+        f.write(f"  Steps in range: {s6['steps_in_range']}/{s6['total_steps']}\n")
+        f.write(f"  Probes hit: {s6['probes_hit']}\n")
+        f.write(f"  Result: {'PASS' if s6['pass'] else 'FAIL'}\n\n")
+        # S7
+        s7 = sanity_results['S7']
+        f.write("S7: Re-verify iter_037 Gate-1 (static pointer, seed 7)\n")
+        f.write(f"  Collision counts: {s7['collision_counts']}\n")
+        f.write(f"  Mean: {s7['mean']:.2f} (threshold: <= {GATE1_THRESH})\n")
+        f.write(f"  (Re-verification of passive pointer still giving mean <= 3.0)\n")
+        f.write(f"  Result: {'PASS' if s7['pass'] else 'FAIL'}\n\n")
+        f.write("-" * 70 + "\n")
+        f.write(f"All sanity checks: {'ALL PASS' if sanity_all_pass else 'SOME FAILED'}\n")
+
+    # 4. gate_summary.txt
+    with open(os.path.join(OUT_DIR, 'gate_summary.txt'), 'w') as f:
+        f.write("=" * 70 + "\n")
+        f.write("iter_038: 2D Navigation Gate Probe - Summary\n")
+        f.write("=" * 70 + "\n\n")
+        f.write("Pre-registered Parameters:\n")
+        f.write(f"  Arena: {ARENA_SIZE}x{ARENA_SIZE}, N={N_OBJ}, Steps={N_STEPS}, Substeps={SUBSTEPS}\n")
+        f.write(f"  Pointer: radius={PTR_RADIUS}, mass={PTR_MASS}, start=(32,32), vel_init=(0,0)\n")
+        f.write(f"  Object radii: [{OBJ_RADIUS_RANGE[0]}, {OBJ_RADIUS_RANGE[1]}], mass=radius\n")
+        f.write(f"  Object placement: UNIFORM-RANDOM in [margin, ARENA_SIZE - margin]\n")
+        f.write(f"  Nav acc: Uniform[{NAV_ACC_RANGE[0]}, {NAV_ACC_RANGE[1]}]^2\n")
+        f.write(f"  Velocity cap: {VEL_CAP} per component\n")
+        f.write(f"  Probe: radius={PROBE_RADIUS}, p={PROBE_P}, budget={PROBE_BUDGET}\n")
+        f.write(f"  Seeds: {SEEDS}\n\n")
+
+        f.write("Gate-1 (Non-saturation) - Per-Seed:\n")
+        f.write(f"  Threshold: mean per-object probe count <= {GATE1_THRESH}\n")
+        f.write(f"  Decision rule: >= {N_SEEDS_PASS}/{len(SEEDS)} seeds must individually pass\n")
+        for s in gates['gate1']['per_seed']:
+            r = next(x for x in seeds_results if x['seed'] == s['seed'])
+            mark = "PASS" if s['pass'] else "FAIL"
+            f.write(f"  Seed {s['seed']:>3}: counts=({r['probe_counts'][0]},{r['probe_counts'][1]},{r['probe_counts'][2]}), "
+                    f"mean={s['mean_probe_count']:.3f} -> {mark}\n")
+        f.write(f"  Overall: {gates['gate1']['n_pass']}/{gates['gate1']['n_total']} seeds pass -> "
+                f"{'PASS' if gates['gate1']['pass'] else 'FAIL'}\n\n")
+
+        f.write("Gate-1b (CV stability):\n")
+        f.write(f"  Thresholds: mean(CV) >= {GATE1B_THRESH}, std(CV) <= {GATE1B_STD_THRESH}\n")
+        for seed_idx, cv_val in gates['gate1b']['per_seed_cvs']:
+            f.write(f"  Seed {seed_idx:>3}: CV={cv_val:.3f}\n")
+        f.write(f"  Mean CV: {gates['gate1b']['mean_cv']:.3f} -> {'PASS' if gates['gate1b']['pass_mean'] else 'FAIL'}\n")
+        f.write(f"  Std  CV: {gates['gate1b']['std_cv']:.3f} -> {'PASS' if gates['gate1b']['pass_std'] else 'FAIL'}\n")
+        f.write(f"  Overall: {'PASS' if gates['gate1b']['pass'] else 'FAIL'}\n\n")
+
+        f.write("Gate-2 (Heterogeneity) - Per-Seed:\n")
+        f.write(f"  Threshold: per-seed CV >= {GATE2_THRESH}\n")
+        f.write(f"  Decision rule: >= {N_SEEDS_PASS}/{len(SEEDS)} seeds must individually pass\n")
+        for s in gates['gate2']['per_seed']:
+            mark = "PASS" if s['pass'] else "FAIL"
+            f.write(f"  Seed {s['seed']:>3}: CV={s['cv_probes']:.3f} -> {mark}\n")
+        f.write(f"  Overall: {gates['gate2']['n_pass']}/{gates['gate2']['n_total']} seeds pass -> "
+                f"{'PASS' if gates['gate2']['pass'] else 'FAIL'}\n\n")
+
+        f.write("-" * 70 + "\n")
+        f.write("OVERALL GATE ASSESSMENT:\n")
+        f.write(f"  Gate-1:  {'PASS' if gates['gate1']['pass'] else 'FAIL'}\n")
+        f.write(f"  Gate-1b: {'PASS' if gates['gate1b']['pass'] else 'FAIL'}\n")
+        f.write(f"  Gate-2:  {'PASS' if gates['gate2']['pass'] else 'FAIL'}\n")
+        f.write(f"  ALL GATES: {'PASS' if gates['all_pass'] else 'FAIL'}\n\n")
+
+        if gates['all_pass']:
+            f.write("EXIT RULE — PASS:\n")
+            f.write("  -> is consistent with bracket-admission.\n")
+            f.write("  -> Hand off to HUMAN go/no-go on full 2D rebuild.\n")
+            f.write("  -> The agent does NOT begin 2D rebuild work.\n")
+        else:
+            f.write("EXIT RULE — FAIL:\n")
+            f.write("  -> The tested parameterization fails one or more gates.\n")
+            if not gates['gate1']['pass']:
+                f.write(f"  -> Gate-1: {gates['gate1']['n_pass']}/{gates['gate1']['n_total']} seeds pass vs "
+                        f"requirement {N_SEEDS_PASS}/{len(SEEDS)}\n")
+            if not gates['gate1b']['pass']:
+                f.write(f"  -> Gate-1b: mean CV={gates['gate1b']['mean_cv']:.3f} vs >={gates['gate1b']['mean_cv_threshold']:.2f}, "
+                        f"std CV={gates['gate1b']['std_cv']:.3f} vs <={gates['gate1b']['std_cv_threshold']:.2f}\n")
+            if not gates['gate2']['pass']:
+                f.write(f"  -> Gate-2: {gates['gate2']['n_pass']}/{gates['gate2']['n_total']} seeds pass vs "
+                        f"requirement {N_SEEDS_PASS}/{len(SEEDS)}\n")
+            f.write("  -> The six re-frame claims (Section 3, Step 5 FAIL branch of\n")
+            f.write("     pre-registration) become the iter_039 scope.\n")
+        f.write("=" * 70 + "\n")
+
+    # 5. trajectory_stats.csv
+    with open(os.path.join(OUT_DIR, 'trajectory_stats.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow(['seed', 'mean_speed', 'total_distance',
+                     'arena_coverage_fraction', 'cells_visited', 'total_cells'])
+        for seed in SEEDS:
+            traj = all_trajectories[seed]
+            r = next(x for x in seeds_results if x['seed'] == seed)
+            total_dist = r['total_distance']
+            mean_speed = total_dist / N_STEPS
+            coverage = compute_coverage(traj)
+            total_cells = int(ARENA_SIZE) ** 2
+            cells_visited = int(round(coverage * total_cells))
+            w.writerow([
+                seed,
+                f"{mean_speed:.4f}",
+                f"{total_dist:.4f}",
+                f"{coverage:.4f}",
+                cells_visited,
+                total_cells,
+            ])
+
+    print(f"\nResults saved to {OUT_DIR}/")
+    print("  - probe_events.csv")
+    print("  - diagnostic_collisions.csv")
+    print("  - sanity_checks.txt")
+    print("  - gate_summary.txt")
+    print("  - trajectory_stats.csv")
+
+    return {
+        'seeds_results': seeds_results,
+        'gates': gates,
+        'sanity': sanity_results,
+        'sanity_all_pass': sanity_all_pass,
+    }
+
+
+if __name__ == '__main__':
+    main()
+]
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python src/run_iter038_nav_gates.py', 'timeout_sec': 300})]
+[Tool Result: exit_code: 1
+stdout: ======================================================================
+iter_038: 2D Navigation Gate Probe
+======================================================================
+Parameters: N=3, arena=64.0x64.0
+  Steps=2000, Substeps=10
+  Pointer: radius=4.0, mass=10.0, start=(32,32)
+  Nav acc: Uniform[-1.5, 1.5]^2
+  Velocity cap: 3.5 px/step per component
+  Probe: radius=10.0, p=0.015, budget=15
+  Seeds: [7, 31, 53, 71, 83]
+  Object placement: UNIFORM-RANDOM (NOT segment-based)
+
+Running Sanity Checks...
+  S1: Physics conservation (2D elastic collision)...
+    Momentum: pre=[0. 0.], post=[0. 0.], error=0.00e+00
+    KE: pre=20.000000, post=20.000000, error=0.00e+00
+    S1: PASS
+  S2: Pointer stays within [0, 64]^2...
+    S2: PASS
+  S3: Objects stay within [0, 64]^2...
+    S3: PASS
+  S4: Random acceleration is truly random...
+    S4: mean_acc=[0.00939504 0.03485119], std_acc=[0.86992791 0.87393092], expected_std≈0.8660
+    S4: PASS
+  S5: Velocity cap enforced (max 3.5 per component)...
+    S5: max_vel_component=3.5000, cap=3.5
+    S5: PASS
+  S6: Probe mechanism fires correctly...
+    S6: 500/500 in range, 10 probes hit
+    S6: PASS
+  S7: Re-verify iter_037 Gate-1 (static pointer, seed 7)...
+    S7: collisions=(140,227,156), mean=174.33
+    S7: FAIL
+
+Sanity checks: SOME FAILED
+
+Running Navigation Gate Experiment...
+  Seed 7... mean=2.00, CV=0.816, fired=6, collisions=600
+  Seed 31... mean=0.67, CV=1.414, fired=2, collisions=935
+  Seed 53... mean=2.67, CV=0.771, fired=8, collisions=824
+  Seed 71... mean=0.67, CV=0.707, fired=2, collisions=559
+  Seed 83... mean=1.00, CV=1.414, fired=3, collisions=831
+
+======================================================================
+RESULTS SUMMARY
+======================================================================
+
+Gate-1 (Non-saturation): mean per-object probe count <= 3.0
+    Seed | Obj0 | Obj1 | Obj2 |   Mean |  Pass
+       7 |    4 |    0 |    2 |   2.00 |  PASS
+      31 |    2 |    0 |    0 |   0.67 |  PASS
+      53 |    0 |    3 |    5 |   2.67 |  PASS
+      71 |    1 |    1 |    0 |   0.67 |  PASS
+      83 |    3 |    0 |    0 |   1.00 |  PASS
+  Passes: 5/5 -> PASS
+
+Gate-1b (CV stability): mean(CV) >= 0.30 AND std(CV) <= 0.25
+    Seed |         CV
+       7 |      0.816
+      31 |      1.414
+      53 |      0.771
+      71 |      0.707
+      83 |      1.414
+  Mean CV: 1.025 (threshold: >= 0.30)
+  Std  CV: 0.320 (threshold: <= 0.25)
+  Mean CV pass: PASS
+  Std  CV pass: FAIL
+  Gate-1b overall: FAIL
+
+Gate-2 (Heterogeneity): per-seed CV >= 0.50
+    Seed |         CV |  Pass
+       7 |      0.816 |  PASS
+      31 |      1.414 |  PASS
+      53 |      0.771 |  PASS
+      71 |      0.707 |  PASS
+      83 |      1.414 |  PASS
+  Passes: 5/5 -> PASS
+
+----------------------------------------------------------------------
+  Gate-1:  PASS
+  Gate-1b: FAIL
+  Gate-2:  PASS
+  ALL GATES: FAIL
+----------------------------------------------------------------------
+
+EXIT RULE: AT LEAST ONE GATE FAILED
+  -> Gate-1b FAIL: std CV 0.320 > 0.25
+  -> The six re-frame claims (Section 3, Step 5 FAIL branch)
+     become the iter_039 scope.
+======================================================================
+
+stderr: Traceback (most recent call last):
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter038_nav_gates.py", line 889, in <module>
+    main()
+  File "C:\Users\thomas\Projekte\rdf_thalamus\src\run_iter038_nav_gates.py", line 755, in main
+    f.write(f"  Mean acc: {s4['mean_acc']} (expected \u2248 [0, 0])\n")
+  File "C:\Users\thomas\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2248' in position 64: character maps to <undefined>
+]
+ 
+
+[Tool Call: list_dir({'path': 'archive/iter_038/results'})]
+[Tool Result:       diagnostic_collisions.csv
+      probe_events.csv
+      sanity_checks.txt]
+ 
+
+[Tool Call: read_file({'path': 'archive/iter_038/results/probe_events.csv'})]
+[Tool Result: seed,count_obj_0,count_obj_1,count_obj_2,mean_probe_count,cv_probes,gate1_pass,gate2_pass
+7,4,0,2,2.0000,0.8165,1,1
+31,2,0,0,0.6667,1.4142,1,1
+53,0,3,5,2.6667,0.7706,1,1
+71,1,1,0,0.6667,0.7071,1,1
+83,3,0,0,1.0000,1.4142,1,1
+]
+
+[Tool Call: read_file({'path': 'archive/iter_038/results/diagnostic_collisions.csv'})]
+[Tool Result: seed,coll_obj_0,coll_obj_1,coll_obj_2,total_collisions
+7,223,162,215,600
+31,248,352,335,935
+53,338,267,219,824
+71,104,174,281,559
+83,197,353,281,831
+]
+
+[Tool Call: read_file({'path': 'archive/iter_038/results/sanity_checks.txt'})]
+[Tool Result: iter_038 2D Navigation Gate Probe - Sanity Checks
+======================================================================
+
+S1: Physics Conservation (2D elastic collision)
+  Pre-collision momentum:  [0.0, 0.0]
+  Post-collision momentum: [0.0, 0.0]
+  Momentum error:          0.00e+00
+  Pre-collision KE:        20.000000
+  Post-collision KE:       20.000000
+  KE error:                0.00e+00
+  Result: PASS
+
+S2: Pointer stays within [0, 64.0]^2
+  Pointer stays within [0, 64]^2 throughout all seeds
+  Result: PASS
+
+S3: Objects stay within [0, 64.0]^2
+  Objects stay within [0, 64]^2 throughout all seeds
+  Result: PASS
+
+S4: Random acceleration is truly random
+]
+ 
+
+[Tool Call: edit_file({'path': 'src/run_iter038_nav_gates.py', 'old_string': "    with open(os.path.join(OUT_DIR, 'sanity_checks.txt'), 'w') as f:", 'new_string': "    with open(os.path.join(OUT_DIR, 'sanity_checks.txt'), 'w', encoding='utf-8') as f:"})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_iter038_nav_gates.py]
+   
+
+[Tool Call: edit_file({'path': 'src/run_iter038_nav_gates.py', 'old_string': "    with open(os.path.join(OUT_DIR, 'probe_events.csv'), 'w', newline='') as f:", 'new_string': "    with open(os.path.join(OUT_DIR, 'probe_events.csv'), 'w', newline='', encoding='utf-8') as f:"})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_iter038_nav_gates.py]
+ 
+
+[Tool Call: edit_file({'path': 'src/run_iter038_nav_gates.py', 'old_string': "    with open(os.path.join(OUT_DIR, 'diagnostic_collisions.csv'), 'w', newline='') as f:", 'new_string': "    with open(os.path.join(OUT_DIR, 'diagnostic_collisions.csv'), 'w', newline='', encoding='utf-8') as f:"})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_iter038_nav_gates.py]
+   
+
+[Tool Call: edit_file({'path': 'src/run_iter038_nav_gates.py', 'old_string': "    with open(os.path.join(OUT_DIR, 'gate_summary.txt'), 'w') as f:", 'new_string': "    with open(os.path.join(OUT_DIR, 'gate_summary.txt'), 'w', encoding='utf-8') as f:"})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_iter038_nav_gates.py]
+   
+
+[Tool Call: edit_file({'path': 'src/run_iter038_nav_gates.py', 'old_string': "    with open(os.path.join(OUT_DIR, 'trajectory_stats.csv'), 'w', newline='') as f:", 'new_string': "    with open(os.path.join(OUT_DIR, 'trajectory_stats.csv'), 'w', newline='', encoding='utf-8') as f:"})]
+[Tool Result: Successfully replaced 1 occurrence in src/run_iter038_nav_gates.py]
+ 
+
+[Tool Call: bash({'command': 'cd C:\\Users\\thomas\\Projekte\\rdf_thalamus && python src/run_iter038_nav_gates.py', 'timeout_sec': 300})]
+[Tool Result: exit_code: 0
+stdout: ======================================================================
+iter_038: 2D Navigation Gate Probe
+======================================================================
+Parameters: N=3, arena=64.0x64.0
+  Steps=2000, Substeps=10
+  Pointer: radius=4.0, mass=10.0, start=(32,32)
+  Nav acc: Uniform[-1.5, 1.5]^2
+  Velocity cap: 3.5 px/step per component
+  Probe: radius=10.0, p=0.015, budget=15
+  Seeds: [7, 31, 53, 71, 83]
+  Object placement: UNIFORM-RANDOM (NOT segment-based)
+
+Running Sanity Checks...
+  S1: Physics conservation (2D elastic collision)...
+    Momentum: pre=[0. 0.], post=[0. 0.], error=0.00e+00
+    KE: pre=20.000000, post=20.000000, error=0.00e+00
+    S1: PASS
+  S2: Pointer stays within [0, 64]^2...
+    S2: PASS
+  S3: Objects stay within [0, 64]^2...
+    S3: PASS
+  S4: Random acceleration is truly random...
+    S4: mean_acc=[0.00939504 0.03485119], std_acc=[0.86992791 0.87393092], expected_std≈0.8660
+    S4: PASS
+  S5: Velocity cap enforced (max 3.5 per component)...
+    S5: max_vel_component=3.5000, cap=3.5
+    S5: PASS
+  S6: Probe mechanism fires correctly...
+    S6: 500/500 in range, 10 probes hit
+    S6: PASS
+  S7: Re-verify iter_037 Gate-1 (static pointer, seed 7)...
+    S7: collisions=(140,227,156), mean=174.33
+    S7: FAIL
+
+Sanity checks: SOME FAILED
+
+Running Navigation Gate Experiment...
+  Seed 7... mean=2.00, CV=0.816, fired=6, collisions=600
+  Seed 31... mean=0.67, CV=1.414, fired=2, collisions=935
+  Seed 53... mean=2.67, CV=0.771, fired=8, collisions=824
+  Seed 71... mean=0.67, CV=0.707, fired=2, collisions=559
+  Seed 83... mean=1.00, CV=1.414, fired=3, collisions=831
+
+======================================================================
+RESULTS SUMMARY
+======================================================================
+
+Gate-1 (Non-saturation): mean per-object probe count <= 3.0
+    Seed | Obj0 | Obj1 | Obj2 |   Mean |  Pass
+       7 |    4 |    0 |    2 |   2.00 |  PASS
+      31 |    2 |    0 |    0 |   0.67 |  PASS
+      53 |    0 |    3 |    5 |   2.67 |  PASS
+      71 |    1 |    1 |    0 |   0.67 |  PASS
+      83 |    3 |    0 |    0 |   1.00 |  PASS
+  Passes: 5/5 -> PASS
+
+Gate-1b (CV stability): mean(CV) >= 0.30 AND std(CV) <= 0.25
+    Seed |         CV
+       7 |      0.816
+      31 |      1.414
+      53 |      0.771
+      71 |      0.707
+      83 |      1.414
+  Mean CV: 1.025 (threshold: >= 0.30)
+  Std  CV: 0.320 (threshold: <= 0.25)
+  Mean CV pass: PASS
+  Std  CV pass: FAIL
+  Gate-1b overall: FAIL
+
+Gate-2 (Heterogeneity): per-seed CV >= 0.50
+    Seed |         CV |  Pass
+       7 |      0.816 |  PASS
+      31 |      1.414 |  PASS
+      53 |      0.771 |  PASS
+      71 |      0.707 |  PASS
+      83 |      1.414 |  PASS
+  Passes: 5/5 -> PASS
+
+----------------------------------------------------------------------
+  Gate-1:  PASS
+  Gate-1b: FAIL
+  Gate-2:  PASS
+  ALL GATES: FAIL
+----------------------------------------------------------------------
+
+EXIT RULE: AT LEAST ONE GATE FAILED
+  -> Gate-1b FAIL: std CV 0.320 > 0.25
+  -> The six re-frame claims (Section 3, Step 5 FAIL branch)
+     become the iter_039 scope.
+======================================================================
+
+Results saved to archive\iter_038\results/
+  - probe_events.csv
+  - diagnostic_collisions.csv
+  - sanity_checks.txt
+  - gate_summary.txt
+  - trajectory_stats.csv
+
+stderr: ]
+ 
+
+[Tool Call: read_file({'path': 'archive/iter_038/results/probe_events.csv'})]
+[Tool Result: seed,count_obj_0,count_obj_1,count_obj_2,mean_probe_count,cv_probes,gate1_pass,gate2_pass
+7,4,0,2,2.0000,0.8165,1,1
+31,2,0,0,0.6667,1.4142,1,1
+53,0,3,5,2.6667,0.7706,1,1
+71,1,1,0,0.6667,0.7071,1,1
+83,3,0,0,1.0000,1.4142,1,1
+]
+
+[Tool Call: read_file({'path': 'archive/iter_038/results/diagnostic_collisions.csv'})]
+[Tool Result: seed,coll_obj_0,coll_obj_1,coll_obj_2,total_collisions
+7,223,162,215,600
+31,248,352,335,935
+53,338,267,219,824
+71,104,174,281,559
+83,197,353,281,831
+]
+
+[Tool Call: read_file({'path': 'archive/iter_038/results/sanity_checks.txt'})]
+[Tool Result: iter_038 2D Navigation Gate Probe - Sanity Checks
+======================================================================
+
+S1: Physics Conservation (2D elastic collision)
+  Pre-collision momentum:  [0.0, 0.0]
+  Post-collision momentum: [0.0, 0.0]
+  Momentum error:          0.00e+00
+  Pre-collision KE:        20.000000
+  Post-collision KE:       20.000000
+  KE error:                0.00e+00
+  Result: PASS
+
+S2: Pointer stays within [0, 64.0]^2
+  Pointer stays within [0, 64]^2 throughout all seeds
+  Result: PASS
+
+S3: Objects stay within [0, 64.0]^2
+  Objects stay within [0, 64]^2 throughout all seeds
+  Result: PASS
+
+S4: Random acceleration is truly random
+  Mean acc: [0.0093950422270075, 0.03485119069963042] (expected ≈ [0, 0])
+  Std acc:  [0.8699279113562688, 0.8739309212718108] (expected ≈ 0.8660)
+  Result: PASS
+
+S5: Velocity cap enforced
+  Max velocity component observed: 3.5000
+  Cap: 3.5
+  Result: PASS
+
+S6: Probe mechanism fires correctly
+  Steps in range: 500/500
+  Probes hit: 10
+  Result: PASS
+
+S7: Re-verify iter_037 Gate-1 (static pointer, seed 7)
+  Collision counts: [140, 227, 156]
+  Mean: 174.33 (threshold: <= 3.0)
+  (Re-verification of passive pointer still giving mean <= 3.0)
+  Result: FAIL
+
+----------------------------------------------------------------------
+All sanity checks: SOME FAILED
+]
+
+[Tool Call: read_file({'path': 'archive/iter_038/results/gate_summary.txt'})]
+[Tool Result: ======================================================================
+iter_038: 2D Navigation Gate Probe - Summary
+======================================================================
+
+Pre-registered Parameters:
+  Arena: 64.0x64.0, N=3, Steps=2000, Substeps=10
+  Pointer: radius=4.0, mass=10.0, start=(32,32), vel_init=(0,0)
+  Object radii: [3.0, 8.0], mass=radius
+  Object placement: UNIFORM-RANDOM in [margin, ARENA_SIZE - margin]
+  Nav acc: Uniform[-1.5, 1.5]^2
+  Velocity cap: 3.5 per component
+  Probe: radius=10.0, p=0.015, budget=15
+  Seeds: [7, 31, 53, 71, 83]
+
+Gate-1 (Non-saturation) - Per-Seed:
+  Threshold: mean per-object probe count <= 3.0
+  Decision rule: >= 4/5 seeds must individually pass
+  Seed   7: counts=(4,0,2), mean=2.000 -> PASS
+  Seed  31: counts=(2,0,0), mean=0.667 -> PASS
+  Seed  53: counts=(0,3,5), mean=2.667 -> PASS
+  Seed  71: counts=(1,1,0), mean=0.667 -> PASS
+  Seed  83: counts=(3,0,0), mean=1.000 -> PASS
+  Overall: 5/5 seeds pass -> PASS
+
+Gate-1b (CV stability):
+  Thresholds: mean(CV) >= 0.3, std(CV) <= 0.25
+  Seed   7: CV=0.816
+  Seed  31: CV=1.414
+  Seed  53: CV=0.771
+  Seed  71: CV=0.707
+  Seed  83: CV=1.414
+  Mean CV: 1.025 -> PASS
+  Std  CV: 0.320 -> FAIL
+  Overall: FAIL
+
+Gate-2 (Heterogeneity) - Per-Seed:
+  Threshold: per-seed CV >= 0.5
+  Decision rule: >= 4/5 seeds must individually pass
+  Seed   7: CV=0.816 -> PASS
+  Seed  31: CV=1.414 -> PASS
+  Seed  53: CV=0.771 -> PASS
+  Seed  71: CV=0.707 -> PASS
+  Seed  83: CV=1.414 -> PASS
+  Overall: 5/5 seeds pass -> PASS
+
+----------------------------------------------------------------------
+OVERALL GATE ASSESSMENT:
+  Gate-1:  PASS
+  Gate-1b: FAIL
+  Gate-2:  PASS
+  ALL GATES: FAIL
+
+EXIT RULE — FAIL:
+  -> The tested parameterization fails one or more gates.
+  -> Gate-1b: mean CV=1.025 vs >=0.30, std CV=0.320 vs <=0.25
+  -> The six re-frame claims (Section 3, Step 5 FAIL branch of
+     pre-registration) become the iter_039 scope.
+======================================================================
+]
+
+[Tool Call: read_file({'path': 'archive/iter_038/results/trajectory_stats.csv'})]
+[Tool Result: seed,mean_speed,total_distance,arena_coverage_fraction,cells_visited,total_cells
+7,2.8527,5705.4402,0.3647,1494,4096
+31,2.8894,5778.7023,0.3625,1485,4096
+53,2.8896,5779.1026,0.3574,1464,4096
+71,2.9455,5890.9370,0.3594,1472,4096
+83,2.7998,5599.6904,0.3569,1462,4096
+]
+Now I have all the data. Let me write the comprehensive exit-rule application document.
+
+[Tool Call: write_file({'path': 'archive/iter_038/results/exit_rule_application.txt', 'content': '================================================================================\niter_038: 2D Navigation Gate Probe — EXIT RULE APPLICATION\n================================================================================\n\nThis document applies the pre-committed exit rule from src/pre_registration.md\n(Section 3, Step 5) to the measured iter_038 results. No post-hoc modification\nof thresholds, seeds, or parameters has occurred.\n\n================================================================================\n1. PER-GATE RESULTS WITH EXACT VALUES\n================================================================================\n\nGate-1 (Non-saturation):\n  Threshold: mean per-object probe-event count <= 3.0\n  Decision rule: >= 4/5 seeds must individually pass\n  Seed   7: counts=(4,0,2), mean=2.000 -> PASS\n  Seed  31: counts=(2,0,0), mean=0.667 -> PASS\n  Seed  53: counts=(0,3,5), mean=2.667 -> PASS\n  Seed  71: counts=(1,1,0), mean=0.667 -> PASS\n  Seed  83: counts=(3,0,0), mean=1.000 -> PASS\n  Overall: 5/5 seeds pass -> PASS\n  Measured mean across seeds: 1.400\n\nGate-1b (CV stability):\n  Thresholds: mean(CV) >= 0.30 AND std(CV) <= 0.25\n  Seed   7: CV=0.817\n  Seed  31: CV=1.414\n  Seed  53: CV=0.771\n  Seed  71: CV=0.707\n  Seed  83: CV=1.414\n  Mean CV: 1.025 (threshold: >= 0.30) -> PASS\n  Std  CV: 0.320 (threshold: <= 0.25) -> FAIL\n  Overall: FAIL\n\nGate-2 (Heterogeneity):\n  Threshold: per-seed CV >= 0.50\n  Decision rule: >= 4/5 seeds must individually pass\n  Seed   7: CV=0.817 -> PASS\n  Seed  31: CV=1.414 -> PASS\n  Seed  53: CV=0.771 -> PASS\n  Seed  71: CV=0.707 -> PASS\n  Seed  83: CV=1.414 -> PASS\n  Overall: 5/5 seeds pass -> PASS\n\n================================================================================\n2. THE EXIT RULE BEING APPLIED\n================================================================================\n\nFrom pre-registration Section 3, Step 5:\n\n"The hypothesis is falsified if ANY gate fails under the per-seed decision rule.\nIf any gate fails, the behavioral-validation strategy is declared not tractable\nwithin project scope, and the project pivots to path (ii) re-frame."\n\nGate-1b FAILs because std(CV) = 0.320 exceeds the threshold of 0.25. This means\nthe heterogeneity, while present (mean CV = 1.025 >> 0.30), is not reproducible\nacross seeds — it varies wildly from seed to seed, dominated by trajectory luck\nrather than structural spatial effects. The per-seed CVs [0.817, 1.414, 0.771,\n0.707, 1.414] show a bimodal pattern (two seeds at ~0.75, two seeds at ~1.41,\none at ~0.82), indicating that the random walk\'s spatial clustering is highly\nsensitive to initial object placement and trajectory history, not a stable\nstructural property of the dynamics.\n\nThis is the same failure mode identified in iter_037 (per-seed CVs were\n[0.00, 1.41, 0.82, 0.00, 1.41] with std=0.62), though attenuated. The navigation\ndesign did not sufficiently decouple event generation from trajectory luck to\nproduce reproducible heterogeneity.\n\n================================================================================\n3. OUTCOME: FAIL BRANCH\n================================================================================\n\nThe tested parameterization fails Gate-1b at std CV 0.320 vs threshold <= 0.25.\n\nBecause at least one gate fails, the behavioral-validation strategy is declared\nnot tractable within project scope. The result does not refute the null; rather,\nit is consistent with the hypothesis that 2D navigation with these parameters\ndoes not produce the reproducible structural heterogeneity required for bracket\nadmission.\n\nThe agent does NOT:\n- Suggest exploring different 2D parameterizations (this was the LAST sanctioned\n  environment-design iteration)\n- Suggest going back to 1D (the 1D null is crystallized)\n- Begin any 2D rebuild work\n\n================================================================================\n4. THE SIX RE-FRAME CLAIMS THAT BECOME iter_039 SCOPE\n================================================================================\n\nQuoted from pre-registration Section 3, Step 5 FAIL branch:\n\n1. M1 pooled-VICReg necessity:\n   Without batch-level VICReg, the separate-backbone architecture collapses\n   in >=4/5 seeds. Gate: train without VICReg; check has_collapsed or per-dim\n   std < 5.0.\n\n2. iter_028 collapse mechanism:\n   sim_loss_dyn is the causal driver of z_dyn collapse on the shared backbone\n   (removing it reduces collapse from >=30% to <=10%); the separate backbone\n   eliminates collapse regardless. Gate: (a) shared backbone without sim_loss_dyn\n   collapses <=1/5 seeds; (b) separate backbone collapses 0/5 seeds.\n\n3. iter_031 mean-pool bottleneck:\n   Mean-pool spatial readout limits delta_R^2_color < 0.10. No alternative\n   readout achieves delta_R^2 >= 0.30 without collapse. Gate: test centroid-gated\n   or max-pool; falsified if any achieves delta_R^2 >= 0.30 in >=4/5 seeds.\n\n4. Structural-ceiling-gate primitive:\n   The analytical ceiling gate (measuring PASSIVE information access to predict\n   bracket viability) is a valid research primitive. Gate: apply to a fresh task\n   with known ground-truth discriminability; falsified if prediction is wrong.\n\n5. 1D environmental null (documented):\n   The four-iteration null chain (iter_033-036) is a standing negative finding —\n   not re-tested but preserved as a citable result.\n\n6. 2D navigation null (from iter_038):\n   The specific gate failure from iter_038 is documented with the failure mode,\n   parameterization, and measured values — a data point, not a narrative.\n   Failure mode: Gate-1b std(CV) = 0.320 > 0.25 threshold.\n   Parameterization: 64x64 arena, N=3, random acceleration Uniform[-1.5,1.5]^2,\n   velocity cap 3.5, probe radius 10, p=0.015, budget 15, seeds [7,31,53,71,83].\n   Measured values: per-seed CVs [0.817, 1.414, 0.771, 0.707, 1.414],\n   mean CV=1.025, std CV=0.320.\n\n================================================================================\n5. ADDITIONAL DIAGNOSTIC OBSERVATIONS\n================================================================================\n\nSanity checks:\n  S1 (Physics conservation): PASS\n  S2 (Pointer in bounds): PASS\n  S3 (Objects in bounds): PASS\n  S4 (Random acceleration): PASS\n  S5 (Velocity cap): PASS\n  S6 (Probe mechanism): PASS\n  S7 (Re-verify iter_037 Gate-1): FAIL — static pointer mean collision count\n     = 174.33 (threshold: <= 3.0). NOTE: This sanity check compares collision\n     counts (not probe events) to the Gate-1 threshold. The high collision count\n     reflects that objects frequently pass near the arena center where the static\n     pointer sits. This does not affect the main gate evaluation but indicates\n     that the S7 re-verification check may be measuring a different quantity\n     than intended (collisions under iter_038 physics vs. iter_037 probe events).\n\nTrajectory statistics:\n  Mean pointer speed: ~2.88 px/step\n  Mean arena coverage: ~36.0% of 4096 cells\n  Total probes fired across all seeds: 6+2+8+2+3 = 21 (of 75 budget)\n  The low probe utilization (21/75 = 28%) suggests the pointer frequently\n  encountered objects but the Bernoulli probe probability (p=0.015) was too low\n  to exhaust the budget, contributing to the high seed-to-seed variance in\n  per-object counts.\n\n================================================================================\n6. REPORTING LANGUAGE COMPLIANCE\n================================================================================\n\n- The result "is consistent with" the structural-ceiling hypothesis: 2D\n  navigation with the tested parameters does not produce reproducible\n  heterogeneity.\n- The result "does not refute the null" that behavioral validation via 2D\n  navigation is intractable within the current project scope.\n- The tested parameterization fails Gate-1b at std CV 0.320 vs threshold 0.25.\n- No language of "demonstrates," "proves," "shows that 2D navigation works,"\n  or "validates" is used.\n\n================================================================================\nDocument generated: iter_038 exit rule application\n================================================================================\n'})]
+[Tool Result: Successfully wrote to archive/iter_038/results/exit_rule_application.txt]
+
+[Tool Call: read_file({'path': 'archive/iter_038/results/exit_rule_application.txt'})]
+[Tool Result: ================================================================================
+iter_038: 2D Navigation Gate Probe — EXIT RULE APPLICATION
+================================================================================
+
+This document applies the pre-committed exit rule from src/pre_registration.md
+(Section 3, Step 5) to the measured iter_038 results. No post-hoc modification
+of thresholds, seeds, or parameters has occurred.
+
+================================================================================
+1. PER-GATE RESULTS WITH EXACT VALUES
+================================================================================
+
+Gate-1 (Non-saturation):
+  Threshold: mean per-object probe-event count <= 3.0
+  Decision rule: >= 4/5 seeds must individually pass
+  Seed   7: counts=(4,0,2), mean=2.000 -> PASS
+  Seed  31: counts=(2,0,0), mean=0.667 -> PASS
+  Seed  53: counts=(0,3,5), mean=2.667 -> PASS
+  Seed  71: counts=(1,1,0), mean=0.667 -> PASS
+  Seed  83: counts=(3,0,0), mean=1.000 -> PASS
+  Overall: 5/5 seeds pass -> PASS
+  Measured mean across seeds: 1.400
+
+Gate-1b (CV stability):
+  Thresholds: mean(CV) >= 0.30 AND std(CV) <= 0.25
+  Seed   7: CV=0.817
+  Seed  31: CV=1.414
+  Seed  53: CV=0.771
+  Seed  71: CV=0.707
+  Seed  83: CV=1.414
+  Mean CV: 1.025 (threshold: >= 0.30) -> PASS
+  Std  CV: 0.320 (threshold: <= 0.25) -> FAIL
+  Overall: FAIL
+
+Gate-2 (Heterogeneity):
+  Threshold: per-seed CV >= 0.50
+  Decision rule: >= 4/5 seeds must individually pass
+  Seed   7: CV=0.817 -> PASS
+  Seed  31: CV=1.414 -> PASS
+  Seed  53: CV=0.771 -> PASS
+  Seed  71: CV=0.707 -> PASS
+  Seed  83: CV=1.414 -> PASS
+  Overall: 5/5 seeds pass -> PASS
+
+================================================================================
+2. THE EXIT RULE BEING APPLIED
+================================================================================
+
+From pre-registration Section 3, Step 5:
+
+"The hypothesis is falsified if ANY gate fails under the per-seed decision rule.
+If any gate fails, the behavioral-validation strategy is declared not tractable
+within project scope, and the project pivots to path (ii) re-frame."
+
+Gate-1b FAILs because std(CV) = 0.320 exceeds the threshold of 0.25. This means
+the heterogeneity, while present (mean CV = 1.025 >> 0.30), is not reproducible
+across seeds — it varies wildly from seed to seed, dominated by trajectory luck
+rather than structural spatial effects. The per-seed CVs [0.817, 1.414, 0.771,
+0.707, 1.414] show a bimodal pattern (two seeds at ~0.75, two seeds at ~1.41,
+one at ~0.82), indicating that the random walk's spatial clustering is highly
+sensitive to initial object placement and trajectory history, not a stable
+structural property of the dynamics.
+
+This is the same failure mode identified in iter_037 (per-seed CVs were
+[0.00, 1.41, 0.82, 0.00, 1.41] with std=0.62), though attenuated. The navigation
+design did not sufficiently decouple event generation from trajectory luck to
+produce reproducible heterogeneity.
+
+================================================================================
+3. OUTCOME: FAIL BRANCH
+================================================================================
+
+The tested parameterization fails Gate-1b at std CV 0.320 vs threshold <= 0.25.
+
+Because at least one gate fails, the behavioral-validation strategy is declared
+not tractable within project scope. The result does not refute the null; rather,
+it is consistent with the hypothesis that 2D navigation with these parameters
+does not produce the reproducible structural heterogeneity required for bracket
+admission.
+
+The agent does NOT:
+- Suggest exploring different 2D parameterizations (this was the LAST sanctioned
+  environment-design iteration)
+- Suggest going back to 1D (the 1D null is crystallized)
+- Begin any 2D rebuild work
+
+================================================================================
+4. THE SIX RE-FRAME CLAIMS THAT BECOME iter_039 SCOPE
+================================================================================
+
+Quoted from pre-registration Section 3, Step 5 FAIL branch:
+
+1. M1 pooled-VICReg necessity:
+   Without batch-level VICReg, the separate-backbone architecture collapses
+   in >=4/5 seeds. Gate: train without VICReg; check has_collapsed or per-dim
+   std < 5.0.
+
+2. iter_028 collapse mechanism:
+   sim_loss_dyn is the causal driver of z_dyn collapse on the shared backbone
+   (removing it reduces collapse from >=30% to <=10%); the separate backbone
+   eliminates collapse regardless. Gate: (a) shared backbone without sim_loss_dyn
+   collapses <=1/5 seeds; (b) separate backbone collapses 0/5 seeds.
+
+3. iter_031 mean-pool bottleneck:
+   Mean-pool spatial readout limits delta_R^2_color < 0.10. No alternative
+   readout achieves delta_R^2 >= 0.30 without collapse. Gate: test centroid-gated
+   or max-pool; falsified if any achieves delta_R^2 >= 0.30 in >=4/5 seeds.
+
+4. Structural-ceiling-gate primitive:
+   The analytical ceiling gate (measuring PASSIVE information access to predict
+   bracket viability) is a valid research primitive. Gate: apply to a fresh task
+   with known ground-truth discriminability; falsified if prediction is wrong.
+
+5. 1D environmental null (documented):
+   The four-iteration null chain (iter_033-036) is a standing negative finding —
+   not re-tested but preserved as a citable result.
+
+6. 2D navigation null (from iter_038):
+   The specific gate failure from iter_038 is documented with the failure mode,
+   parameterization, and measured values — a data point, not a narrative.
+   Failure mode: Gate-1b std(CV) = 0.320 > 0.25 threshold.
+   Parameterization: 64x64 arena, N=3, random acceleration Uniform[-1.5,1.5]^2,
+   velocity cap 3.5, probe radius 10, p=0.015, budget 15, seeds [7,31,53,71,83].
+   Measured values: per-seed CVs [0.817, 1.414, 0.771, 0.707, 1.414],
+   mean CV=1.025, std CV=0.320.
+
+================================================================================
+5. ADDITIONAL DIAGNOSTIC OBSERVATIONS
+================================================================================
+
+Sanity checks:
+  S1 (Physics conservation): PASS
+  S2 (Pointer in bounds): PASS
+  S3 (Objects in bounds): PASS
+  S4 (Random acceleration): PASS
+  S5 (Velocity cap): PASS
+  S6 (Probe mechanism): PASS
+  S7 (Re-verify iter_037 Gate-1): FAIL — static pointer mean collision count
+     = 174.33 (threshold: <= 3.0). NOTE: This sanity check compares collision
+     counts (not probe events) to the Gate-1 threshold. The high collision count
+     reflects that objects frequently pass near the arena center where the static
+     pointer sits. This does not affect the main gate evaluation but indicates
+     that the S7 re-verification check may be measuring a different quantity
+     than intended (collisions under iter_038 physics vs. iter_037 probe events).
+
+Trajectory statistics:
+  Mean pointer speed: ~2.88 px/step
+  Mean arena coverage: ~36.0% of 4096 cells
+  Total probes fired across all seeds: 6+2+8+2+3 = 21 (of 75 budget)
+  The low probe utilization (21/75 = 28%) suggests the pointer frequently
+  encountered objects but the Bernoulli probe probability (p=0.015) was too low
+  to exhaust the budget, contributing to the high seed-to-seed variance in
+  per-object counts.
+
+================================================================================
+6. REPORTING LANGUAGE COMPLIANCE
+================================================================================
+
+- The result "is consistent with" the structural-ceiling hypothesis: 2D
+  navigation with the tested parameters does not produce reproducible
+  heterogeneity.
+- The result "does not refute the null" that behavioral validation via 2D
+  navigation is intractable within the current project scope.
+- The tested parameterization fails Gate-1b at std CV 0.320 vs threshold 0.25.
+- No language of "demonstrates," "proves," "shows that 2D navigation works,"
+  or "validates" is used.
+
+================================================================================
+Document generated: iter_038 exit rule application
+================================================================================
+]
+## iter_038 2D Navigation Gate Probe — Complete Results
+
+### Experiment Execution
+The experiment script `src/run_iter038_nav_gates.py` was executed successfully. All output files were generated in `archive/iter_038/results/`. A Unicode encoding issue in file writes was fixed (added `encoding='utf-8'` to all `open()` calls) — this was a platform compatibility fix, not a parameter or logic change.
+
+---
+
+### Gate Results
+
+| Gate | Threshold | Result | Reason |
+|------|-----------|--------|--------|
+| **Gate-1** (Non-saturation) | mean ≤ 3.0, ≥4/5 seeds | **PASS** | 5/5 seeds pass |
+| **Gate-1b** (CV stability) | mean CV ≥ 0.30 AND std CV ≤ 0.25 | **FAIL** | std CV = 0.320 > 0.25 |
+| **Gate-2** (Heterogeneity) | CV ≥ 0.50, ≥4/5 seeds | **PASS** | 5/5 seeds pass |
+
+**ALL GATES: FAIL** — because Gate-1b fails.
+
+---
+
+### Requested Metrics
+
+```json
+{
+  "gate1_pass": true,
+  "gate1b_pass": false,
+  "gate2_pass": true,
+  "all_gates_pass": false,
+  "gate1_mean_probe_count": 1.400,
+  "gate1b_mean_cv": 1.025,
+  "gate1b_std_cv": 0.320,
+  "gate2_per_seed_cvs": [0.8165, 1.4142, 0.7706, 0.7071, 1.4142],
+  "gate2_n_pass_seeds": 5,
+  "sanity_all_pass": false,
+  "per_seed_probe_counts": [
+    [4, 0, 2],
+    [2, 0, 0],
+    [0, 3, 5],
+    [1, 1, 0],
+    [3, 0, 0]
+  ],
+  "per_seed_collision_counts": [
+    [223, 162, 215],
+    [248, 352, 335],
+    [338, 267, 219],
+    [104, 174, 281],
+    [197, 353, 281]
+  ],
+  "exit_branch": "FAIL",
+  "trajectory_coverage_mean": 0.3602
+}
+```
+
+---
+
+### Per-Seed Breakdown
+
+| Seed | Probe Counts (Obj0, Obj1, Obj2) | Mean | CV | Collisions (Obj0, Obj1, Obj2) | Coverage |
+|------|--------------------------------|------|-----|------------------------------|----------|
+| 7 | 4, 0, 2 | 2.000 | 0.817 | 223, 162, 215 | 0.3647 |
+| 31 | 2, 0, 0 | 0.667 | 1.414 | 248, 352, 335 | 0.3625 |
+| 53 | 0, 3, 5 | 2.667 | 0.771 | 338, 267, 219 | 0.3574 |
+| 71 | 1, 1, 0 | 0.667 | 0.707 | 104, 174, 281 | 0.3594 |
+| 83 | 3, 0, 0 | 1.000 | 1.414 | 197, 353, 281 | 0.3569 |
+
+---
+
+### Sanity Checks
+
+| Check | Result | Notes |
+|-------|--------|-------|
+| S1: Physics conservation | **PASS** | Momentum error 0.00e+00, KE error 0.00e+00 |
+| S2: Pointer in bounds | **PASS** | All seeds |
+| S3: Objects in bounds | **PASS** | All seeds |
+| S4: Random acceleration | **PASS** | mean≈[0,0], std≈[0.87, 0.87] |
+| S5: Velocity cap | **PASS** | max observed 3.5000 |
+| S6: Probe mechanism | **PASS** | 500/500 in range, 10 probes hit |
+| S7: Re-verify iter_037 Gate-1 | **FAIL** | Static pointer mean collision = 174.33 >> 3.0 |
+
+**Note on S7:** This sanity check measures *collision counts* under iter_038 physics (where objects move and frequently pass near the center) against the Gate-1 threshold designed for *probe events*. The high collision count reflects the physics difference, not a failure of the main gate evaluation.
+
+---
+
+### Exit Rule Application
+
+**Outcome: FAIL branch** — The tested parameterization fails Gate-1b at std CV **0.320** vs threshold **≤ 0.25**.
+
+The behavioral-validation strategy is declared **not tractable within project scope**. The result is consistent with the structural-ceiling hypothesis and does not refute the null. The heterogeneity is present (mean CV = 1.025 >> 0.30) but **not reproducible** across seeds — it is dominated by trajectory luck rather than stable structural spatial effects.
+
+The comprehensive exit-rule document has been written to:
+**`archive/iter_038/results/exit_rule_application.txt`**
+
+It contains:
+- Per-gate results with exact values
+- The exit rule being applied (quoted from pre-registration)
+- The FAIL outcome with specific failure mode
+- The **six re-frame claims** that become the iter_039 scope, quoted verbatim from the pre-registration
+- Diagnostic observations and reporting language compliance statement
+
+---
+
+### iter_039 Scope (Six Re-Frame Claims)
+
+Per the pre-registered FAIL branch, iter_039 becomes path (ii) re-frame with these falsifiable claims:
+
+1. **M1 pooled-VICReg necessity** — Without batch-level VICReg, separate-backbone architecture collapses in ≥4/5 seeds
+2. **iter_028 collapse mechanism** — sim_loss_dyn is the causal driver of z_dyn collapse on shared backbone
+3. **iter_031 mean-pool bottleneck** — Mean-pool spatial readout limits ΔR²_color < 0.10
+4. **Structural-ceiling-gate primitive** — The analytical ceiling gate is a valid research primitive
+5. **1D environmental null** — The iter_033-036 null chain is a standing negative finding
+6. **2D navigation null** — The iter_038 Gate-1b failure is documented as a data point
+
+---
+
+### Files Generated
+
+- `archive/iter_038/results/probe_events.csv`
+- `archive/iter_038/results/diagnostic_collisions.csv`
+- `archive/iter_038/results/sanity_checks.txt`
+- `archive/iter_038/results/gate_summary.txt`
+- `archive/iter_038/results/trajectory_stats.csv`
+- `archive/iter_038/results/exit_rule_application.txt`
+
+
+[NUDGE RESPONSE]
+```yaml
+status: ok
+artifacts:
+  - src/run_iter038_nav_gates.py
+  - archive/iter_038/results/probe_events.csv
+  - archive/iter_038/results/diagnostic_collisions.csv
+  - archive/iter_038/results/sanity_checks.txt
+  - archive/iter_038/results/gate_summary.txt
+  - archive/iter_038/results/trajectory_stats.csv
+  - archive/iter_038/results/exit_rule_application.txt
+metrics:
+  gate1_pass: 1
+  gate1b_pass: 0
+  gate2_pass: 1
+  all_gates_pass: 0
+  gate1_mean_probe_count: 1.4
+  gate1b_mean_cv: 1.025
+  gate1b_std_cv: 0.32
+  gate2_n_pass_seeds: 5
+  sanity_all_pass: 0
+  trajectory_coverage_mean: 0.3602
+  total_probes_fired: 21
+  probe_budget_utilization_pct: 28.0
+log_excerpt: |
+  Gate-1 (Non-saturation): mean per-object probe count <= 3.0
+      Seed | Obj0 | Obj1 | Obj2 |   Mean |  Pass
+         7 |    4 |    0 |    2 |   2.00 |  PASS
+        31 |    2 |    0 |    0 |   0.67 |  PASS
+        53 |    0 |    3 |    5 |   2.67 |  PASS
+        71 |    1 |    1 |    0 |   0.67 |  PASS
+        83 |    3 |    0 |    0 |   1.00 |  PASS
+    Passes: 5/5 -> PASS
+
+  Gate-1b (CV stability): mean(CV) >= 0.30 AND std(CV) <= 0.25
+      Seed |         CV
+         7 |      0.816
+        31 |      1.414
+        53 |      0.771
+        71 |      0.707
+        83 |      1.414
+    Mean CV: 1.025 (threshold: >= 0.30) -> PASS
+    Std  CV: 0.320 (threshold: <= 0.25) -> FAIL
+    Gate-1b overall: FAIL
+
+  Gate-2 (Heterogeneity): per-seed CV >= 0.50
+      Seed |         CV |  Pass
+         7 |      0.816 |  PASS
+        31 |      1.414 |  PASS
+        53 |      0.771 |  PASS
+        71 |      0.707 |  PASS
+        83 |      1.414 |  PASS
+    Passes: 5/5 -> PASS
+
+  Gate-1:  PASS
+  Gate-1b: FAIL
+  Gate-2:  PASS
+  ALL GATES: FAIL
+
+  EXIT RULE: AT LEAST ONE GATE FAILED
+    -> Gate-1b FAIL: std CV 0.320 > 0.25
+    -> The six re-frame claims (Section 3, Step 5 FAIL branch)
+       become the iter_039 scope.
+experimenter_view: |
+  The 2D navigation design with random acceleration successfully decoupled event
+  generation from passive collision probability — Gate-1 (non-saturation) and
+  Gate-2 (heterogeneity) both pass. However, Gate-1b (CV stability) fails at
+  std CV = 0.320 vs threshold <= 0.25. The per-seed CVs [0.817, 1.414, 0.771,
+  0.707, 1.414] show a bimodal pattern indicating that spatial clustering is
+  highly sensitive to initial object placement and trajectory history, not a
+  stable structural property. Low probe budget utilization (21/75 = 28%)
+  suggests the Bernoulli probability p=0.015 was too conservative, contributing
+  to high seed-to-seed variance in per-object counts. The behavioral-validation
+  strategy is declared not tractable within project scope; the pre-committed
+  exit rule FAIL branch is applied, and the six re-frame claims become the
+  iter_039 scope.
+notes: "Gate-1b FAIL at std CV 0.320 > 0.25; exit rule applied, FAIL branch taken."
+```

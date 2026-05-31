@@ -703,7 +703,7 @@ def main():
     # ── Write output files ─────────────────────────────────────────────────
 
     # 1. probe_events.csv
-    with open(os.path.join(OUT_DIR, 'probe_events.csv'), 'w', newline='') as f:
+    with open(os.path.join(OUT_DIR, 'probe_events.csv'), 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         w.writerow(['seed', 'count_obj_0', 'count_obj_1', 'count_obj_2',
                      'mean_probe_count', 'cv_probes', 'gate1_pass', 'gate2_pass'])
@@ -717,7 +717,7 @@ def main():
             ])
 
     # 2. diagnostic_collisions.csv
-    with open(os.path.join(OUT_DIR, 'diagnostic_collisions.csv'), 'w', newline='') as f:
+    with open(os.path.join(OUT_DIR, 'diagnostic_collisions.csv'), 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         w.writerow(['seed', 'coll_obj_0', 'coll_obj_1', 'coll_obj_2', 'total_collisions'])
         for r in seeds_results:
@@ -728,7 +728,7 @@ def main():
             ])
 
     # 3. sanity_checks.txt
-    with open(os.path.join(OUT_DIR, 'sanity_checks.txt'), 'w') as f:
+    with open(os.path.join(OUT_DIR, 'sanity_checks.txt'), 'w', encoding='utf-8') as f:
         f.write("iter_038 2D Navigation Gate Probe - Sanity Checks\n")
         f.write("=" * 70 + "\n\n")
         # S1
@@ -778,7 +778,7 @@ def main():
         f.write(f"All sanity checks: {'ALL PASS' if sanity_all_pass else 'SOME FAILED'}\n")
 
     # 4. gate_summary.txt
-    with open(os.path.join(OUT_DIR, 'gate_summary.txt'), 'w') as f:
+    with open(os.path.join(OUT_DIR, 'gate_summary.txt'), 'w', encoding='utf-8') as f:
         f.write("=" * 70 + "\n")
         f.write("iter_038: 2D Navigation Gate Probe - Summary\n")
         f.write("=" * 70 + "\n\n")
@@ -849,7 +849,7 @@ def main():
         f.write("=" * 70 + "\n")
 
     # 5. trajectory_stats.csv
-    with open(os.path.join(OUT_DIR, 'trajectory_stats.csv'), 'w', newline='') as f:
+    with open(os.path.join(OUT_DIR, 'trajectory_stats.csv'), 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         w.writerow(['seed', 'mean_speed', 'total_distance',
                      'arena_coverage_fraction', 'cells_visited', 'total_cells'])
