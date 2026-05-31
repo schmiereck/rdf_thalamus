@@ -15,34 +15,93 @@ off-axis in the y-dimension (unlike 1D where all entities share the axis).
 A "valid collision" is defined identically to iter_035: proximity
 (2D distance < r_ptr + r_obj + 4.0) AND |Δv| > 0.5 per component.
 
-Gate-2 (Heterogeneity): Under a RANDOM ghostly gaze policy (2D acceleration
-∈ [-10,10]², probe probability p=0.01, gaze_radius=8 pixels, probe budget=20)
-the coefficient of variation (std/mean) of per-object probe-event counts is
-≥ 0.50, because a finite 2D random walk with bounded step size cannot cover
-a 2D arena as uniformly as a 1D random walk covers a line segment.
+Gate-1b (PASSIVE collision heterogeneity): Under the same PASSIVE conditions,
+the coefficient of variation (CV = std/mean) of per-object collision counts
+is ≥ 0.30, indicating that different objects naturally receive different
+collision rates based on their trajectories relative to the static pointer.
 
-Both gates are necessary preconditions for a 2D ORACLE-vs-RANDOM bracket to
-have headroom. Neither gate is sufficient to establish that the full 2D
-bracket would discriminate — passing only unblocks a human go/no-go decision.
+Gate-2 (RANDOM gaze heterogeneity): Under a RANDOM ghostly gaze policy (2D
+acceleration ∈ [-10,10]², probe probability p=0.01, gaze_radius=8 pixels,
+probe budget=20) the coefficient of variation (std/mean) of per-object
+probe-event counts is ≥ 0.50, because a finite 2D random walk with bounded
+step size cannot cover a 2D arena as uniformly as a 1D random walk covers
+a line segment.
+
+All three gates are necessary preconditions for a 2D ORACLE-vs-RANDOM bracket
+to have headroom. No gate is sufficient to establish that the full 2D bracket
+would discriminate — passing only unblocks a human go/no-go decision.
+
+### Gate Threshold Calibration Justification
+
+**Gate-1 (≤3.0): Why this cutoff remains appropriate in 2D.** In 1D, PASSIVE
+accumulates 12.27 valid collisions per object because all entities share the
+axis — the collision cross-section equals the full arena width, making collisions
+inevitable. In 2D (64×64, N=3, pointer radius=4), the effective collision
+probability per object trajectory is ~O(r_ptr/W)² ≈ (8/64)² ≈ 1.6% per axis
+crossing, meaning objects can bypass the pointer off-axis in the y-dimension.
+The 3.0 threshold represents a collision rate where ORACLE targeting could
+produce ~10–20× more collisions than PASSIVE, providing substantial headroom
+for behavioral discrimination. This is an operational threshold: it is sufficient
+(not necessary) for the PASSIVE ceiling to be low enough that targeted perception
+has meaningful headroom. The value is not chosen because it is the maximal
+possible value; it is chosen because at 12.27 (the 1D result), there was zero
+headroom — any threshold well below that in 2D would suffice, and 3.0 provides
+a conservative margin.
+
+**Gate-1b (CV ≥ 0.30): Why heterogeneity matters.** In 1D, CV_passive ≈ 0
+because all objects share the axis and therefore experience identical collision
+rates regardless of their individual trajectories. In 2D, objects at different
+positions/velocities have geometrically different encounter probabilities with
+the static pointer at center. A CV ≥ 0.30 indicates moderate heterogeneity in
+per-object collision rates — enough variation for ORACLE's targeted collisions
+to create meaningful differentiation beyond what PASSIVE produces passively.
+The 0.30 threshold is a moderate bar: below 0.30, objects are too similar in
+passive collision rates, and targeted action cannot exploit geometric differences
+because they are too small. Gate-1b addresses the critique that Gate-1 alone
+is near-tautological — Gate-1 measures whether the PASSIVE ceiling is low
+enough, while Gate-1b measures whether there is heterogeneity that ORACLE can
+exploit. Both are needed.
+
+**Gate-2 (CV ≥ 0.50): Why random coverage alone does not trivially pass.**
+With probe_budget=20 and p=0.01 over 2000 steps, the expected number of probes
+is ~20, distributed across 3 objects. Under pure Poisson allocation (mean ≈
+6.67/object), CV ≈ √(6.67)/6.67 ≈ 0.39 — below the 0.50 threshold. This means
+random Poisson noise alone would NOT trivially satisfy the gate. CV ≥ 0.50
+requires genuine spatial clustering in the gaze trajectory — some objects visited
+more than others due to 2D random walk coverage geometry. Whether this occurs
+is an empirical question, not a mathematical certainty of the budget.
+
+### Per-Seed Decision Rule
+For ALL gates (1, 1b, 2), the binding decision criterion is:
+**≥4 out of 5 seeds must individually meet the threshold.** The mean across
+seeds is also reported, but the per-seed rule takes precedence. This ensures
+robustness to initial conditions — a passing mean driven by a single lucky seed
+does not constitute evidence. All 5 seeds ([7, 31, 53, 71, 83]) are evaluated
+independently; at most 1 seed may fail per gate.
 
 ## 2. Falsification Criterion
-The hypothesis is falsified if EITHER gate fails:
+The hypothesis is falsified if ANY gate fails under the per-seed decision rule:
 
-Gate-1 FAIL: Mean per-object valid collision count under PASSIVE > 3.0
-(averaged across 5 seeds: [7, 31, 53, 71, 83]). This means 2D does not
-sufficiently reduce the free-information ceiling — the pointer still gets
-too many collisions without targeted perception, and path (i) is blocked
-at the cheap-gate level.
+Gate-1 FAIL: Fewer than 4 of 5 seeds achieve mean per-object valid collision
+count ≤ 3.0 under PASSIVE. This means 2D does not sufficiently reduce the
+free-information ceiling — the pointer still gets too many collisions without
+targeted perception, and path (i) is blocked at the cheap-gate level.
 
-Gate-2 FAIL: Mean per-object probe-event CV under RANDOM gaze < 0.50
-(averaged across 5 seeds). This means 2D random gaze coverage is still
-too even for ORACLE targeting to have headroom, and path (i) is blocked.
+Gate-1b FAIL: Fewer than 4 of 5 seeds achieve per-object collision CV ≥ 0.30
+under PASSIVE. This means there is insufficient heterogeneity in passive
+collision rates for targeted action to exploit — objects are too similar
+geometrically, and ORACLE cannot differentiate its collision pattern from
+PASSIVE in a meaningful way.
 
-If BOTH gates pass, this is NOT validation that 2D "works" — it is only
-measured evidence that the two 1D structural constraints (collision
-inevitability, coverage uniformity) are relaxed in 2D at the tested
-parameterization (64×64, N=3, gaze_radius=8). The full bracket result
-remains unknown.
+Gate-2 FAIL: Fewer than 4 of 5 seeds achieve per-object probe-event CV ≥ 0.50
+under RANDOM gaze. This means 2D random gaze coverage is still too even for
+ORACLE targeting to have headroom, and path (i) is blocked.
+
+If ALL three gates pass, this is NOT validation that 2D "works" — it is only
+measured evidence that the three 1D structural constraints (collision
+inevitability, collision homogeneity, coverage uniformity) are relaxed in 2D
+at the tested parameterization (64×64, N=3, gaze_radius=8). The full bracket
+result remains unknown.
 
 ## 3. Proposed Method
 Step 1 — Four-Iteration Null Finding Document:
@@ -82,8 +141,15 @@ B. Gate-1 (PASSIVE boundedness):
    - Report mean per-object count, compare to 3.0 threshold
    - Also compute per-object collision counts without the |Δv| filter
      (raw proximity collisions) for diagnostic comparison with 1D
+   - Per-seed decision: ≥4/5 seeds must individually have count ≤ 3.0
 
-C. Gate-2 (RANDOM gaze heterogeneity):
+C. Gate-1b (PASSIVE collision heterogeneity):
+   - Uses the same collision data from Gate-1
+   - Compute CV = std(per-object collision counts) / mean(per-object collision counts)
+   - Threshold: CV ≥ 0.30
+   - Per-seed decision: ≥4/5 seeds must individually have CV ≥ 0.30
+
+D. Gate-2 (RANDOM gaze heterogeneity):
    - 5 seeds × 2000 steps
    - Ghostly gaze pointer: no physical collisions during substep loop
      (same as iter_036 FoveatedGazeSandbox)
@@ -94,10 +160,10 @@ C. Gate-2 (RANDOM gaze heterogeneity):
      if found, apply 2D elastic collision (along center-connecting
      line) between gaze and object; record event
    - Count per-object probe events, compute CV = std(counts)/mean(counts)
-   - Also compute: mean per-object count, and compare coverage
-     distribution to 1D baseline
+   - Threshold: CV ≥ 0.50
+   - Per-seed decision: ≥4/5 seeds must individually have CV ≥ 0.50
 
-D. Sanity checks (adapted from iter_035/036):
+E. Sanity checks (adapted from iter_035/036):
    - S1: PhysicsSandbox2D produces physically correct 2D elastic
      collisions (verify momentum and energy conservation on a
      controlled test)
@@ -106,7 +172,7 @@ D. Sanity checks (adapted from iter_035/036):
    - S4: Gate-1 PASSIVE pointer actually has zero velocity throughout
    - S5: Gate-2 RANDOM gaze actually fires ~20 probes over 2000 steps
 
-E. Pre-registered parameters (fixed before execution):
+F. Pre-registered parameters (fixed before execution):
    - Arena: 64×64 pixels
    - N=3 objects
    - Object radius: [3.0, 8.0]
@@ -121,7 +187,9 @@ E. Pre-registered parameters (fixed before execution):
    - Steps: 2000
    - Seeds: [7, 31, 53, 71, 83]
    - Gate-1 threshold: ≤ 3.0 per-object valid collisions
+   - Gate-1b threshold: CV ≥ 0.30 per-object collision counts
    - Gate-2 threshold: CV ≥ 0.50 per-object probe counts
+   - Decision rule: ≥4/5 seeds must individually pass each gate
 
 Step 3 — Option (iii) Explicit Rejection:
 Document that decoder-relaxation (option iii) is mis-targeted:
@@ -140,7 +208,7 @@ Document that decoder-relaxation (option iii) is mis-targeted:
 Step 4 — Decision-Support Package (NOT a decision):
 Produce structured analysis for human go/no-go on path (i):
 
-A. If both gates pass — evidence FOR 2D viability:
+A. If all three gates pass — evidence FOR 2D viability:
    - What a full 2D commitment requires:
      1. 2D encoder: 1D-conv → 2D-conv (all 4 conv layers, spatial/dyn
         heads, soft-argmax over 2D spatial map) — estimated 1-2 iters
@@ -167,7 +235,7 @@ A. If both gates pass — evidence FOR 2D viability:
    - Risk: gates passing does NOT guarantee the full bracket
      discriminates; new failure modes may emerge in 2D
 
-B. If either gate fails — evidence AGAINST 2D viability:
+B. If any gate fails — evidence AGAINST 2D viability:
    - 2D does not resolve the 1D structural constraints at the tested
      parameterization
    - Remaining options: (ii) re-frame deliverable, or explore different
@@ -195,6 +263,7 @@ D. Explicit statement: Path selection among (i)/(ii) is a human-scale
 FILES CREATED:
 - src/run_iter037_2d_gates.py (new — 2D gate experiment)
 - archive/iter_037/results/ (output directory)
+- archive/iter_037/results/null_finding_1d.md (four-iteration null finding)
 
 FILES PRESERVED (no modification):
 - src/environment.py (1D environment unchanged)
