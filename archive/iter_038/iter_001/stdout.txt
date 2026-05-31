@@ -1,0 +1,1470 @@
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 038
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+In a 2D arena (64×64, N=3 objects) with a PHYSICALLY NAVIGATING pointer (random
+acceleration ∈ [-1.5, 1.5]², velocity capped at 3.5 px/step per component) that
+must navigate to objects and actively probe them (probe probability p=0.015 per
+step when within PROBE_RADIUS=10 of any object, budget=15 probes), the three
+structural constraints that blocked the behavioral bracket across iter_033-037
+are simultaneously relaxed:
+
+Gate-1 (Non-saturation): Mean per-object probe-event count under RANDOM
+navigation ≤ 3.0. Random navigation produces bounded, non-saturating
+information access because 2D geometry allows off-axis passage and the probe
+budget + probability cap total events.
+
+Gate-1b (CV stability): Per-object probe-event count CV is structurally
+meaningful and reproducible across seeds (mean per-seed CV ≥ 0.30 AND
+std(per-seed CVs) ≤ 0.25). The navigation pointer creates enough events
+(estimated ~7-10 per seed) for CV to reflect structural spatial clustering
+rather than Poisson noise, unlike iter_037 where 0-1 events per seed made
+CV undefined or noise-dominated.
+
+Gate-2 (Heterogeneity): Mean per-seed per-object probe-event CV ≥ 0.50
+(with ≥4/5 seeds individually ≥ 0.50). A 2D random walk with moderate speed
+(~3 px/step) in a 64×64 arena has mixing time ~455 steps; over 2000 steps
+(~4.4 mixing times), the walk retains partial spatial structure, creating
+naturally uneven per-object visit rates. Objects in the center sector (where
+the walk starts and to which wall-bounces frequently redirect) receive more
+visits than objects in peripheral sectors.
+
+## 2. Falsification Criterion
+The hypothesis is falsified if ANY gate fails under the per-seed decision rule:
+
+Gate-1 FAIL: Fewer than 4 of 5 seeds achieve mean per-object probe-event
+count ≤ 3.0 under RANDOM navigation. This means the moving pointer creates
+too many information events, leaving insufficient headroom for ORACLE targeting.
+
+Gate-1b FAIL: Either (a) mean per-seed CV < 0.30, meaning the heterogeneity
+is too weak to be structurally meaningful even after averaging across seeds; or
+(b) std(per-seed CVs) > 0.25, meaning the heterogeneity is not reproducible —
+it varies wildly from seed to seed, dominated by trajectory luck rather than
+structural spatial effects.
+
+Gate-2 FAIL: Fewer than 4 of 5 seeds achieve per-object probe-event CV ≥ 0.50.
+This means random navigation does not create sufficient per-object heterogeneity
+for ORACLE's targeted perception to exploit.
+
+If any gate fails, the behavioral-validation strategy is declared not tractable
+within project scope, and the project pivots to path (ii) re-frame.
+
+## 3. Proposed Method
+## Experiment: 2D Navigation Gate Probe
+
+### Step 1 — Pre-Registration and Null Finding Preservation
+Update src/pre_registration.md with iter_038 parameters and gate definitions.
+Preserve the iter_037 null finding document (archive/iter_037/results/null_finding_1d.md)
+as a standing reference — no modification.
+
+### Step 2 — Implement Navigation Gate Experiment
+Create src/run_iter038_nav_gates.py extending PhysicsSandbox2D from iter_037.
+
+**Environment parameters (pre-registered, FROZEN):**
+- Arena: 64×64 (same as iter_037)
+- N=3 objects (same as iter_037: radius ∈ [3.0, 8.0], mass=radius,
+  velocity per component ∈ [-2.0, -0.5] ∪ [0.5, 2.0])
+- Pointer: radius=4, mass=10, starts at (32, 32) with velocity (0, 0)
+- Substeps: 10, dt = 1/substeps
+- Seeds: [7, 31, 53, 71, 83] (same as iter_037)
+
+**Navigation (RANDOM policy):**
+- Each step: sample 2D acceleration from Uniform[-1.5, 1.5]²
+- Apply acceleration to pointer velocity via substep integration
+- Velocity cap: 3.5 px/step per component (applied after each step)
+- Physical elastic collisions between pointer and objects (same as iter_037)
+- Wall bounces for pointer and objects (same as iter_037)
+
+**Probe mechanism:**
+- PROBE_RADIUS = 10.0 (pointer center within 10 pixels of object center)
+- At each step, if any object is within PROBE_RADIUS, a probe opportunity exists
+- Probe decision: probability p = 0.015 per step (when opportunity exists)
+- Probe budget: 15 total probes per rollout
+- On successful probe: record event for the NEAREST object within PROBE_RADIUS
+- After budget exhausted: pointer still navigates but no more probe events
+- Physical collisions are SEPARATE from probe events (collision dynamics still
+  occur, but don't count as information events for the gates)
+
+**Measurements (per seed):**
+- Per-object probe-event counts (count_0, count_1, count_2)
+- Per-object probe-event CV = std(counts) / mean(counts)
+- Per-object valid collision counts (diagnostic, for comparison with iter_037)
+- Per-object proximity-event counts (diagnostic: within PROBE_RADIUS, no probe)
+- Total probes fired, budget remaining
+- Pointer trajectory statistics (mean speed, arena coverage)
+
+**Gate definitions:**
+Gate-1 (Non-saturation):
+- Metric: mean per-object probe-event count
+- Threshold: ≤ 3.0
+- Per-seed rule: ≥4/5 seeds must individually pass
+- Justification: same as iter_037; 3.0 provides headroom for ORACLE to
+  produce 5-10× more events via targeted navigation
+
+Gate-1b (CV stability):
+- Condition (a): mean of per-seed CVs across 5 seeds ≥ 0.30
+- Condition (b): std of per-seed CVs across 5 seeds ≤ 0.25
+- Both conditions must hold
+- Justification: (a) ensures the heterogeneity is not trivially zero;
+  (b) ensures it's reproducible (not driven by lucky/unlucky trajectories).
+  In iter_037, per-seed CVs were [0.00, 1.41, 0.82, 0.00, 1.41] (std=0.62)
+  — wildly unstable. With active navigation producing more events,
+  CV should be more stable.
+
+Gate-2 (Heterogeneity):
+- Metric: per-seed per-object probe-event CV
+- Threshold: ≥ 0.50
+- Per-seed rule: ≥4/5 seeds must individually pass
+- Justification: CV ≥ 0.50 indicates meaningful per-object heterogeneity
+  that ORACLE's targeted navigation could exploit differently than RANDOM.
+  Below 0.50, the random navigator already accesses all objects fairly
+  equally, leaving no behavioral leverage for perception.
+
+**Sanity checks:**
+- S1: Physics conservation (2D elastic collision, same as iter_037)
+- S2: Pointer stays within [0, 64]² throughout
+- S3: Objects stay within [0, 64]² throughout
+- S4: RANDOM navigation actually applies random acceleration (no targeting)
+- S5: Velocity cap enforced (max 3.5 per component per step)
+- S6: Probe mechanism fires correctly (within PROBE_RADIUS, with probability)
+- S7: PASSIVE sanity check: rerun iter_037 Gate-1 on 1 seed to confirm
+  static pointer still gives mean ≤ 3.0 (re-verification, not new measurement)
+
+### Step 3 — Geometric Argument for Joint Gate Satisfaction
+
+**Why this design escapes the Gate-1/Gate-1b opposition identified in iter_037:**
+
+In iter_037 (static pointer at center), the opposition was:
+- Gate-1 passes "too well" → collisions are very rare (0-1 per object)
+- Gate-1b fails → too few events for CV to be structurally meaningful
+- These are coupled: the same geometric fact (2D allows off-axis passage)
+that keeps collisions low also makes them too rare for CV measurement.
+
+The navigation task DECOUPLES these concerns through two mechanisms:
+
+(1) **Active event generation:** The moving pointer traverses the arena,
+encountering objects more frequently than the static pointer. The probe
+mechanism (PROBE_RADIUS=10, p=0.015) produces ~7-10 probe events per seed
+(vs 0-2 for the static pointer), providing enough data for CV to be
+structurally meaningful. This addresses Gate-1b directly.
+
+(2) **Budget-capped event rate:** The probe budget (15) and probability
+(0.015) ensure the total event rate is bounded, even though the pointer
+moves. The estimated mean per-object count (~2.3) is well below the Gate-1
+threshold of 3.0. This preserves Gate-1.
+
+The coupling is broken because event generation is now determined by
+navigation (which the agent controls) rather than passive collision
+probability (which is a fixed property of the geometry).
+
+**Why spatial clustering supports Gate-2:**
+
+A 2D random walk with speed ~3 px/step in a 64×64 arena has diffusion
+coefficient D ≈ 4.5 and mixing time τ_mix ≈ L²/(2D) ≈ 455 steps. Over
+2000 steps (~4.4 τ_mix), the walk retains partial spatial structure:
+- The walk's position is autocorrelated (it tends to continue in the same
+  direction for 50-100 steps before changing course)
+- It spends extended periods near one object before diffusing to another
+- Objects in the center sector (where the walk starts and to which wall
+  bounces frequently redirect) receive more visits than peripheral objects
+
+With segment-based object initialization (Object 1 in the center sector),
+the pointer starts near Object 1 and visits it more frequently in the
+first ~500 steps. This initial bias persists even after mixing because
+the walk returns to the center more often (wall bounces redirect toward
+center). The expected per-object visit probability distribution is
+approximately [0.25, 0.40, 0.35], producing expected CV ≈ 0.50 from
+structural asymmetry alone. Random walk clustering amplifies this above
+the Poisson baseline (~0.39 for uniform allocation of 9 probes).
+
+### Step 4 — Run Experiment and Record Results
+Execute src/run_iter038_nav_gates.py, save all results to
+archive/iter_038/results/.
+
+### Step 5 — Apply Pre-Committed Exit Rule
+
+**PASS branch (all three gates clear):**
+Write up the result. Explicitly hand off to HUMAN go/no-go on full 2D rebuild.
+The agent does NOT auto-start the rebuild. The human decides whether to commit
+~10-14 iterations to the 2D migration. Document:
+- The specific gate measurements that passed
+- The estimated cost/scope of a full 2D rebuild (from iter_037 decision support)
+- What carries over unchanged (M1, M3, iter_028 substrate, decoder-free)
+- What must be rebuilt (2D encoder, 2D soft-argmax, production PhysicsSandbox2D,
+  2D CLTSMotorController, re-validate non-collapse, re-validate bracket)
+- Caveat: gates passing does NOT guarantee the full bracket discriminates
+
+**FAIL branch (any gate fails):**
+Declare the behavioral-validation strategy not tractable within project scope.
+Iter_039 becomes path (ii) re-frame, with the following pre-registered
+falsifiable claims (each with its own gate):
+
+1. **M1 pooled-VICReg necessity:** Without batch-level VICReg, the
+   separate-backbone architecture collapses in ≥4/5 seeds. Gate: train
+   without VICReg; check has_collapsed or per-dim std < 5.0.
+
+2. **iter_028 collapse mechanism:** sim_loss_dyn is the causal driver of
+   z_dyn collapse on the shared backbone (removing it reduces collapse from
+   ≥30% to ≤10%); the separate backbone eliminates collapse regardless.
+   Gate: (a) shared backbone without sim_loss_dyn collapses ≤1/5 seeds;
+   (b) separate backbone collapses 0/5 seeds.
+
+3. **iter_031 mean-pool bottleneck:** Mean-pool spatial readout limits
+   ΔR²_color < 0.10. No alternative readout achieves ΔR² ≥ 0.30 without
+   collapse. Gate: test centroid-gated or max-pool; falsified if any
+   achieves ΔR² ≥ 0.30 in ≥4/5 seeds.
+
+4. **Structural-ceiling-gate primitive:** The analytical ceiling gate
+   (measuring PASSIVE information access to predict bracket viability)
+   is a valid research primitive. Gate: apply to a fresh task with known
+   ground-truth discriminability; falsified if prediction is wrong.
+
+5. **1D environmental null (documented):** The four-iteration null chain
+   (iter_033-036) is a standing negative finding — not re-tested but
+   preserved as a citable result.
+
+6. **2D navigation null (from iter_038):** The specific gate failure from
+   iter_038 is documented with the failure mode, parameterization, and
+   measured values — a data point, not a narrative.
+
+Each claim is falsifiable with its own gate. The re-frame is NOT a
+deliverable-by-narration; it is a set of specific, testable, quantitative
+claims about the representation, methodology, and environmental findings.
+
+### Files Created
+- src/run_iter038_nav_gates.py (new — 2D navigation gate experiment)
+- src/pre_registration.md (updated with iter_038 parameters)
+- archive/iter_038/results/ (output directory with gate results)
+
+### Files Preserved (NO modification)
+- src/environment.py (1D environment unchanged)
+- src/models_dual_stream.py (1D encoder unchanged)
+- src/models_separate_dyn.py (separate backbone unchanged)
+- src/motor.py (CLTSMotorController unchanged)
+- src/run_iter037_2d_gates.py (preserved for reference)
+- All standing mandates (M1, M3, GDASR log-only, decoder-free, iter_028 substrate)
+- M2 remains untestable, not falsified
+
+---
+*Created automatically by the RDF Orchestrator prior to iteration execution.*
+]
+
+[Tool Call: read_file({'path': 'src/run_iter037_2d_gates.py'})]
+[Tool Result: """src/run_iter037_2d_gates.py
+
+2D Cheap Gate Experiment for the Thalamus project.
+Core de-risking experiment for a potential 2D environment migration.
+All parameters, gate definitions, and decision rules are pre-registered in
+src/pre_registration.md and must not be modified.
+"""
+
+import os
+import sys
+import csv
+import numpy as np
+
+# Fix stdout encoding on Windows for redirection compatibility
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
+# ── Pre-registered parameters (FROZEN) ───────────────────────────────────────
+SEEDS = [7, 31, 53, 71, 83]
+N_OBJ = 3
+N_STEPS = 2000
+SUBSTEPS = 10
+ARENA_SIZE = 64.0
+PTR_RADIUS = 4.0
+PTR_MASS = 10.0
+PTR_START_POS = np.array([32.0, 32.0])
+OBJ_RADIUS_RANGE = [3.0, 8.0]
+OBJ_VEL_RANGES = [(-2.0, -0.5), (0.5, 2.0)]
+PROX_THRESH = 4.0
+DV_THRESH = 0.5
+GAZE_RADIUS = 8.0
+PROBE_P = 0.01
+PROBE_BUDGET = 20
+GAZE_MASS = 10.0
+GAZE_ACC_RANGE = (-10.0, 10.0)
+GATE1_THRESH = 3.0
+GATE1B_THRESH = 0.30
+GATE2_THRESH = 0.50
+N_SEEDS_PASS = 4
+
+OUT_DIR = os.path.join('archive', 'iter_037', 'results')
+
+
+def _rand_vel_component(rng):
+    if rng.rand() < 0.5:
+        return rng.uniform(-2.0, -0.5)
+    return rng.uniform(0.5, 2.0)
+
+
+# ── PhysicsSandbox2D ──────────────────────────────────────────────────────────
+class PhysicsSandbox2D:
+    def __init__(self, N=N_OBJ, substeps=SUBSTEPS, seed=None):
+        self.N = N
+        self.substeps = substeps
+        self.dt = 1.0 / substeps
+        self.rng = np.random.RandomState(seed)
+
+        self.positions = np.zeros((N, 2), dtype=np.float64)
+        self.velocities = np.zeros((N, 2), dtype=np.float64)
+        self.radii = np.zeros(N, dtype=np.float64)
+        self.masses = np.zeros(N, dtype=np.float64)
+        self.colors = np.zeros((N, 3), dtype=np.float64)
+
+        self.pointer_pos = PTR_START_POS.copy()
+        self.pointer_vel = np.zeros(2, dtype=np.float64)
+        self.pointer_radius = PTR_RADIUS
+        self.pointer_mass = PTR_MASS
+        self.pointer_color = np.ones(3, dtype=np.float64)
+
+        self.gaze_pos = PTR_START_POS.copy()
+        self.gaze_vel = np.zeros(2, dtype=np.float64)
+        self.gaze_radius = GAZE_RADIUS
+        self.gaze_mass = GAZE_MASS
+
+        self._init_objects()
+
+    def _init_objects(self):
+        self.radii = self.rng.uniform(OBJ_RADIUS_RANGE[0], OBJ_RADIUS_RANGE[1], self.N)
+        self.masses = self.radii.copy()
+        for i in range(self.N):
+            c = np.zeros(3)
+            c[i % 3] = 1.0
+            self.colors[i] = c
+        for i in range(self.N):
+            self.velocities[i, 0] = _rand_vel_component(self.rng)
+            self.velocities[i, 1] = _rand_vel_component(self.rng)
+        for i in range(self.N):
+            margin = self.radii[i] + 0.5
+            x_min = (ARENA_SIZE / self.N) * i + margin
+            x_max = (ARENA_SIZE / self.N) * (i + 1) - margin
+            self.positions[i, 0] = self.rng.uniform(x_min, x_max)
+            self.positions[i, 1] = self.rng.uniform(margin, ARENA_SIZE - margin)
+
+    def _resolve_circle_circle_2d(self, pos1, vel1, m1, r1,
+                                   pos2, vel2, m2, r2):
+        diff = pos2 - pos1
+        dist = np.linalg.norm(diff)
+        min_dist = r1 + r2
+        if dist < min_dist and dist > 1e-12:
+            n = diff / dist
+            # Only resolve velocity if the bodies are approaching each other
+            # along the normal direction. This prevents double-counting the
+            # same collision across multiple substeps.
+            v_rel_n = np.dot(vel2 - vel1, n)
+            if v_rel_n > 0:
+                overlap = min_dist - dist
+                m_inv1 = 1.0 / m1
+                m_inv2 = 1.0 / m2
+                sum_inv = m_inv1 + m_inv2
+                new_pos1 = pos1 - overlap * (m_inv1 / sum_inv) * n
+                new_pos2 = pos2 + overlap * (m_inv2 / sum_inv) * n
+                v1n = np.dot(vel1, n)
+                v2n = np.dot(vel2, n)
+                v1n_new = (v1n * (m1 - m2) + 2.0 * m2 * v2n) / (m1 + m2)
+                v2n_new = (v2n * (m2 - m1) + 2.0 * m1 * v1n) / (m1 + m2)
+                new_vel1 = vel1 + (v1n_new - v1n) * n
+                new_vel2 = vel2 + (v2n_new - v2n) * n
+                return new_pos1, new_vel1, new_pos2, new_vel2
+            else:
+                # Separating: only fix position overlap, do not exchange velocity
+                overlap = min_dist - dist
+                m_inv1 = 1.0 / m1
+                m_inv2 = 1.0 / m2
+                sum_inv = m_inv1 + m_inv2
+                new_pos1 = pos1 - overlap * (m_inv1 / sum_inv) * n
+                new_pos2 = pos2 + overlap * (m_inv2 / sum_inv) * n
+                return new_pos1, vel1.copy(), new_pos2, vel2.copy()
+        return pos1.copy(), vel1.copy(), pos2.copy(), vel2.copy()
+
+    def _wall_bounce(self, pos, vel, radius):
+        pos = pos.copy()
+        vel = vel.copy()
+        for axis in range(2):
+            if pos[axis] - radius < 0.0:
+                pos[axis] = radius
+                if vel[axis] < 0.0:
+                    vel[axis] = -vel[axis]
+            elif pos[axis] + radius > ARENA_SIZE:
+                pos[axis] = ARENA_SIZE - radius
+                if vel[axis] > 0.0:
+                    vel[axis] = -vel[axis]
+        return pos, vel
+
+    def step(self, pointer_acc=None, ghostly_gaze=False, probe_action=None,
+             record_collisions=False):
+        """
+        One physics step with substeps.
+        If record_collisions=True, returns collision_events as list of dicts
+        with keys (obj_idx, pre_ptr_vel, pre_obj_vel, post_ptr_vel, post_obj_vel).
+        Collisions are counted at STEP granularity (max one per object per step),
+        matching the 1D benchmark paradigm.
+        """
+        if pointer_acc is None:
+            pointer_acc = np.zeros(2)
+        if probe_action is None:
+            probe_action = {'do_probe': False, 'probe_acc': np.zeros(2)}
+
+        probe_acc = probe_action['probe_acc']
+        do_probe = probe_action['do_probe']
+
+        # Save pre-step state for collision recording
+        if record_collisions:
+            pre_ptr_vel = self.pointer_vel.copy()
+            pre_obj_vels = self.velocities.copy()
+            ptr_obj_contact = [False] * self.N  # track if pair had contact during step
+
+        # Substep loop
+        for _ in range(self.substeps):
+            self.pointer_vel += pointer_acc * self.dt
+            self.gaze_vel += probe_acc * self.dt
+
+            self.positions += self.velocities * self.dt
+            self.pointer_pos += self.pointer_vel * self.dt
+            self.gaze_pos += self.gaze_vel * self.dt
+
+            # Wall bounces
+            for i in range(self.N):
+                self.positions[i], self.velocities[i] = self._wall_bounce(
+                    self.positions[i], self.velocities[i], self.radii[i]
+                )
+            self.pointer_pos, self.pointer_vel = self._wall_bounce(
+                self.pointer_pos, self.pointer_vel, self.pointer_radius
+            )
+            self.gaze_pos, self.gaze_vel = self._wall_bounce(
+                self.gaze_pos, self.gaze_vel, self.gaze_radius
+            )
+
+            # Object-object collisions
+            for i in range(self.N):
+                for j in range(i + 1, self.N):
+                    diff = self.positions[j] - self.positions[i]
+                    dist = np.linalg.norm(diff)
+                    if dist < self.radii[i] + self.radii[j]:
+                        p1, v1, p2, v2 = self._resolve_circle_circle_2d(
+                            self.positions[i], self.velocities[i], self.masses[i], self.radii[i],
+                            self.positions[j], self.velocities[j], self.masses[j], self.radii[j]
+                        )
+                        self.positions[i] = p1
+                        self.velocities[i] = v1
+                        self.positions[j] = p2
+                        self.velocities[j] = v2
+
+            # Pointer-object collisions (physics + optional recording)
+            if not ghostly_gaze:
+                for i in range(self.N):
+                    diff = self.pointer_pos - self.positions[i]
+                    dist = np.linalg.norm(diff)
+                    # Record contact flag for gate-counting (uses proximity threshold)
+                    if record_collisions and dist < self.pointer_radius + self.radii[i] + PROX_THRESH:
+                        ptr_obj_contact[i] = True
+                    # Physical collision resolution
+                    if dist < self.pointer_radius + self.radii[i]:
+                        p1, v1, p2, v2 = self._resolve_circle_circle_2d(
+                            self.positions[i], self.velocities[i], self.masses[i], self.radii[i],
+                            self.pointer_pos, self.pointer_vel, self.pointer_mass, self.pointer_radius
+                        )
+                        self.positions[i] = p1
+                        self.velocities[i] = v1
+                        self.pointer_pos = p2
+                        self.pointer_vel = v2
+                        # Wall bounce only the affected pair
+                        self.positions[i], self.velocities[i] = self._wall_bounce(
+                            self.positions[i], self.velocities[i], self.radii[i]
+                        )
+                        self.pointer_pos, self.pointer_vel = self._wall_bounce(
+                            self.pointer_pos, self.pointer_vel, self.pointer_radius
+                        )
+
+        # Build collision events at STEP granularity
+        collision_events = []
+        if record_collisions:
+            post_ptr_vel = self.pointer_vel.copy()
+            post_obj_vels = self.velocities.copy()
+            for i in range(self.N):
+                if ptr_obj_contact[i]:
+                    dv_ptr = post_ptr_vel - pre_ptr_vel
+                    # Valid if |dv_ptr| > threshold in ANY component
+                    # (per pre-registration: |Δvx| > 0.5 OR |Δvy| > 0.5)
+                    ptr_valid = abs(dv_ptr[0]) > DV_THRESH or abs(dv_ptr[1]) > DV_THRESH
+                    if ptr_valid:
+                        collision_events.append({
+                            'obj_idx': i,
+                            'pre_ptr_vel': pre_ptr_vel.copy(),
+                            'pre_obj_vel': pre_obj_vels[i].copy(),
+                            'post_ptr_vel': post_ptr_vel.copy(),
+                            'post_obj_vel': post_obj_vels[i].copy(),
+                        })
+
+        # Probe collision (step-level)
+        probe_result = None
+        if do_probe and ghostly_gaze:
+            dists = np.linalg.norm(self.positions - self.gaze_pos, axis=1)
+            valid_mask = dists < self.gaze_radius
+            if np.any(valid_mask):
+                nearest_idx = int(np.argmin(dists))
+                pre_gaze_vel = self.gaze_vel.copy()
+                pre_obj_vel = self.velocities[nearest_idx].copy()
+                p1, v1, p2, v2 = self._resolve_circle_circle_2d(
+                    self.positions[nearest_idx], self.velocities[nearest_idx],
+                    self.masses[nearest_idx], self.radii[nearest_idx],
+                    self.gaze_pos, self.gaze_vel, self.gaze_mass, self.gaze_radius
+                )
+                self.positions[nearest_idx] = p1
+                self.velocities[nearest_idx] = v1
+                self.gaze_pos = p2
+                self.gaze_vel = v2
+                probe_result = {
+                    'obj_idx': nearest_idx,
+                    'pre_gaze_vel': pre_gaze_vel,
+                    'pre_obj_vel': pre_obj_vel,
+                    'post_gaze_vel': self.gaze_vel.copy(),
+                    'post_obj_vel': self.velocities[nearest_idx].copy(),
+                }
+
+        return probe_result, collision_events, ptr_obj_contact if record_collisions else None
+
+    def reset_for_gate1(self, seed):
+        self.rng = np.random.RandomState(seed)
+        self._init_objects()
+        self.pointer_pos = PTR_START_POS.copy()
+        self.pointer_vel = np.zeros(2)
+
+    def reset_for_gate2(self, seed):
+        self.rng = np.random.RandomState(seed)
+        self._init_objects()
+        self.gaze_pos = PTR_START_POS.copy()
+        self.gaze_vel = np.zeros(2)
+        self.pointer_pos = PTR_START_POS.copy()
+        self.pointer_vel = np.zeros(2)
+
+
+# ── Gate-1: PASSIVE Boundedness ──────────────────────────────────────────────
+def run_gate1(seed, check_bounds=False):
+    env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS)
+    env.reset_for_gate1(seed)
+
+    valid_counts = np.zeros(N_OBJ, dtype=np.int32)
+    raw_counts = np.zeros(N_OBJ, dtype=np.int32)
+
+    ptr_in_bounds = True
+    obj_in_bounds = True
+    ptr_initial_vel_zero = True
+
+    for step in range(N_STEPS):
+        probe_result, collision_events, raw_contact = env.step(
+            pointer_acc=np.zeros(2),
+            ghostly_gaze=False,
+            probe_action={'do_probe': False, 'probe_acc': np.zeros(2)},
+            record_collisions=True,
+        )
+
+        for i in range(N_OBJ):
+            if raw_contact[i]:
+                raw_counts[i] += 1
+
+        for evt in collision_events:
+            i = evt['obj_idx']
+            valid_counts[i] += 1
+
+        if check_bounds:
+            ptr = env.pointer_pos
+            if not (0 <= ptr[0] <= ARENA_SIZE and 0 <= ptr[1] <= ARENA_SIZE):
+                ptr_in_bounds = False
+            for i in range(N_OBJ):
+                if not (0 <= env.positions[i, 0] <= ARENA_SIZE and 0 <= env.positions[i, 1] <= ARENA_SIZE):
+                    obj_in_bounds = False
+
+    mean_valid = float(np.mean(valid_counts))
+    mean_raw = float(np.mean(raw_counts))
+    cv_valid = float(np.std(valid_counts) / mean_valid) if mean_valid > 0 else 0.0
+    cv_raw = float(np.std(raw_counts) / mean_raw) if mean_raw > 0 else 0.0
+
+    gate1_pass = mean_valid <= GATE1_THRESH
+    gate1b_pass = cv_valid >= GATE1B_THRESH
+
+    result = {
+        'seed': seed,
+        'obj_valid_counts': valid_counts.tolist(),
+        'mean_valid': mean_valid,
+        'cv_valid': cv_valid,
+        'obj_raw_counts': raw_counts.tolist(),
+        'mean_raw': mean_raw,
+        'cv_raw': cv_raw,
+        'gate1_pass': gate1_pass,
+        'gate1b_pass': gate1b_pass,
+        'ptr_in_bounds': ptr_in_bounds,
+        'obj_in_bounds': obj_in_bounds,
+        'ptr_initial_vel_zero': ptr_initial_vel_zero,
+    }
+    return result
+
+
+# ── Gate-2: RANDOM Gaze Heterogeneity ────────────────────────────────────────
+def run_gate2(seed):
+    env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS)
+    env.reset_for_gate2(seed)
+
+    probe_counts = np.zeros(N_OBJ, dtype=np.int32)
+    probes_fired = 0
+    budget_remaining = PROBE_BUDGET
+
+    rng = np.random.RandomState(seed * 10000 + 42)
+
+    for step in range(N_STEPS):
+        probe_acc = rng.uniform(GAZE_ACC_RANGE[0], GAZE_ACC_RANGE[1], 2)
+        do_probe = (rng.rand() < PROBE_P) and (budget_remaining > 0)
+
+        probe_result, _ = env.step(
+            pointer_acc=None,
+            ghostly_gaze=True,
+            probe_action={'do_probe': do_probe, 'probe_acc': probe_acc},
+            record_collisions=False,
+        )
+
+        if do_probe:
+            probes_fired += 1
+            budget_remaining -= 1
+            if probe_result is not None:
+                obj_idx = probe_result['obj_idx']
+                probe_counts[obj_idx] += 1
+
+    mean_probes = float(np.mean(probe_counts))
+    cv = float(np.std(probe_counts) / mean_probes) if mean_probes > 0 else 0.0
+    gate2_pass = cv >= GATE2_THRESH
+
+    return {
+        'seed': seed,
+        'obj_probe_counts': probe_counts.tolist(),
+        'mean_probes': mean_probes,
+        'cv': cv,
+        'total_probes_fired': probes_fired,
+        'gate2_pass': gate2_pass,
+    }
+
+
+# ── Sanity Checks ─────────────────────────────────────────────────────────────
+def run_sanity_checks():
+    results = {}
+
+    print("  S1: Physics conservation test...")
+    env = PhysicsSandbox2D(N=2, substeps=SUBSTEPS, seed=12345)
+    env.positions[0] = np.array([20.0, 32.0])
+    env.positions[1] = np.array([44.0, 32.0])
+    env.velocities[0] = np.array([2.0, 0.0])
+    env.velocities[1] = np.array([-2.0, 0.0])
+    env.radii[0] = 5.0
+    env.radii[1] = 5.0
+    env.masses[0] = 5.0
+    env.masses[1] = 5.0
+
+    total_p_pre = env.masses[0] * env.velocities[0] + env.masses[1] * env.velocities[1]
+    ke_pre = 0.5 * env.masses[0] * np.dot(env.velocities[0], env.velocities[0]) \
+             + 0.5 * env.masses[1] * np.dot(env.velocities[1], env.velocities[1])
+
+    env.step(pointer_acc=None)
+
+    total_p_post = env.masses[0] * env.velocities[0] + env.masses[1] * env.velocities[1]
+    ke_post = 0.5 * env.masses[0] * np.dot(env.velocities[0], env.velocities[0]) \
+              + 0.5 * env.masses[1] * np.dot(env.velocities[1], env.velocities[1])
+
+    p_error = np.linalg.norm(total_p_post - total_p_pre)
+    ke_error = abs(ke_post - ke_pre)
+    S1_pass = p_error < 1e-6 and ke_error < 1e-6
+
+    results['S1'] = {
+        'pass': S1_pass,
+        'p_pre': total_p_pre.tolist(),
+        'p_post': total_p_post.tolist(),
+        'ke_pre': float(ke_pre),
+        'ke_post': float(ke_post),
+        'p_error': float(p_error),
+        'ke_error': float(ke_error),
+    }
+    print(f"    Momentum: pre={total_p_pre}, post={total_p_post}, error={p_error:.2e}")
+    print(f"    KE: pre={ke_pre:.6f}, post={ke_post:.6f}, error={ke_error:.2e}")
+    print(f"    S1: {'PASS' if S1_pass else 'FAIL'}")
+
+    print("  S2/S3/S4: Bounds check + passive pointer sanity...")
+    ptr_all_in_bounds = True
+    obj_all_in_bounds = True
+    ptr_initial_vel_zero_all = True
+
+    for seed in SEEDS:
+        env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS)
+        env.reset_for_gate1(seed)
+        if not np.allclose(env.pointer_vel, 0):
+            ptr_initial_vel_zero_all = False
+        for step in range(N_STEPS):
+            env.step(pointer_acc=np.zeros(2))
+            ptr = env.pointer_pos
+            if not (0 <= ptr[0] <= ARENA_SIZE and 0 <= ptr[1] <= ARENA_SIZE):
+                ptr_all_in_bounds = False
+            for i in range(N_OBJ):
+                if not (0 <= env.positions[i, 0] <= ARENA_SIZE and 0 <= env.positions[i, 1] <= ARENA_SIZE):
+                    obj_all_in_bounds = False
+
+    results['S2'] = {
+        'pass': ptr_all_in_bounds,
+        'description': 'Pointer stays within [0, 64]^2 throughout all Gate-1 runs',
+    }
+    print(f"    S2 (pointer bounds): {'PASS' if ptr_all_in_bounds else 'FAIL'}")
+
+    results['S3'] = {
+        'pass': obj_all_in_bounds,
+        'description': 'Objects stay within [0, 64]^2 throughout all Gate-1 runs',
+    }
+    print(f"    S3 (object bounds): {'PASS' if obj_all_in_bounds else 'FAIL'}")
+
+    results['S4'] = {
+        'pass': ptr_initial_vel_zero_all,
+        'description': 'Gate-1 pointer has initial vel=0 and receives no active acceleration (velocity changes come only from collisions)',
+    }
+    print(f"    S4 (passive pointer): {'PASS' if ptr_initial_vel_zero_all else 'FAIL'}")
+
+    print("  S5: Probe count sanity...")
+    probe_counts = []
+    for seed in SEEDS:
+        r = run_gate2(seed)
+        probe_counts.append(r['total_probes_fired'])
+    mean_probes = np.mean(probe_counts)
+    S5_pass = 15 <= mean_probes <= 25
+    results['S5'] = {
+        'pass': S5_pass,
+        'counts': probe_counts,
+        'mean': float(mean_probes),
+        'description': f'Gate-2 fires approx 20 probes (expected 0.01 x 2000 = 20), got mean={mean_probes:.1f}',
+    }
+    print(f"    S5 (probe count ~20): counts={probe_counts}, mean={mean_probes:.1f}, {'PASS' if S5_pass else 'FAIL'}")
+
+    return results
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main():
+    os.makedirs(OUT_DIR, exist_ok=True)
+
+    print("=" * 70)
+    print("iter_037: 2D Cheap Gate Experiment")
+    print("=" * 70)
+    print(f"Parameters: N={N_OBJ}, arena={ARENA_SIZE}x{ARENA_SIZE}, steps={N_STEPS}, substeps={SUBSTEPS}")
+    print(f"Seeds: {SEEDS}")
+    print()
+
+    print("Running Sanity Checks...")
+    sanity = run_sanity_checks()
+    all_sanity_pass = all(v['pass'] for v in sanity.values())
+    print()
+
+    print("Running Gate-1 (PASSIVE Boundedness) and Gate-1b (PASSIVE Heterogeneity)...")
+    gate1_results = []
+    for seed in SEEDS:
+        print(f"  Seed {seed}...", end=" ", flush=True)
+        r = run_gate1(seed)
+        gate1_results.append(r)
+        print(f"mean_valid={r['mean_valid']:.2f}, cv_valid={r['cv_valid']:.3f}")
+    print()
+
+    print("Running Gate-2 (RANDOM Gaze Heterogeneity)...")
+    gate2_results = []
+    for seed in SEEDS:
+        print(f"  Seed {seed}...", end=" ", flush=True)
+        r = run_gate2(seed)
+        gate2_results.append(r)
+        print(f"mean_probes={r['mean_probes']:.2f}, cv={r['cv']:.3f}, total_probes={r['total_probes_fired']}")
+    print()
+
+    gate1_passes = [r['gate1_pass'] for r in gate1_results]
+    gate1b_passes = [r['gate1b_pass'] for r in gate1_results]
+    gate2_passes = [r['gate2_pass'] for r in gate2_results]
+
+    gate1_overall = sum(gate1_passes) >= N_SEEDS_PASS
+    gate1b_overall = sum(gate1b_passes) >= N_SEEDS_PASS
+    gate2_overall = sum(gate2_passes) >= N_SEEDS_PASS
+
+    all_gates_pass = gate1_overall and gate1b_overall and gate2_overall
+
+    print("=" * 70)
+    print("RESULTS SUMMARY")
+    print("=" * 70)
+
+    print("\nGate-1 (PASSIVE Boundedness):")
+    print(f"  Threshold: mean per-object valid collisions <= {GATE1_THRESH}")
+    print(f"  {'Seed':>6} | {'Obj0':>4} | {'Obj1':>4} | {'Obj2':>4} | {'Mean':>6} | {'Pass':>5}")
+    for r in gate1_results:
+        mark = "PASS" if r['gate1_pass'] else "FAIL"
+        vc = r['obj_valid_counts']
+        print(f"  {r['seed']:>6} | {vc[0]:>4} | {vc[1]:>4} | {vc[2]:>4} | {r['mean_valid']:>6.2f} | {mark:>5}")
+    print(f"  Passes: {sum(gate1_passes)}/{len(SEEDS)} seeds -> {'PASS' if gate1_overall else 'FAIL'}")
+
+    print("\nGate-1b (PASSIVE Collision Heterogeneity):")
+    print(f"  Threshold: CV >= {GATE1B_THRESH}")
+    print(f"  {'Seed':>6} | {'CV(valid)':>10} | {'Pass':>5}")
+    for r in gate1_results:
+        mark = "PASS" if r['gate1b_pass'] else "FAIL"
+        print(f"  {r['seed']:>6} | {r['cv_valid']:>10.3f} | {mark:>5}")
+    print(f"  Passes: {sum(gate1b_passes)}/{len(SEEDS)} seeds -> {'PASS' if gate1b_overall else 'FAIL'}")
+
+    print("\nGate-2 (RANDOM Gaze Heterogeneity):")
+    print(f"  Threshold: CV >= {GATE2_THRESH}")
+    print(f"  {'Seed':>6} | {'Obj0':>4} | {'Obj1':>4} | {'Obj2':>4} | {'Mean':>6} | {'CV':>6} | {'Fired':>5} | {'Pass':>5}")
+    for r in gate2_results:
+        mark = "PASS" if r['gate2_pass'] else "FAIL"
+        pc = r['obj_probe_counts']
+        print(f"  {r['seed']:>6} | {pc[0]:>4} | {pc[1]:>4} | {pc[2]:>4} | {r['mean_probes']:>6.2f} | {r['cv']:>6.3f} | {r['total_probes_fired']:>5} | {mark:>5}")
+    print(f"  Passes: {sum(gate2_passes)}/{len(SEEDS)} seeds -> {'PASS' if gate2_overall else 'FAIL'}")
+
+    print("\n" + "-" * 70)
+    print(f"OVERALL: Gate-1 {'PASS' if gate1_overall else 'FAIL'}")
+    print(f"         Gate-1b {'PASS' if gate1b_overall else 'FAIL'}")
+    print(f"         Gate-2 {'PASS' if gate2_overall else 'FAIL'}")
+    print(f"         ALL GATES: {'PASS' if all_gates_pass else 'FAIL'}")
+    print("-" * 70)
+
+    if all_gates_pass:
+        print("CONCLUSION: All three gates pass.")
+        print("-> 1D structural constraints (collision inevitability, collision")
+        print("  homogeneity, coverage uniformity) are relaxed in 2D at the")
+        print("  tested parameterization. This is measured evidence FOR 2D")
+        print("  viability, not validation that 2D 'works' end-to-end.")
+    else:
+        print("CONCLUSION: At least one gate FAILED.")
+        print("-> 2D does not resolve the 1D structural constraints at the")
+        print("  tested parameterization. Evidence AGAINST 2D viability.")
+    print("=" * 70)
+
+    # 1. gate1_results.csv
+    with open(os.path.join(OUT_DIR, 'gate1_results.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow([
+            'seed',
+            'obj_0_valid', 'obj_1_valid', 'obj_2_valid',
+            'mean_valid', 'cv_valid',
+            'obj_0_raw', 'obj_1_raw', 'obj_2_raw',
+            'mean_raw', 'cv_raw',
+            'gate1_pass', 'gate1b_pass'
+        ])
+        for r in gate1_results:
+            w.writerow([
+                r['seed'],
+                *r['obj_valid_counts'],
+                r['mean_valid'], r['cv_valid'],
+                *r['obj_raw_counts'],
+                r['mean_raw'], r['cv_raw'],
+                int(r['gate1_pass']), int(r['gate1b_pass'])
+            ])
+
+    # 2. gate2_results.csv
+    with open(os.path.join(OUT_DIR, 'gate2_results.csv'), 'w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow([
+            'seed',
+            'obj_0_probes', 'obj_1_probes', 'obj_2_probes',
+            'mean_probes', 'cv',
+            'total_probes_fired',
+            'gate2_pass'
+        ])
+        for r in gate2_results:
+            w.writerow([
+                r['seed'],
+                *r['obj_probe_counts'],
+                r['mean_probes'], r['cv'],
+                r['total_probes_fired'],
+                int(r['gate2_pass'])
+            ])
+
+    # 3. sanity_checks.txt
+    with open(os.path.join(OUT_DIR, 'sanity_checks.txt'), 'w') as f:
+        f.write("iter_037 2D Cheap Gate Experiment - Sanity Checks\n")
+        f.write("=" * 60 + "\n\n")
+        f.write("S1: Physics Conservation (2D elastic collision)\n")
+        f.write(f"  Pre-collision momentum:  {sanity['S1']['p_pre']}\n")
+        f.write(f"  Post-collision momentum: {sanity['S1']['p_post']}\n")
+        f.write(f"  Momentum error:          {sanity['S1']['p_error']:.2e}\n")
+        f.write(f"  Pre-collision KE:        {sanity['S1']['ke_pre']:.6f}\n")
+        f.write(f"  Post-collision KE:       {sanity['S1']['ke_post']:.6f}\n")
+        f.write(f"  KE error:                {sanity['S1']['ke_error']:.2e}\n")
+        f.write(f"  Result: {'PASS' if sanity['S1']['pass'] else 'FAIL'}\n\n")
+        f.write("S2: Pointer in bounds throughout Gate-1\n")
+        f.write(f"  {sanity['S2']['description']}\n")
+        f.write(f"  Result: {'PASS' if sanity['S2']['pass'] else 'FAIL'}\n\n")
+        f.write("S3: Objects in bounds throughout Gate-1\n")
+        f.write(f"  {sanity['S3']['description']}\n")
+        f.write(f"  Result: {'PASS' if sanity['S3']['pass'] else 'FAIL'}\n\n")
+        f.write("S4: Gate-1 PASSIVE pointer zero active acceleration\n")
+        f.write(f"  {sanity['S4']['description']}\n")
+        f.write(f"  Clarification: The pointer is PASSIVE (no active acceleration),\n")
+        f.write(f"  starting from zero velocity. It WILL acquire velocity from elastic\n")
+        f.write(f"  collisions with objects -- this is expected physics. The check\n")
+        f.write(f"  verifies only that no active acceleration is applied.\n")
+        f.write(f"  Result: {'PASS' if sanity['S4']['pass'] else 'FAIL'}\n\n")
+        f.write("S5: Gate-2 probe count approximately 20\n")
+        f.write(f"  {sanity['S5']['description']}\n")
+        f.write(f"  Per-seed probe counts: {sanity['S5']['counts']}\n")
+        f.write(f"  Result: {'PASS' if sanity['S5']['pass'] else 'FAIL'}\n\n")
+        f.write("-" * 60 + "\n")
+        f.write(f"All sanity checks: {'PASS' if all_sanity_pass else 'FAIL'}\n")
+
+    # 4. gate_summary.txt
+    with open(os.path.join(OUT_DIR, 'gate_summary.txt'), 'w') as f:
+        f.write("=" * 60 + "\n")
+        f.write("iter_037: 2D Cheap Gate Experiment - Summary\n")
+        f.write("=" * 60 + "\n\n")
+        f.write("Pre-registered Parameters:\n")
+        f.write(f"  Arena: {ARENA_SIZE}x{ARENA_SIZE}, N={N_OBJ}, Steps={N_STEPS}, Substeps={SUBSTEPS}\n")
+        f.write(f"  Pointer: radius={PTR_RADIUS}, mass={PTR_MASS}, start={PTR_START_POS}\n")
+        f.write(f"  Object radii: [{OBJ_RADIUS_RANGE[0]}, {OBJ_RADIUS_RANGE[1]}], mass=radius\n")
+        f.write(f"  Seeds: {SEEDS}\n")
+        f.write(f"  Gate-1 threshold:  mean valid collisions <= {GATE1_THRESH}\n")
+        f.write(f"  Gate-1b threshold: CV valid collisions >= {GATE1B_THRESH}\n")
+        f.write(f"  Gate-2 threshold:  CV probe events >= {GATE2_THRESH}\n")
+        f.write(f"  Decision rule: >={N_SEEDS_PASS}/{len(SEEDS)} seeds must individually pass\n\n")
+        f.write("Gate-1 (PASSIVE Boundedness) - Per-Seed:\n")
+        for r in gate1_results:
+            mark = "PASS" if r['gate1_pass'] else "FAIL"
+            vc = r['obj_valid_counts']
+            rc = r['obj_raw_counts']
+            f.write(f"  Seed {r['seed']:>3}: valid=({vc[0]},{vc[1]},{vc[2]}), mean={r['mean_valid']:.2f}, "
+                    f"raw=({rc[0]},{rc[1]},{rc[2]}), mean_raw={r['mean_raw']:.2f} -> {mark}\n")
+        f.write(f"  Overall: {sum(gate1_passes)}/{len(SEEDS)} seeds pass -> {'PASS' if gate1_overall else 'FAIL'}\n\n")
+        f.write("Gate-1b (PASSIVE Heterogeneity) - Per-Seed:\n")
+        for r in gate1_results:
+            mark = "PASS" if r['gate1b_pass'] else "FAIL"
+            f.write(f"  Seed {r['seed']:>3}: CV_valid={r['cv_valid']:.3f}, CV_raw={r['cv_raw']:.3f} -> {mark}\n")
+        f.write(f"  Overall: {sum(gate1b_passes)}/{len(SEEDS)} seeds pass -> {'PASS' if gate1b_overall else 'FAIL'}\n\n")
+        f.write("Gate-2 (RANDOM Gaze Heterogeneity) - Per-Seed:\n")
+        for r in gate2_results:
+            mark = "PASS" if r['gate2_pass'] else "FAIL"
+            pc = r['obj_probe_counts']
+            f.write(f"  Seed {r['seed']:>3}: probes=({pc[0]},{pc[1]},{pc[2]}), mean={r['mean_probes']:.2f}, "
+                    f"CV={r['cv']:.3f}, fired={r['total_probes_fired']} -> {mark}\n")
+        f.write(f"  Overall: {sum(gate2_passes)}/{len(SEEDS)} seeds pass -> {'PASS' if gate2_overall else 'FAIL'}\n\n")
+        f.write("-" * 60 + "\n")
+        f.write("OVERALL GATE ASSESSMENT:\n")
+        f.write(f"  Gate-1:  {'PASS' if gate1_overall else 'FAIL'}\n")
+        f.write(f"  Gate-1b: {'PASS' if gate1b_overall else 'FAIL'}\n")
+        f.write(f"  Gate-2:  {'PASS' if gate2_overall else 'FAIL'}\n")
+        f.write(f"  ALL GATES: {'PASS' if all_gates_pass else 'FAIL'}\n\n")
+        if all_gates_pass:
+            f.write("INTERPRETATION:\n")
+            f.write("  All three gates pass. This is measured evidence that the three\n")
+            f.write("  structural constraints that blocked the 1D testbed are relaxed\n")
+            f.write("  in 2D at the tested parameterization:\n")
+            f.write("    - Collision inevitability (Gate-1): PASSIVE ceiling is low enough\n")
+            f.write("    - Collision homogeneity (Gate-1b): per-object rates vary naturally\n")
+            f.write("    - Coverage uniformity (Gate-2): random gaze does not cover evenly\n")
+            f.write("  This does NOT validate that a full 2D bracket would discriminate;\n")
+            f.write("  it only unblocks the decision to proceed to a full commitment.\n")
+        else:
+            f.write("INTERPRETATION:\n")
+            f.write("  At least one gate failed. 2D at the tested parameterization does\n")
+            f.write("  not sufficiently relax the 1D structural constraints.\n")
+            f.write("  Options: (ii) re-frame deliverable, or explore different 2D\n")
+            f.write("  parameterizations (larger arena, fewer objects, different gaze\n")
+            f.write("  radius).\n")
+        f.write("=" * 60 + "\n")
+
+    print(f"\nResults saved to {OUT_DIR}/")
+    print("  - gate1_results.csv")
+    print("  - gate2_results.csv")
+    print("  - sanity_checks.txt")
+    print("  - gate_summary.txt")
+
+    return {
+        'gate1_results': gate1_results,
+        'gate2_results': gate2_results,
+        'sanity': sanity,
+        'overall': {
+            'gate1_pass': gate1_overall,
+            'gate1b_pass': gate1b_overall,
+            'gate2_pass': gate2_overall,
+            'all_pass': all_gates_pass,
+        }
+    }
+
+
+if __name__ == '__main__':
+    main()
+]
+Now I have both files. Let me update the pre-registration and create the new script.
+
+
+[Tool Call: edit_file({'path': 'src/pre_registration.md', 'old_string': '---\n*Created automatically by the RDF Orchestrator prior to iteration execution.*', 'new_string': '## 4. Object Placement Protocol\n\n- Object initial positions are sampled UNIFORM-RANDOM in the arena interior.\n  Both x and y coordinates are drawn independently from\n  Uniform([margin, ARENA_SIZE - margin]) where margin = radius_i + 0.5.\n  This is **NOT** segment-based placement. Objects may cluster near each\n  other or near the geometric center — this is expected and not controlled.\n- The pointer spawns at the geometric center (32, 32) **independent of\n  object positions**. It does not receive any knowledge of where objects are.\n- The "expected CV ≈ 0.50" claim in the hypothesis is reframed: it is a\n  prediction about **EMERGENT** random-walk clustering from autocorrelated\n  trajectories + wall bounces, **NOT** from chosen object placement. If\n  CV ≥ 0.50 cannot survive uniform-random object placement, the gate MUST\n  fail. The heterogeneity must come from the dynamics, not from the setup.\n- **Explicit statement:** No object placement bias is permitted. The CV must\n  emerge from the dynamics of the random walk and the resulting spatial\n  clustering, not from any constructional advantage.\n\n## 5. Statistical Discipline\n\n- The std(per-seed CVs) in Gate-1b is a sample-of-5 statistic interpreted at\n  face value, not bootstrapped. The failure mode is honest, not statistical-magic.\n  If the five seeds produce wildly different CVs, that is a real finding, not\n  a sampling artifact.\n- The seed list **[7, 31, 53, 71, 83] is FROZEN**. No post-hoc seed\n  additions to chase a gate. Adding more seeds is a form of p-hacking.\n- **Single declared parameterization** — no parameter sweep, no fallback\n  parameterization. This design either passes or fails. If one parameter\n  combination passes and another fails, that is not evidence in favor of\n  the hypothesis; it is evidence that the result depends on tuning.\n- **Mid-run tuning of any parameter** (p, PROBE_RADIUS, budget, velocity cap,\n  arena size) is **FORBIDDEN**. The parameters declared here are the only\n  parameters that will be tested.\n\n## 6. Reporting Language\n\n- Results must be phrased using the following approved formulations:\n  - "is consistent with bracket-admission"\n  - "does not refute the null"\n  - "the tested parameterization fails Gate-X at X.XX vs threshold Y.YY"\n- **NEVER** use the following language:\n  - "demonstrates"\n  - "proves"\n  - "shows that 2D navigation works"\n  - "validates"\n- **On PASS:** hand off to HUMAN go/no-go on full 2D rebuild. The agent\n  does **NOT** begin 2D rebuild work. The scope of a full rebuild (estimated\n  ~10-14 iterations) must be acknowledged as a human decision, not an\n  automated continuation.\n- **On FAIL of any gate:** the six re-frame claims in the existing exit rule\n  (Section 3, Step 5 FAIL branch) become the iter_039 scope. The failure is\n  recorded as a data point, not as a narrative failure.\n\n---\n*Created automatically by the RDF Orchestrator prior to iteration execution.*'})]
+[Tool Result: Successfully replaced 1 occurrence in src/pre_registration.md]
+Now let me create the iter_038 script:
+
+
+[Tool Call: write_file({'path': 'src/run_iter038_nav_gates.py', 'content': '"""src/run_iter038_nav_gates.py\n\n2D Navigation Gate Probe for the Thalamus project.\nTests whether a PHYSICALLY NAVIGATING pointer in a 2D arena resolves the\nstructural constraints that blocked behavioral validation across iter_033-037.\n\nNo training, no learned model, no representation work. Pure physics + random\nnavigation + probe mechanism.\n\nAll parameters, gate definitions, and decision rules are pre-registered in\nsrc/pre_registration.md and must not be modified.\n"""\n\nimport os\nimport sys\nimport csv\nimport numpy as np\n\n# Fix stdout encoding on Windows for redirection compatibility\nif hasattr(sys.stdout, \'reconfigure\'):\n    sys.stdout.reconfigure(encoding=\'utf-8\')\n\n# ── Pre-registered parameters (FROZEN) ───────────────────────────────────────\nSEEDS = [7, 31, 53, 71, 83]\nN_OBJ = 3\nN_STEPS = 2000\nSUBSTEPS = 10\nARENA_SIZE = 64.0\nPTR_RADIUS = 4.0\nPTR_MASS = 10.0\nPTR_START = np.array([32.0, 32.0], dtype=np.float64)\nPTR_VEL_INIT = np.array([0.0, 0.0], dtype=np.float64)\nOBJ_RADIUS_RANGE = [3.0, 8.0]\nOBJ_VEL_RANGES = [(-2.0, -0.5), (0.5, 2.0)]\nVEL_CAP = 3.5\nNAV_ACC_RANGE = [-1.5, 1.5]\nPROBE_RADIUS = 10.0\nPROBE_P = 0.015\nPROBE_BUDGET = 15\n\n# Gate thresholds\nGATE1_THRESH = 3.0\nGATE1B_THRESH = 0.30\nGATE1B_STD_THRESH = 0.25\nGATE2_THRESH = 0.50\nN_SEEDS_PASS = 4\n\nOUT_DIR = os.path.join(\'archive\', \'iter_038\', \'results\')\n\n# Navigation RNG seed derivation (separate from environment RNG)\ndef nav_seed_for_env_seed(env_seed):\n    return env_seed * 1000 + 7\n\n\n# ── Utility ──────────────────────────────────────────────────────────────────\ndef _rand_vel_component(rng):\n    """Draw a velocity component from [-2.0, -0.5] U [0.5, 2.0]."""\n    if rng.rand() < 0.5:\n        return rng.uniform(OBJ_VEL_RANGES[0][0], OBJ_VEL_RANGES[0][1])\n    return rng.uniform(OBJ_VEL_RANGES[1][0], OBJ_VEL_RANGES[1][1])\n\n\ndef _cap_velocity(vel, cap):\n    """Cap each velocity component to [-cap, +cap]."""\n    return np.clip(vel, -cap, cap)\n\n\n# ── PhysicsSandbox2D (iter_038 variant) ──────────────────────────────────────\nclass PhysicsSandbox2D:\n    """\n    2D physics sandbox with:\n    - N objects with elastic collisions and wall bounces\n    - One navigating pointer with random acceleration\n    - Probe mechanism (separate from collision physics)\n    """\n\n    def __init__(self, N=N_OBJ, substeps=SUBSTEPS, seed=None):\n        self.N = N\n        self.substeps = substeps\n        self.dt = 1.0 / substeps\n        self.rng = np.random.RandomState(seed)\n\n        self.positions = np.zeros((N, 2), dtype=np.float64)\n        self.velocities = np.zeros((N, 2), dtype=np.float64)\n        self.radii = np.zeros(N, dtype=np.float64)\n        self.masses = np.zeros(N, dtype=np.float64)\n\n        self.pointer_pos = PTR_START.copy()\n        self.pointer_vel = PTR_VEL_INIT.copy()\n        self.pointer_radius = PTR_RADIUS\n        self.pointer_mass = PTR_MASS\n\n        # Diagnostic collision counter (step-level, per object)\n        self._collision_counts = np.zeros(N, dtype=np.int32)\n\n        self._init_objects()\n\n    def _init_objects(self):\n        """Initialize objects with UNIFORM-RANDOM placement in arena interior."""\n        self.radii = self.rng.uniform(OBJ_RADIUS_RANGE[0], OBJ_RADIUS_RANGE[1], self.N)\n        self.masses = self.radii.copy()\n        for i in range(self.N):\n            self.velocities[i, 0] = _rand_vel_component(self.rng)\n            self.velocities[i, 1] = _rand_vel_component(self.rng)\n        for i in range(self.N):\n            margin = self.radii[i] + 0.5\n            low = margin\n            high = ARENA_SIZE - margin\n            self.positions[i, 0] = self.rng.uniform(low, high)\n            self.positions[i, 1] = self.rng.uniform(low, high)\n\n    def _resolve_circle_circle_2d(self, pos1, vel1, m1, r1, pos2, vel2, m2, r2):\n        """\n        2D elastic collision between two circles.\n        Returns new positions and velocities for both bodies.\n        Uses approach-velocity check to prevent double-counting across substeps.\n        """\n        diff = pos2 - pos1\n        dist = np.linalg.norm(diff)\n        min_dist = r1 + r2\n        if dist < min_dist and dist > 1e-12:\n            n = diff / dist\n            v_rel_n = np.dot(vel2 - vel1, n)\n            m_inv1 = 1.0 / m1\n            m_inv2 = 1.0 / m2\n            sum_inv = m_inv1 + m_inv2\n            overlap = min_dist - dist\n            new_pos1 = pos1 - overlap * (m_inv1 / sum_inv) * n\n            new_pos2 = pos2 + overlap * (m_inv2 / sum_inv) * n\n            if v_rel_n > 0:\n                # Approaching: resolve velocity\n                v1n = np.dot(vel1, n)\n                v2n = np.dot(vel2, n)\n                v1n_new = (v1n * (m1 - m2) + 2.0 * m2 * v2n) / (m1 + m2)\n                v2n_new = (v2n * (m2 - m1) + 2.0 * m1 * v1n) / (m1 + m2)\n                new_vel1 = vel1 + (v1n_new - v1n) * n\n                new_vel2 = vel2 + (v2n_new - v2n) * n\n                return new_pos1, new_vel1, new_pos2, new_vel2\n            else:\n                # Separating: only fix overlap\n                return new_pos1, vel1.copy(), new_pos2, vel2.copy()\n        return pos1.copy(), vel1.copy(), pos2.copy(), vel2.copy()\n\n    def _wall_bounce(self, pos, vel, radius):\n        """Reflect position and velocity at arena walls."""\n        pos = pos.copy()\n        vel = vel.copy()\n        for axis in range(2):\n            if pos[axis] - radius < 0.0:\n                pos[axis] = radius\n                if vel[axis] < 0.0:\n                    vel[axis] = -vel[axis]\n            elif pos[axis] + radius > ARENA_SIZE:\n                pos[axis] = ARENA_SIZE - radius\n                if vel[axis] > 0.0:\n                    vel[axis] = -vel[axis]\n        return pos, vel\n\n    def step(self, pointer_acc):\n        """\n        One physics step with substeps.\n        pointer_acc: 2D acceleration to apply to pointer (each substep).\n\n        Returns:\n            probe_hit: bool (did a probe succeed this step?)\n            probed_obj_idx: int or -1 (which object was probed)\n            collisions_this_step: np.array(N,) of bool (which objects had physical contact)\n        """\n        collisions_this_step = np.zeros(self.N, dtype=bool)\n\n        # Substep integration\n        for _ in range(self.substeps):\n            self.pointer_vel += pointer_acc * self.dt\n\n            self.positions += self.velocities * self.dt\n            self.pointer_pos += self.pointer_vel * self.dt\n\n            # Wall bounces\n            for i in range(self.N):\n                self.positions[i], self.velocities[i] = self._wall_bounce(\n                    self.positions[i], self.velocities[i], self.radii[i]\n                )\n            self.pointer_pos, self.pointer_vel = self._wall_bounce(\n                self.pointer_pos, self.pointer_vel, self.pointer_radius\n            )\n\n            # Object-object collisions\n            for i in range(self.N):\n                for j in range(i + 1, self.N):\n                    dist = np.linalg.norm(self.positions[j] - self.positions[i])\n                    if dist < self.radii[i] + self.radii[j]:\n                        p1, v1, p2, v2 = self._resolve_circle_circle_2d(\n                            self.positions[i], self.velocities[i], self.masses[i], self.radii[i],\n                            self.positions[j], self.velocities[j], self.masses[j], self.radii[j],\n                        )\n                        self.positions[i] = p1\n                        self.velocities[i] = v1\n                        self.positions[j] = p2\n                        self.velocities[j] = v2\n\n            # Pointer-object physics collisions\n            for i in range(self.N):\n                dist = np.linalg.norm(self.pointer_pos - self.positions[i])\n                if dist < self.pointer_radius + self.radii[i]:\n                    collisions_this_step[i] = True\n                    p1, v1, p2, v2 = self._resolve_circle_circle_2d(\n                        self.positions[i], self.velocities[i], self.masses[i], self.radii[i],\n                        self.pointer_pos, self.pointer_vel, self.pointer_mass, self.pointer_radius,\n                    )\n                    self.positions[i] = p1\n                    self.velocities[i] = v1\n                    self.pointer_pos = p2\n                    self.pointer_vel = v2\n                    self.positions[i], self.velocities[i] = self._wall_bounce(\n                        self.positions[i], self.velocities[i], self.radii[i]\n                    )\n                    self.pointer_pos, self.pointer_vel = self._wall_bounce(\n                        self.pointer_pos, self.pointer_vel, self.pointer_radius\n                    )\n                elif dist < self.pointer_radius + self.radii[i] + PROBE_RADIUS:\n                    # Track proximity for diagnostics (not a physical collision)\n                    # We only flag if the CENTER distance is within PROBE_RADIUS\n                    center_dist = np.linalg.norm(self.pointer_pos - self.positions[i])\n                    # This is just diagnostic; the actual probe check is done at step level\n                    pass\n\n        # Update diagnostic collision counts\n        for i in range(self.N):\n            if collisions_this_step[i]:\n                self._collision_counts[i] += 1\n\n        # Probe check (step-level, AFTER physics)\n        probe_hit = False\n        probed_obj_idx = -1\n        center_dists = np.linalg.norm(self.positions - self.pointer_pos, axis=1)\n        within_probe = center_dists < PROBE_RADIUS\n        if np.any(within_probe):\n            # Find nearest object within probe radius\n            nearby_indices = np.where(within_probe)[0]\n            probed_obj_idx = int(nearby_indices[np.argmin(center_dists[nearby_indices])])\n            probe_hit = True\n\n        return probe_hit, probed_obj_idx, collisions_this_step\n\n\n# ── Run one full rollout for a seed ──────────────────────────────────────────\ndef run_one_seed(env_seed, record_trajectory=False):\n    """\n    Run the full navigation experiment for one seed.\n\n    Returns dict with:\n        - probe_counts: per-object probe-event counts\n        - collision_counts: per-object diagnostic collision counts\n        - probes_fired: total successful probes\n        - probes_attempted: total probe opportunities where budget remained\n        - probe_events: list of (step_idx, obj_idx) for each successful probe\n        - trajectory: list of (x, y) pointer positions per step (if record_trajectory)\n        - max_speed: max pointer speed observed\n        - total_distance: total distance traveled by pointer\n    """\n    env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS, seed=env_seed)\n    env.pointer_pos = PTR_START.copy()\n    env.pointer_vel = PTR_VEL_INIT.copy()\n\n    nav_rng = np.random.RandomState(nav_seed_for_env_seed(env_seed))\n\n    probe_counts = np.zeros(N_OBJ, dtype=np.int32)\n    probes_fired = 0\n    probe_events = []  # (step, obj_idx)\n\n    trajectory = []\n    total_distance = 0.0\n    max_speed = 0.0\n    prev_ptr_pos = PTR_START.copy()\n\n    for step in range(N_STEPS):\n        # Sample random acceleration\n        ptr_acc = nav_rng.uniform(NAV_ACC_RANGE[0], NAV_ACC_RANGE[1], 2)\n\n        # Physics step\n        probe_hit, probed_obj_idx, _ = env.step(ptr_acc)\n\n        # Apply velocity cap AFTER the full step\n        env.pointer_vel = _cap_velocity(env.pointer_vel, VEL_CAP)\n\n        # Probe decision (only if budget remains and opportunity exists)\n        if probe_hit and probes_fired < PROBE_BUDGET:\n            # Bernoulli probe decision\n            if nav_rng.rand() < PROBE_P:\n                probe_counts[probed_obj_idx] += 1\n                probes_fired += 1\n                probe_events.append((step, probed_obj_idx))\n\n        # Trajectory tracking\n        if record_trajectory:\n            current_pos = env.pointer_pos.copy()\n            trajectory.append((float(current_pos[0]), float(current_pos[1])))\n            delta = current_pos - prev_ptr_pos\n            total_distance += np.linalg.norm(delta)\n            speed = np.linalg.norm(env.pointer_vel)\n            if speed > max_speed:\n                max_speed = float(speed)\n            prev_ptr_pos = current_pos\n\n        # Bounds tracking\n        ptr_in_bounds = all(0 <= env.pointer_pos[a] <= ARENA_SIZE for a in range(2))\n        assert ptr_in_bounds, f"Pointer out of bounds at step {step}: {env.pointer_pos}"\n        for i in range(N_OBJ):\n            obj_in_bounds = all(0 <= env.positions[i, a] <= ARENA_SIZE for a in range(2))\n            assert obj_in_bounds, f"Object {i} out of bounds at step {step}: {env.positions[i]}"\n\n    mean_probes = float(np.mean(probe_counts))\n    cv_probes = float(np.std(probe_counts) / mean_probes) if mean_probes > 0 else 0.0\n\n    result = {\n        \'seed\': env_seed,\n        \'probe_counts\': probe_counts.tolist(),\n        \'mean_probe_count\': mean_probes,\n        \'cv_probes\': cv_probes,\n        \'collision_counts\': env._collision_counts.tolist(),\n        \'probes_fired\': probes_fired,\n        \'probe_events\': probe_events,\n        \'budget_remaining\': PROBE_BUDGET - probes_fired,\n        \'gate1_pass\': mean_probes <= GATE1_THRESH,\n        \'gate2_pass\': cv_probes >= GATE2_THRESH,\n        \'max_speed\': max_speed,\n        \'total_distance\': total_distance,\n    }\n\n    if record_trajectory:\n        result[\'trajectory\'] = trajectory\n\n    return result\n\n\n# ── Sanity Checks ────────────────────────────────────────────────────────────\ndef run_sanity_checks():\n    """Run all pre-registered sanity checks S1-S7."""\n    results = {}\n    all_pass = True\n\n    # ── S1: Physics conservation (2D elastic collision) ──────────────────\n    print("  S1: Physics conservation (2D elastic collision)...")\n    env = PhysicsSandbox2D(N=2, substeps=SUBSTEPS, seed=12345)\n    env.positions[0] = np.array([20.0, 32.0])\n    env.positions[1] = np.array([44.0, 32.0])\n    env.velocities[0] = np.array([2.0, 0.0])\n    env.velocities[1] = np.array([-2.0, 0.0])\n    env.radii[0] = 5.0\n    env.radii[1] = 5.0\n    env.masses[0] = 5.0\n    env.masses[1] = 5.0\n\n    total_p_pre = env.masses[0] * env.velocities[0] + env.masses[1] * env.velocities[1]\n    ke_pre = (0.5 * env.masses[0] * np.dot(env.velocities[0], env.velocities[0])\n              + 0.5 * env.masses[1] * np.dot(env.velocities[1], env.velocities[1]))\n\n    env.step(pointer_acc=np.zeros(2))\n\n    total_p_post = env.masses[0] * env.velocities[0] + env.masses[1] * env.velocities[1]\n    ke_post = (0.5 * env.masses[0] * np.dot(env.velocities[0], env.velocities[0])\n               + 0.5 * env.masses[1] * np.dot(env.velocities[1], env.velocities[1]))\n\n    p_error = np.linalg.norm(total_p_post - total_p_pre)\n    ke_error = abs(ke_post - ke_pre)\n    S1_pass = p_error < 1e-6 and ke_error < 1e-6\n    all_pass = all_pass and S1_pass\n    results[\'S1\'] = {\n        \'pass\': S1_pass,\n        \'p_pre\': total_p_pre.tolist(),\n        \'p_post\': total_p_post.tolist(),\n        \'ke_pre\': float(ke_pre),\n        \'ke_post\': float(ke_post),\n        \'p_error\': float(p_error),\n        \'ke_error\': float(ke_error),\n    }\n    print(f"    Momentum: pre={total_p_pre}, post={total_p_post}, error={p_error:.2e}")\n    print(f"    KE: pre={ke_pre:.6f}, post={ke_post:.6f}, error={ke_error:.2e}")\n    print(f"    S1: {\'PASS\' if S1_pass else \'FAIL\'}")\n\n    # ── S2: Pointer stays within arena bounds ────────────────────────────\n    print("  S2: Pointer stays within [0, 64]^2...")\n    ptr_all_in_bounds = True\n    for seed in SEEDS:\n        r = run_one_seed(seed, record_trajectory=False)\n        # We check bounds inside run_one_seed via assertions; if we get here, it passed\n    results[\'S2\'] = {\'pass\': True, \'description\': \'Pointer stays within [0, 64]^2 throughout all seeds\'}\n    print(f"    S2: PASS")\n\n    # ── S3: Objects stay within arena bounds ─────────────────────────────\n    print("  S3: Objects stay within [0, 64]^2...")\n    results[\'S3\'] = {\'pass\': True, \'description\': \'Objects stay within [0, 64]^2 throughout all seeds\'}\n    print(f"    S3: PASS")\n\n    # ── S4: Random acceleration is truly random (check variance) ─────────\n    print("  S4: Random acceleration is truly random...")\n    nav_rng_check = np.random.RandomState(nav_seed_for_env_seed(7))\n    accs = []\n    for _ in range(1000):\n        accs.append(nav_rng_check.uniform(NAV_ACC_RANGE[0], NAV_ACC_RANGE[1], 2))\n    accs = np.array(accs)\n    mean_acc = np.mean(accs, axis=0)\n    std_acc = np.std(accs, axis=0)\n    # Variance of uniform[-1.5, 1.5] is (3.0)^2 / 12 = 0.75, std ≈ 0.866\n    expected_std = (NAV_ACC_RANGE[1] - NAV_ACC_RANGE[0]) / np.sqrt(12)\n    std_error = np.abs(std_acc - expected_std)\n    mean_close = np.all(np.abs(mean_acc) < 0.15)  # mean should be ≈ 0\n    S4_pass = std_error.max() < 0.1 and mean_close\n    all_pass = all_pass and S4_pass\n    results[\'S4\'] = {\n        \'pass\': S4_pass,\n        \'mean_acc\': mean_acc.tolist(),\n        \'std_acc\': std_acc.tolist(),\n        \'expected_std\': float(expected_std),\n        \'description\': f\'Nav acc mean≈0 (got {mean_acc}), std≈{expected_std:.4f} (got {std_acc})\',\n    }\n    print(f"    S4: mean_acc={mean_acc}, std_acc={std_acc}, expected_std≈{expected_std:.4f}")\n    print(f"    S4: {\'PASS\' if S4_pass else \'FAIL\'}")\n\n    # ── S5: Velocity cap enforced ────────────────────────────────────────\n    print("  S5: Velocity cap enforced (max 3.5 per component)...")\n    vel_cap_ok = True\n    max_vel_observed = 0.0\n    for seed in SEEDS:\n        env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS, seed=seed)\n        env.pointer_pos = PTR_START.copy()\n        env.pointer_vel = PTR_VEL_INIT.copy()\n        nav_rng_check2 = np.random.RandomState(nav_seed_for_env_seed(seed))\n        for _ in range(N_STEPS):\n            ptr_acc = nav_rng_check2.uniform(NAV_ACC_RANGE[0], NAV_ACC_RANGE[1], 2)\n            env.step(ptr_acc)\n            env.pointer_vel = _cap_velocity(env.pointer_vel, VEL_CAP)\n            component_max = np.max(np.abs(env.pointer_vel))\n            if component_max > VEL_CAP + 1e-9:\n                vel_cap_ok = False\n                break\n            if component_max > max_vel_observed:\n                max_vel_observed = float(component_max)\n    all_pass = all_pass and vel_cap_ok\n    results[\'S5\'] = {\n        \'pass\': vel_cap_ok,\n        \'max_vel_component\': max_vel_observed,\n        \'cap\': VEL_CAP,\n        \'description\': f\'Max velocity component observed: {max_vel_observed:.4f} (cap: {VEL_CAP})\',\n    }\n    print(f"    S5: max_vel_component={max_vel_observed:.4f}, cap={VEL_CAP}")\n    print(f"    S5: {\'PASS\' if vel_cap_ok else \'FAIL\'}")\n\n    # ── S6: Probe mechanism fires correctly ──────────────────────────────\n    print("  S6: Probe mechanism fires correctly...")\n    # Place objects at center so pointer always has probe opportunity\n    env = PhysicsSandbox2D(N=3, substeps=SUBSTEPS, seed=42)\n    for i in range(3):\n        env.positions[i] = np.array([32.0, 32.0])\n        env.radii[i] = 3.0\n        env.masses[i] = 3.0\n        env.velocities[i] = np.array([0.0, 0.0])\n    env.pointer_pos = np.array([32.0, 32.0])\n    env.pointer_vel = np.array([0.0, 0.0])\n\n    nav_rng_probe = np.random.RandomState(999)\n    probes_hit = 0\n    total_steps_check = 500\n    steps_in_range = 0\n    for step in range(total_steps_check):\n        ptr_acc = np.zeros(2)  # Don\'t move\n        hit, idx, _ = env.step(ptr_acc)\n        if hit:\n            steps_in_range += 1\n            if nav_rng_probe.rand() < PROBE_P and probes_hit < PROBE_BUDGET:\n                probes_hit += 1\n\n    # With pointer at center and all objects at center, every step should be in range\n    S6_pass = (steps_in_range == total_steps_check) and (0 < probes_hit <= PROBE_BUDGET)\n    all_pass = all_pass and S6_pass\n    results[\'S6\'] = {\n        \'pass\': S6_pass,\n        \'steps_in_range\': steps_in_range,\n        \'total_steps\': total_steps_check,\n        \'probes_hit\': probes_hit,\n        \'description\': f\'{steps_in_range}/{total_steps_check} steps in probe range, {probes_hit} probes hit\',\n    }\n    print(f"    S6: {steps_in_range}/{total_steps_check} in range, {probes_hit} probes hit")\n    print(f"    S6: {\'PASS\' if S6_pass else \'FAIL\'}")\n\n    # ── S7: Re-verify iter_037 Gate-1 on 1 seed with static pointer ────\n    print("  S7: Re-verify iter_037 Gate-1 (static pointer, seed 7)...")\n    # Run a passive variant: pointer gets no acceleration, so it stays at (32, 32)\n    env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS, seed=7)\n    env.pointer_pos = PTR_START.copy()\n    env.pointer_vel = PTR_VEL_INIT.copy()\n    for _ in range(N_STEPS):\n        env.step(pointer_acc=np.zeros(2))\n        env.pointer_vel = _cap_velocity(env.pointer_vel, VEL_CAP)  # won\'t change since acc=0\n\n    # With static pointer and uniform-random placement, count collisions\n    static_collisions = env._collision_counts.tolist()\n    mean_static_coll = np.mean(static_collisions)\n    S7_pass = mean_static_coll <= GATE1_THRESH\n    all_pass = all_pass and S7_pass\n    results[\'S7\'] = {\n        \'pass\': S7_pass,\n        \'collision_counts\': static_collisions,\n        \'mean\': float(mean_static_coll),\n        \'description\': f\'Static pointer seed 7: collisions=({static_collisions[0]},{static_collisions[1]},{static_collisions[2]}), mean={mean_static_coll:.2f}\',\n    }\n    print(f"    S7: collisions=({static_collisions[0]},{static_collisions[1]},{static_collisions[2]}), mean={mean_static_coll:.2f}")\n    print(f"    S7: {\'PASS\' if S7_pass else \'FAIL\'}")\n\n    return results, all_pass\n\n\n# ── Gate evaluation ──────────────────────────────────────────────────────────\ndef evaluate_gates(seeds_results):\n    """\n    Evaluate all three pre-registered gates.\n    Returns a dict with gate pass/fail and per-seed breakdowns.\n    """\n    gate = {}\n\n    # ── Gate-1: Non-saturation ───────────────────────────────────────────\n    gate1_per_seed = []\n    for r in seeds_results:\n        passes = r[\'mean_probe_count\'] <= GATE1_THRESH\n        gate1_per_seed.append({\n            \'seed\': r[\'seed\'],\n            \'mean_probe_count\': r[\'mean_probe_count\'],\n            \'threshold\': GATE1_THRESH,\n            \'pass\': passes,\n        })\n    n_pass_g1 = sum(1 for s in gate1_per_seed if s[\'pass\'])\n    gate[\'gate1\'] = {\n        \'name\': \'Non-saturation\',\n        \'threshold\': GATE1_THRESH,\n        \'per_seed\': gate1_per_seed,\n        \'n_pass\': n_pass_g1,\n        \'n_total\': len(seeds_results),\n        \'pass\': n_pass_g1 >= N_SEEDS_PASS,\n    }\n\n    # ── Gate-1b: CV stability ────────────────────────────────────────────\n    per_seed_cvs = [r[\'cv_probes\'] for r in seeds_results]\n    mean_cv = float(np.mean(per_seed_cvs))\n    std_cv = float(np.std(per_seed_cvs))\n    gate[\'gate1b\'] = {\n        \'name\': \'CV stability\',\n        \'mean_cv_threshold\': GATE1B_THRESH,\n        \'std_cv_threshold\': GATE1B_STD_THRESH,\n        \'per_seed_cvs\': list(zip(SEEDS, per_seed_cvs)),\n        \'mean_cv\': mean_cv,\n        \'std_cv\': std_cv,\n        \'pass_mean\': mean_cv >= GATE1B_THRESH,\n        \'pass_std\': std_cv <= GATE1B_STD_THRESH,\n        \'pass\': mean_cv >= GATE1B_THRESH and std_cv <= GATE1B_STD_THRESH,\n    }\n\n    # ── Gate-2: Heterogeneity ────────────────────────────────────────────\n    gate2_per_seed = []\n    for r in seeds_results:\n        passes = r[\'cv_probes\'] >= GATE2_THRESH\n        gate2_per_seed.append({\n            \'seed\': r[\'seed\'],\n            \'cv_probes\': r[\'cv_probes\'],\n            \'threshold\': GATE2_THRESH,\n            \'pass\': passes,\n        })\n    n_pass_g2 = sum(1 for s in gate2_per_seed if s[\'pass\'])\n    gate[\'gate2\'] = {\n        \'name\': \'Heterogeneity\',\n        \'threshold\': GATE2_THRESH,\n        \'per_seed\': gate2_per_seed,\n        \'n_pass\': n_pass_g2,\n        \'n_total\': len(seeds_results),\n        \'pass\': n_pass_g2 >= N_SEEDS_PASS,\n    }\n\n    gate[\'all_pass\'] = gate[\'gate1\'][\'pass\'] and gate[\'gate1b\'][\'pass\'] and gate[\'gate2\'][\'pass\']\n    return gate\n\n\n# ── Arena coverage (fraction of grid cells visited) ──────────────────────────\ndef compute_coverage(trajectory, arena=ARENA_SIZE, cell_size=1.0):\n    """Compute fraction of arena grid cells visited by the pointer."""\n    visited = set()\n    for x, y in trajectory:\n        gx = int(x / cell_size)\n        gy = int(y / cell_size)\n        gx = max(0, min(int(arena / cell_size) - 1, gx))\n        gy = max(0, min(int(arena / cell_size) - 1, gy))\n        visited.add((gx, gy))\n    total_cells = int(arena / cell_size) ** 2\n    return len(visited) / total_cells\n\n\n# ── Main ─────────────────────────────────────────────────────────────────────\ndef main():\n    os.makedirs(OUT_DIR, exist_ok=True)\n\n    print("=" * 70)\n    print("iter_038: 2D Navigation Gate Probe")\n    print("=" * 70)\n    print(f"Parameters: N={N_OBJ}, arena={ARENA_SIZE}x{ARENA_SIZE}")\n    print(f"  Steps={N_STEPS}, Substeps={SUBSTEPS}")\n    print(f"  Pointer: radius={PTR_RADIUS}, mass={PTR_MASS}, start=(32,32)")\n    print(f"  Nav acc: Uniform[{NAV_ACC_RANGE[0]}, {NAV_ACC_RANGE[1]}]^2")\n    print(f"  Velocity cap: {VEL_CAP} px/step per component")\n    print(f"  Probe: radius={PROBE_RADIUS}, p={PROBE_P}, budget={PROBE_BUDGET}")\n    print(f"  Seeds: {SEEDS}")\n    print(f"  Object placement: UNIFORM-RANDOM (NOT segment-based)")\n    print()\n\n    # ── Step 1: Sanity checks ──────────────────────────────────────────────\n    print("Running Sanity Checks...")\n    sanity_results, sanity_all_pass = run_sanity_checks()\n    print()\n    print(f"Sanity checks: {\'ALL PASS\' if sanity_all_pass else \'SOME FAILED\'}")\n    print()\n\n    # ── Step 2: Run navigation experiment for each seed ────────────────────\n    print("Running Navigation Gate Experiment...")\n    seeds_results = []\n    all_trajectories = {}\n    for seed in SEEDS:\n        print(f"  Seed {seed}...", end=" ", flush=True)\n        r = run_one_seed(seed, record_trajectory=True)\n        all_trajectories[seed] = r.pop(\'trajectory\')\n        seeds_results.append(r)\n        print(f"mean={r[\'mean_probe_count\']:.2f}, "\n              f"CV={r[\'cv_probes\']:.3f}, "\n              f"fired={r[\'probes_fired\']}, "\n              f"collisions={sum(r[\'collision_counts\'])}")\n    print()\n\n    # ── Step 3: Evaluate gates ─────────────────────────────────────────────\n    gates = evaluate_gates(seeds_results)\n\n    # ── Step 4: Print summary ──────────────────────────────────────────────\n    print("=" * 70)\n    print("RESULTS SUMMARY")\n    print("=" * 70)\n\n    print("\\nGate-1 (Non-saturation): mean per-object probe count <= 3.0")\n    print(f"  {\'Seed\':>6} | {\'Obj0\':>4} | {\'Obj1\':>4} | {\'Obj2\':>4} | {\'Mean\':>6} | {\'Pass\':>5}")\n    for s in gates[\'gate1\'][\'per_seed\']:\n        r = next(x for x in seeds_results if x[\'seed\'] == s[\'seed\'])\n        mark = "PASS" if s[\'pass\'] else "FAIL"\n        print(f"  {s[\'seed\']:>6} | {r[\'probe_counts\'][0]:>4} | {r[\'probe_counts\'][1]:>4} | {r[\'probe_counts\'][2]:>4} | {s[\'mean_probe_count\']:>6.2f} | {mark:>5}")\n    print(f"  Passes: {gates[\'gate1\'][\'n_pass\']}/{gates[\'gate1\'][\'n_total\']} -> {\'PASS\' if gates[\'gate1\'][\'pass\'] else \'FAIL\'}")\n\n    print("\\nGate-1b (CV stability): mean(CV) >= 0.30 AND std(CV) <= 0.25")\n    print(f"  {\'Seed\':>6} | {\'CV\':>10}")\n    for seed_idx, cv_val in gates[\'gate1b\'][\'per_seed_cvs\']:\n        print(f"  {seed_idx:>6} | {cv_val:>10.3f}")\n    print(f"  Mean CV: {gates[\'gate1b\'][\'mean_cv\']:.3f} (threshold: >= {gates[\'gate1b\'][\'mean_cv_threshold\']:.2f})")\n    print(f"  Std  CV: {gates[\'gate1b\'][\'std_cv\']:.3f} (threshold: <= {gates[\'gate1b\'][\'std_cv_threshold\']:.2f})")\n    print(f"  Mean CV pass: {\'PASS\' if gates[\'gate1b\'][\'pass_mean\'] else \'FAIL\'}")\n    print(f"  Std  CV pass: {\'PASS\' if gates[\'gate1b\'][\'pass_std\'] else \'FAIL\'}")\n    print(f"  Gate-1b overall: {\'PASS\' if gates[\'gate1b\'][\'pass\'] else \'FAIL\'}")\n\n    print("\\nGate-2 (Heterogeneity): per-seed CV >= 0.50")\n    print(f"  {\'Seed\':>6} | {\'CV\':>10} | {\'Pass\':>5}")\n    for s in gates[\'gate2\'][\'per_seed\']:\n        mark = "PASS" if s[\'pass\'] else "FAIL"\n        print(f"  {s[\'seed\']:>6} | {s[\'cv_probes\']:>10.3f} | {mark:>5}")\n    print(f"  Passes: {gates[\'gate2\'][\'n_pass\']}/{gates[\'gate2\'][\'n_total\']} -> {\'PASS\' if gates[\'gate2\'][\'pass\'] else \'FAIL\'}")\n\n    print("\\n" + "-" * 70)\n    g1 = "PASS" if gates[\'gate1\'][\'pass\'] else "FAIL"\n    g1b = "PASS" if gates[\'gate1b\'][\'pass\'] else "FAIL"\n    g2 = "PASS" if gates[\'gate2\'][\'pass\'] else "FAIL"\n    overall = "PASS" if gates[\'all_pass\'] else "FAIL"\n    print(f"  Gate-1:  {g1}")\n    print(f"  Gate-1b: {g1b}")\n    print(f"  Gate-2:  {g2}")\n    print(f"  ALL GATES: {overall}")\n    print("-" * 70)\n\n    # ── Exit rule ──────────────────────────────────────────────────────────\n    if gates[\'all_pass\']:\n        print("\\nEXIT RULE: ALL GATES PASS")\n        print("  -> Result is consistent with bracket-admission.")\n        print("  -> Hand off to HUMAN go/no-go on full 2D rebuild.")\n        print("  -> The agent does NOT begin 2D rebuild work.")\n    else:\n        print("\\nEXIT RULE: AT LEAST ONE GATE FAILED")\n        if not gates[\'gate1\'][\'pass\']:\n            print(f"  -> Gate-1 FAIL: {gates[\'gate1\'][\'n_pass\']}/{gates[\'gate1\'][\'n_total\']} seeds pass "\n                  f"(need {N_SEEDS_PASS})")\n        if not gates[\'gate1b\'][\'pass\']:\n            reasons = []\n            if not gates[\'gate1b\'][\'pass_mean\']:\n                reasons.append(f"mean CV {gates[\'gate1b\'][\'mean_cv\']:.3f} < {gates[\'gate1b\'][\'mean_cv_threshold\']:.2f}")\n            if not gates[\'gate1b\'][\'pass_std\']:\n                reasons.append(f"std CV {gates[\'gate1b\'][\'std_cv\']:.3f} > {gates[\'gate1b\'][\'std_cv_threshold\']:.2f}")\n            print(f"  -> Gate-1b FAIL: {\', \'.join(reasons)}")\n        if not gates[\'gate2\'][\'pass\']:\n            print(f"  -> Gate-2 FAIL: {gates[\'gate2\'][\'n_pass\']}/{gates[\'gate2\'][\'n_total\']} seeds pass "\n                  f"(need {N_SEEDS_PASS})")\n        print("  -> The six re-frame claims (Section 3, Step 5 FAIL branch)")\n        print("     become the iter_039 scope.")\n    print("=" * 70)\n\n    # ── Write output files ─────────────────────────────────────────────────\n\n    # 1. probe_events.csv\n    with open(os.path.join(OUT_DIR, \'probe_events.csv\'), \'w\', newline=\'\') as f:\n        w = csv.writer(f)\n        w.writerow([\'seed\', \'count_obj_0\', \'count_obj_1\', \'count_obj_2\',\n                     \'mean_probe_count\', \'cv_probes\', \'gate1_pass\', \'gate2_pass\'])\n        for r in seeds_results:\n            w.writerow([\n                r[\'seed\'],\n                r[\'probe_counts\'][0], r[\'probe_counts\'][1], r[\'probe_counts\'][2],\n                f"{r[\'mean_probe_count\']:.4f}",\n                f"{r[\'cv_probes\']:.4f}",\n                int(r[\'gate1_pass\']), int(r[\'gate2_pass\']),\n            ])\n\n    # 2. diagnostic_collisions.csv\n    with open(os.path.join(OUT_DIR, \'diagnostic_collisions.csv\'), \'w\', newline=\'\') as f:\n        w = csv.writer(f)\n        w.writerow([\'seed\', \'coll_obj_0\', \'coll_obj_1\', \'coll_obj_2\', \'total_collisions\'])\n        for r in seeds_results:\n            w.writerow([\n                r[\'seed\'],\n                r[\'collision_counts\'][0], r[\'collision_counts\'][1], r[\'collision_counts\'][2],\n                sum(r[\'collision_counts\']),\n            ])\n\n    # 3. sanity_checks.txt\n    with open(os.path.join(OUT_DIR, \'sanity_checks.txt\'), \'w\') as f:\n        f.write("iter_038 2D Navigation Gate Probe - Sanity Checks\\n")\n        f.write("=" * 70 + "\\n\\n")\n        # S1\n        s1 = sanity_results[\'S1\']\n        f.write("S1: Physics Conservation (2D elastic collision)\\n")\n        f.write(f"  Pre-collision momentum:  {s1[\'p_pre\']}\\n")\n        f.write(f"  Post-collision momentum: {s1[\'p_post\']}\\n")\n        f.write(f"  Momentum error:          {s1[\'p_error\']:.2e}\\n")\n        f.write(f"  Pre-collision KE:        {s1[\'ke_pre\']:.6f}\\n")\n        f.write(f"  Post-collision KE:       {s1[\'ke_post\']:.6f}\\n")\n        f.write(f"  KE error:                {s1[\'ke_error\']:.2e}\\n")\n        f.write(f"  Result: {\'PASS\' if s1[\'pass\'] else \'FAIL\'}\\n\\n")\n        # S2\n        f.write(f"S2: Pointer stays within [0, {ARENA_SIZE}]^2\\n")\n        f.write(f"  {sanity_results[\'S2\'][\'description\']}\\n")\n        f.write(f"  Result: {\'PASS\' if sanity_results[\'S2\'][\'pass\'] else \'FAIL\'}\\n\\n")\n        # S3\n        f.write(f"S3: Objects stay within [0, {ARENA_SIZE}]^2\\n")\n        f.write(f"  {sanity_results[\'S3\'][\'description\']}\\n")\n        f.write(f"  Result: {\'PASS\' if sanity_results[\'S3\'][\'pass\'] else \'FAIL\'}\\n\\n")\n        # S4\n        s4 = sanity_results[\'S4\']\n        f.write("S4: Random acceleration is truly random\\n")\n        f.write(f"  Mean acc: {s4[\'mean_acc\']} (expected ≈ [0, 0])\\n")\n        f.write(f"  Std acc:  {s4[\'std_acc\']} (expected ≈ {s4[\'expected_std\']:.4f})\\n")\n        f.write(f"  Result: {\'PASS\' if s4[\'pass\'] else \'FAIL\'}\\n\\n")\n        # S5\n        s5 = sanity_results[\'S5\']\n        f.write("S5: Velocity cap enforced\\n")\n        f.write(f"  Max velocity component observed: {s5[\'max_vel_component\']:.4f}\\n")\n        f.write(f"  Cap: {s5[\'cap\']}\\n")\n        f.write(f"  Result: {\'PASS\' if s5[\'pass\'] else \'FAIL\'}\\n\\n")\n        # S6\n        s6 = sanity_results[\'S6\']\n        f.write("S6: Probe mechanism fires correctly\\n")\n        f.write(f"  Steps in range: {s6[\'steps_in_range\']}/{s6[\'total_steps\']}\\n")\n        f.write(f"  Probes hit: {s6[\'probes_hit\']}\\n")\n        f.write(f"  Result: {\'PASS\' if s6[\'pass\'] else \'FAIL\'}\\n\\n")\n        # S7\n        s7 = sanity_results[\'S7\']\n        f.write("S7: Re-verify iter_037 Gate-1 (static pointer, seed 7)\\n")\n        f.write(f"  Collision counts: {s7[\'collision_counts\']}\\n")\n        f.write(f"  Mean: {s7[\'mean\']:.2f} (threshold: <= {GATE1_THRESH})\\n")\n        f.write(f"  (Re-verification of passive pointer still giving mean <= 3.0)\\n")\n        f.write(f"  Result: {\'PASS\' if s7[\'pass\'] else \'FAIL\'}\\n\\n")\n        f.write("-" * 70 + "\\n")\n        f.write(f"All sanity checks: {\'ALL PASS\' if sanity_all_pass else \'SOME FAILED\'}\\n")\n\n    # 4. gate_summary.txt\n    with open(os.path.join(OUT_DIR, \'gate_summary.txt\'), \'w\') as f:\n        f.write("=" * 70 + "\\n")\n        f.write("iter_038: 2D Navigation Gate Probe - Summary\\n")\n        f.write("=" * 70 + "\\n\\n")\n        f.write("Pre-registered Parameters:\\n")\n        f.write(f"  Arena: {ARENA_SIZE}x{ARENA_SIZE}, N={N_OBJ}, Steps={N_STEPS}, Substeps={SUBSTEPS}\\n")\n        f.write(f"  Pointer: radius={PTR_RADIUS}, mass={PTR_MASS}, start=(32,32), vel_init=(0,0)\\n")\n        f.write(f"  Object radii: [{OBJ_RADIUS_RANGE[0]}, {OBJ_RADIUS_RANGE[1]}], mass=radius\\n")\n        f.write(f"  Object placement: UNIFORM-RANDOM in [margin, ARENA_SIZE - margin]\\n")\n        f.write(f"  Nav acc: Uniform[{NAV_ACC_RANGE[0]}, {NAV_ACC_RANGE[1]}]^2\\n")\n        f.write(f"  Velocity cap: {VEL_CAP} per component\\n")\n        f.write(f"  Probe: radius={PROBE_RADIUS}, p={PROBE_P}, budget={PROBE_BUDGET}\\n")\n        f.write(f"  Seeds: {SEEDS}\\n\\n")\n\n        f.write("Gate-1 (Non-saturation) - Per-Seed:\\n")\n        f.write(f"  Threshold: mean per-object probe count <= {GATE1_THRESH}\\n")\n        f.write(f"  Decision rule: >= {N_SEEDS_PASS}/{len(SEEDS)} seeds must individually pass\\n")\n        for s in gates[\'gate1\'][\'per_seed\']:\n            r = next(x for x in seeds_results if x[\'seed\'] == s[\'seed\'])\n            mark = "PASS" if s[\'pass\'] else "FAIL"\n            f.write(f"  Seed {s[\'seed\']:>3}: counts=({r[\'probe_counts\'][0]},{r[\'probe_counts\'][1]},{r[\'probe_counts\'][2]}), "\n                    f"mean={s[\'mean_probe_count\']:.3f} -> {mark}\\n")\n        f.write(f"  Overall: {gates[\'gate1\'][\'n_pass\']}/{gates[\'gate1\'][\'n_total\']} seeds pass -> "\n                f"{\'PASS\' if gates[\'gate1\'][\'pass\'] else \'FAIL\'}\\n\\n")\n\n        f.write("Gate-1b (CV stability):\\n")\n        f.write(f"  Thresholds: mean(CV) >= {GATE1B_THRESH}, std(CV) <= {GATE1B_STD_THRESH}\\n")\n        for seed_idx, cv_val in gates[\'gate1b\'][\'per_seed_cvs\']:\n            f.write(f"  Seed {seed_idx:>3}: CV={cv_val:.3f}\\n")\n        f.write(f"  Mean CV: {gates[\'gate1b\'][\'mean_cv\']:.3f} -> {\'PASS\' if gates[\'gate1b\'][\'pass_mean\'] else \'FAIL\'}\\n")\n        f.write(f"  Std  CV: {gates[\'gate1b\'][\'std_cv\']:.3f} -> {\'PASS\' if gates[\'gate1b\'][\'pass_std\'] else \'FAIL\'}\\n")\n        f.write(f"  Overall: {\'PASS\' if gates[\'gate1b\'][\'pass\'] else \'FAIL\'}\\n\\n")\n\n        f.write("Gate-2 (Heterogeneity) - Per-Seed:\\n")\n        f.write(f"  Threshold: per-seed CV >= {GATE2_THRESH}\\n")\n        f.write(f"  Decision rule: >= {N_SEEDS_PASS}/{len(SEEDS)} seeds must individually pass\\n")\n        for s in gates[\'gate2\'][\'per_seed\']:\n            mark = "PASS" if s[\'pass\'] else "FAIL"\n            f.write(f"  Seed {s[\'seed\']:>3}: CV={s[\'cv_probes\']:.3f} -> {mark}\\n")\n        f.write(f"  Overall: {gates[\'gate2\'][\'n_pass\']}/{gates[\'gate2\'][\'n_total\']} seeds pass -> "\n                f"{\'PASS\' if gates[\'gate2\'][\'pass\'] else \'FAIL\'}\\n\\n")\n\n        f.write("-" * 70 + "\\n")\n        f.write("OVERALL GATE ASSESSMENT:\\n")\n        f.write(f"  Gate-1:  {\'PASS\' if gates[\'gate1\'][\'pass\'] else \'FAIL\'}\\n")\n        f.write(f"  Gate-1b: {\'PASS\' if gates[\'gate1b\'][\'pass\'] else \'FAIL\'}\\n")\n        f.write(f"  Gate-2:  {\'PASS\' if gates[\'gate2\'][\'pass\'] else \'FAIL\'}\\n")\n        f.write(f"  ALL GATES: {\'PASS\' if gates[\'all_pass\'] else \'FAIL\'}\\n\\n")\n\n        if gates[\'all_pass\']:\n            f.write("EXIT RULE — PASS:\\n")\n            f.write("  -> is consistent with bracket-admission.\\n")\n            f.write("  -> Hand off to HUMAN go/no-go on full 2D rebuild.\\n")\n            f.write("  -> The agent does NOT begin 2D rebuild work.\\n")\n        else:\n            f.write("EXIT RULE — FAIL:\\n")\n            f.write("  -> The tested parameterization fails one or more gates.\\n")\n            if not gates[\'gate1\'][\'pass\']:\n                f.write(f"  -> Gate-1: {gates[\'gate1\'][\'n_pass\']}/{gates[\'gate1\'][\'n_total\']} seeds pass vs "\n                        f"requirement {N_SEEDS_PASS}/{len(SEEDS)}\\n")\n            if not gates[\'gate1b\'][\'pass\']:\n                f.write(f"  -> Gate-1b: mean CV={gates[\'gate1b\'][\'mean_cv\']:.3f} vs >={gates[\'gate1b\'][\'mean_cv_threshold\']:.2f}, "\n                        f"std CV={gates[\'gate1b\'][\'std_cv\']:.3f} vs <={gates[\'gate1b\'][\'std_cv_threshold\']:.2f}\\n")\n            if not gates[\'gate2\'][\'pass\']:\n                f.write(f"  -> Gate-2: {gates[\'gate2\'][\'n_pass\']}/{gates[\'gate2\'][\'n_total\']} seeds pass vs "\n                        f"requirement {N_SEEDS_PASS}/{len(SEEDS)}\\n")\n            f.write("  -> The six re-frame claims (Section 3, Step 5 FAIL branch of\\n")\n            f.write("     pre-registration) become the iter_039 scope.\\n")\n        f.write("=" * 70 + "\\n")\n\n    # 5. trajectory_stats.csv\n    with open(os.path.join(OUT_DIR, \'trajectory_stats.csv\'), \'w\', newline=\'\') as f:\n        w = csv.writer(f)\n        w.writerow([\'seed\', \'mean_speed\', \'total_distance\',\n                     \'arena_coverage_fraction\', \'cells_visited\', \'total_cells\'])\n        for seed in SEEDS:\n            traj = all_trajectories[seed]\n            r = next(x for x in seeds_results if x[\'seed\'] == seed)\n            total_dist = r[\'total_distance\']\n            mean_speed = total_dist / N_STEPS\n            coverage = compute_coverage(traj)\n            total_cells = int(ARENA_SIZE) ** 2\n            cells_visited = int(round(coverage * total_cells))\n            w.writerow([\n                seed,\n                f"{mean_speed:.4f}",\n                f"{total_dist:.4f}",\n                f"{coverage:.4f}",\n                cells_visited,\n                total_cells,\n            ])\n\n    print(f"\\nResults saved to {OUT_DIR}/")\n    print("  - probe_events.csv")\n    print("  - diagnostic_collisions.csv")\n    print("  - sanity_checks.txt")\n    print("  - gate_summary.txt")\n    print("  - trajectory_stats.csv")\n\n    return {\n        \'seeds_results\': seeds_results,\n        \'gates\': gates,\n        \'sanity\': sanity_results,\n        \'sanity_all_pass\': sanity_all_pass,\n    }\n\n\nif __name__ == \'__main__\':\n    main()\n'})]
+[Tool Result: Successfully wrote to src/run_iter038_nav_gates.py]
+Let me verify both files are correct:
+
+
+[Tool Call: bash({'command': 'findstr /N "## 4\\|## 5\\|## 6" src\\pre_registration.md'})]
+[Tool Result: exit_code: 0
+stdout: 6:## 1. Hypothesis
+7:In a 2D arena (64×64, N=3 objects) with a PHYSICALLY NAVIGATING pointer (random
+28:(~3 px/step) in a 64×64 arena has mixing time ~455 steps; over 2000 steps
+34:## 2. Falsification Criterion
+54:## 3. Proposed Method
+55:## Experiment: 2D Navigation Gate Probe
+57:### Step 1 — Pre-Registration and Null Finding Preservation
+62:### Step 2 — Implement Navigation Gate Experiment
+66:- Arena: 64×64 (same as iter_037)
+112:  In iter_037, per-seed CVs were [0.00, 1.41, 0.82, 0.00, 1.41] (std=0.62)
+127:- S2: Pointer stays within [0, 64]² throughout
+128:- S3: Objects stay within [0, 64]² throughout
+131:- S6: Probe mechanism fires correctly (within PROBE_RADIUS, with probability)
+135:### Step 3 — Geometric Argument for Joint Gate Satisfaction
+164:A 2D random walk with speed ~3 px/step in a 64×64 arena has diffusion
+182:### Step 4 — Run Experiment and Record Results
+186:### Step 5 — Apply Pre-Committed Exit Rule
+225:   (iter_033-036) is a standing negative finding — not re-tested but
+228:6. **2D navigation null (from iter_038):** The specific gate failure from
+236:### Files Created
+241:### Files Preserved (NO modification)
+250:## 4. Object Placement Protocol
+268:## 5. Statistical Discipline
+284:## 6. Reporting Language
+
+stderr: ]
+
+[Tool Call: bash({'command': 'python -c "import ast; ast.parse(open(\'src/run_iter038_nav_gates.py\',\'r\').read()); print(\'Syntax OK\')"'})]
+[Tool Result: exit_code: 0
+stdout: Syntax OK
+
+stderr: ]
+Both files are syntactically valid and the pre-registration has all three new sections. Let me do a quick content verification:
+
+
+[Tool Call: read_file({'end_line': 20, 'path': 'src/run_iter038_nav_gates.py', 'start_line': 1})]
+[Tool Result: --- lines 1 to 20 of 889 ---
+"""src/run_iter038_nav_gates.py
+
+2D Navigation Gate Probe for the Thalamus project.
+Tests whether a PHYSICALLY NAVIGATING pointer in a 2D arena resolves the
+structural constraints that blocked behavioral validation across iter_033-037.
+
+No training, no learned model, no representation work. Pure physics + random
+navigation + probe mechanism.
+
+All parameters, gate definitions, and decision rules are pre-registered in
+src/pre_registration.md and must not be modified.
+"""
+
+import os
+import sys
+import csv
+import numpy as np
+
+# Fix stdout encoding on Windows for redirection compatibility
+if hasattr(sys.stdout, 'reconfigure'):]
+Both files are verified. Let me confirm all critical requirements are met in the script:
+
+
+[Tool Call: bash({'command': 'grep -n "PROBE_RADIUS = 10.0" src\\run_iter038_nav_gates.py & grep -n "PROBE_P = 0.015" src\\run_iter038_nav_gates.py & grep -n "PROBE_BUDGET = 15" src\\run_iter038_nav_gates.py & grep -n "VEL_CAP = 3.5" src\\run_iter038_nav_gates.py & grep -n "NAV_ACC_RANGE = \\[-1.5" src\\run_iter038_nav_gates.py & grep -n "env_seed \\* 1000 + 7" src\\run_iter038_nav_gates.py & grep -n "ARENA_SIZE = 64.0" src\\run_iter038_nav_gates.py'})]
+[Tool Result: exit_code: 1
+stdout: 
+stderr: Der Befehl "grep" ist entweder falsch geschrieben oder
+konnte nicht gefunden werden.
+Der Befehl "grep" ist entweder falsch geschrieben oder
+konnte nicht gefunden werden.
+Der Befehl "grep" ist entweder falsch geschrieben oder
+konnte nicht gefunden werden.
+Der Befehl "grep" ist entweder falsch geschrieben oder
+konnte nicht gefunden werden.
+Der Befehl "grep" ist entweder falsch geschrieben oder
+konnte nicht gefunden werden.
+Der Befehl "grep" ist entweder falsch geschrieben oder
+konnte nicht gefunden werden.
+Der Befehl "grep" ist entweder falsch geschrieben oder
+konnte nicht gefunden werden.
+]
+
+[Tool Call: bash({'command': 'findstr /N "PROBE_RADIUS = 10" src\\run_iter038_nav_gates.py'})]
+[Tool Result: exit_code: 0
+stdout: 21:    sys.stdout.reconfigure(encoding='utf-8')
+24:SEEDS = [7, 31, 53, 71, 83]
+25:N_OBJ = 3
+26:N_STEPS = 2000
+27:SUBSTEPS = 10
+28:ARENA_SIZE = 64.0
+29:PTR_RADIUS = 4.0
+30:PTR_MASS = 10.0
+31:PTR_START = np.array([32.0, 32.0], dtype=np.float64)
+32:PTR_VEL_INIT = np.array([0.0, 0.0], dtype=np.float64)
+33:OBJ_RADIUS_RANGE = [3.0, 8.0]
+34:OBJ_VEL_RANGES = [(-2.0, -0.5), (0.5, 2.0)]
+35:VEL_CAP = 3.5
+36:NAV_ACC_RANGE = [-1.5, 1.5]
+37:PROBE_RADIUS = 10.0
+38:PROBE_P = 0.015
+39:PROBE_BUDGET = 15
+42:GATE1_THRESH = 3.0
+43:GATE1B_THRESH = 0.30
+44:GATE1B_STD_THRESH = 0.25
+45:GATE2_THRESH = 0.50
+46:N_SEEDS_PASS = 4
+48:OUT_DIR = os.path.join('archive', 'iter_038', 'results')
+52:    return env_seed * 1000 + 7
+77:    def __init__(self, N=N_OBJ, substeps=SUBSTEPS, seed=None):
+78:        self.N = N
+79:        self.substeps = substeps
+80:        self.dt = 1.0 / substeps
+81:        self.rng = np.random.RandomState(seed)
+83:        self.positions = np.zeros((N, 2), dtype=np.float64)
+84:        self.velocities = np.zeros((N, 2), dtype=np.float64)
+85:        self.radii = np.zeros(N, dtype=np.float64)
+86:        self.masses = np.zeros(N, dtype=np.float64)
+88:        self.pointer_pos = PTR_START.copy()
+89:        self.pointer_vel = PTR_VEL_INIT.copy()
+90:        self.pointer_radius = PTR_RADIUS
+91:        self.pointer_mass = PTR_MASS
+94:        self._collision_counts = np.zeros(N, dtype=np.int32)
+100:        self.radii = self.rng.uniform(OBJ_RADIUS_RANGE[0], OBJ_RADIUS_RANGE[1], self.N)
+101:        self.masses = self.radii.copy()
+103:            self.velocities[i, 0] = _rand_vel_component(self.rng)
+104:            self.velocities[i, 1] = _rand_vel_component(self.rng)
+106:            margin = self.radii[i] + 0.5
+107:            low = margin
+108:            high = ARENA_SIZE - margin
+109:            self.positions[i, 0] = self.rng.uniform(low, high)
+110:            self.positions[i, 1] = self.rng.uniform(low, high)
+118:        diff = pos2 - pos1
+119:        dist = np.linalg.norm(diff)
+120:        min_dist = r1 + r2
+122:            n = diff / dist
+123:            v_rel_n = np.dot(vel2 - vel1, n)
+124:            m_inv1 = 1.0 / m1
+125:            m_inv2 = 1.0 / m2
+126:            sum_inv = m_inv1 + m_inv2
+127:            overlap = min_dist - dist
+128:            new_pos1 = pos1 - overlap * (m_inv1 / sum_inv) * n
+129:            new_pos2 = pos2 + overlap * (m_inv2 / sum_inv) * n
+132:                v1n = np.dot(vel1, n)
+133:                v2n = np.dot(vel2, n)
+134:                v1n_new = (v1n * (m1 - m2) + 2.0 * m2 * v2n) / (m1 + m2)
+135:                v2n_new = (v2n * (m2 - m1) + 2.0 * m1 * v1n) / (m1 + m2)
+136:                new_vel1 = vel1 + (v1n_new - v1n) * n
+137:                new_vel2 = vel2 + (v2n_new - v2n) * n
+146:        pos = pos.copy()
+147:        vel = vel.copy()
+150:                pos[axis] = radius
+152:                    vel[axis] = -vel[axis]
+154:                pos[axis] = ARENA_SIZE - radius
+156:                    vel[axis] = -vel[axis]
+169:        collisions_this_step = np.zeros(self.N, dtype=bool)
+173:            self.pointer_vel += pointer_acc * self.dt
+175:            self.positions += self.velocities * self.dt
+176:            self.pointer_pos += self.pointer_vel * self.dt
+180:                self.positions[i], self.velocities[i] = self._wall_bounce(
+183:            self.pointer_pos, self.pointer_vel = self._wall_bounce(
+190:                    dist = np.linalg.norm(self.positions[j] - self.positions[i])
+192:                        p1, v1, p2, v2 = self._resolve_circle_circle_2d(
+196:                        self.positions[i] = p1
+197:                        self.velocities[i] = v1
+198:                        self.positions[j] = p2
+199:                        self.velocities[j] = v2
+203:                dist = np.linalg.norm(self.pointer_pos - self.positions[i])
+205:                    collisions_this_step[i] = True
+206:                    p1, v1, p2, v2 = self._resolve_circle_circle_2d(
+210:                    self.positions[i] = p1
+211:                    self.velocities[i] = v1
+212:                    self.pointer_pos = p2
+213:                    self.pointer_vel = v2
+214:                    self.positions[i], self.velocities[i] = self._wall_bounce(
+217:                    self.pointer_pos, self.pointer_vel = self._wall_bounce(
+220:                elif dist < self.pointer_radius + self.radii[i] + PROBE_RADIUS:
+222:                    # We only flag if the CENTER distance is within PROBE_RADIUS
+223:                    center_dist = np.linalg.norm(self.pointer_pos - self.positions[i])
+230:                self._collision_counts[i] += 1
+233:        probe_hit = False
+234:        probed_obj_idx = -1
+235:        center_dists = np.linalg.norm(self.positions - self.pointer_pos, axis=1)
+236:        within_probe = center_dists < PROBE_RADIUS
+239:            nearby_indices = np.where(within_probe)[0]
+240:            probed_obj_idx = int(nearby_indices[np.argmin(center_dists[nearby_indices])])
+241:            probe_hit = True
+247:def run_one_seed(env_seed, record_trajectory=False):
+261:    env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS, seed=env_seed)
+262:    env.pointer_pos = PTR_START.copy()
+263:    env.pointer_vel = PTR_VEL_INIT.copy()
+265:    nav_rng = np.random.RandomState(nav_seed_for_env_seed(env_seed))
+267:    probe_counts = np.zeros(N_OBJ, dtype=np.int32)
+268:    probes_fired = 0
+269:    probe_events = []  # (step, obj_idx)
+271:    trajectory = []
+272:    total_distance = 0.0
+273:    max_speed = 0.0
+274:    prev_ptr_pos = PTR_START.copy()
+278:        ptr_acc = nav_rng.uniform(NAV_ACC_RANGE[0], NAV_ACC_RANGE[1], 2)
+281:        probe_hit, probed_obj_idx, _ = env.step(ptr_acc)
+284:        env.pointer_vel = _cap_velocity(env.pointer_vel, VEL_CAP)
+290:                probe_counts[probed_obj_idx] += 1
+291:                probes_fired += 1
+296:            current_pos = env.pointer_pos.copy()
+298:            delta = current_pos - prev_ptr_pos
+299:            total_distance += np.linalg.norm(delta)
+300:            speed = np.linalg.norm(env.pointer_vel)
+302:                max_speed = float(speed)
+303:            prev_ptr_pos = current_pos
+306:        ptr_in_bounds = all(0 <= env.pointer_pos[a] <= ARENA_SIZE for a in range(2))
+309:            obj_in_bounds = all(0 <= env.positions[i, a] <= ARENA_SIZE for a in range(2))
+312:    mean_probes = float(np.mean(probe_counts))
+313:    cv_probes = float(np.std(probe_counts) / mean_probes) if mean_probes > 0 else 0.0
+315:    result = {
+324:        'gate1_pass': mean_probes <= GATE1_THRESH,
+325:        'gate2_pass': cv_probes >= GATE2_THRESH,
+331:        result['trajectory'] = trajectory
+339:    results = {}
+340:    all_pass = True
+344:    env = PhysicsSandbox2D(N=2, substeps=SUBSTEPS, seed=12345)
+345:    env.positions[0] = np.array([20.0, 32.0])
+346:    env.positions[1] = np.array([44.0, 32.0])
+347:    env.velocities[0] = np.array([2.0, 0.0])
+348:    env.velocities[1] = np.array([-2.0, 0.0])
+349:    env.radii[0] = 5.0
+350:    env.radii[1] = 5.0
+351:    env.masses[0] = 5.0
+352:    env.masses[1] = 5.0
+354:    total_p_pre = env.masses[0] * env.velocities[0] + env.masses[1] * env.velocities[1]
+355:    ke_pre = (0.5 * env.masses[0] * np.dot(env.velocities[0], env.velocities[0])
+358:    env.step(pointer_acc=np.zeros(2))
+360:    total_p_post = env.masses[0] * env.velocities[0] + env.masses[1] * env.velocities[1]
+361:    ke_post = (0.5 * env.masses[0] * np.dot(env.velocities[0], env.velocities[0])
+364:    p_error = np.linalg.norm(total_p_post - total_p_pre)
+365:    ke_error = abs(ke_post - ke_pre)
+366:    S1_pass = p_error < 1e-6 and ke_error < 1e-6
+367:    all_pass = all_pass and S1_pass
+368:    results['S1'] = {
+377:    print(f"    Momentum: pre={total_p_pre}, post={total_p_post}, error={p_error:.2e}")
+378:    print(f"    KE: pre={ke_pre:.6f}, post={ke_post:.6f}, error={ke_error:.2e}")
+383:    ptr_all_in_bounds = True
+385:        r = run_one_seed(seed, record_trajectory=False)
+387:    results['S2'] = {'pass': True, 'description': 'Pointer stays within [0, 64]^2 throughout all seeds'}
+392:    results['S3'] = {'pass': True, 'description': 'Objects stay within [0, 64]^2 throughout all seeds'}
+397:    nav_rng_check = np.random.RandomState(nav_seed_for_env_seed(7))
+398:    accs = []
+399:    for _ in range(1000):
+401:    accs = np.array(accs)
+402:    mean_acc = np.mean(accs, axis=0)
+403:    std_acc = np.std(accs, axis=0)
+404:    # Variance of uniform[-1.5, 1.5] is (3.0)^2 / 12 = 0.75, std ≈ 0.866
+405:    expected_std = (NAV_ACC_RANGE[1] - NAV_ACC_RANGE[0]) / np.sqrt(12)
+406:    std_error = np.abs(std_acc - expected_std)
+407:    mean_close = np.all(np.abs(mean_acc) < 0.15)  # mean should be ≈ 0
+408:    S4_pass = std_error.max() < 0.1 and mean_close
+409:    all_pass = all_pass and S4_pass
+410:    results['S4'] = {
+417:    print(f"    S4: mean_acc={mean_acc}, std_acc={std_acc}, expected_std≈{expected_std:.4f}")
+422:    vel_cap_ok = True
+423:    max_vel_observed = 0.0
+425:        env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS, seed=seed)
+426:        env.pointer_pos = PTR_START.copy()
+427:        env.pointer_vel = PTR_VEL_INIT.copy()
+428:        nav_rng_check2 = np.random.RandomState(nav_seed_for_env_seed(seed))
+430:            ptr_acc = nav_rng_check2.uniform(NAV_ACC_RANGE[0], NAV_ACC_RANGE[1], 2)
+432:            env.pointer_vel = _cap_velocity(env.pointer_vel, VEL_CAP)
+433:            component_max = np.max(np.abs(env.pointer_vel))
+435:                vel_cap_ok = False
+438:                max_vel_observed = float(component_max)
+439:    all_pass = all_pass and vel_cap_ok
+440:    results['S5'] = {
+446:    print(f"    S5: max_vel_component={max_vel_observed:.4f}, cap={VEL_CAP}")
+452:    env = PhysicsSandbox2D(N=3, substeps=SUBSTEPS, seed=42)
+454:        env.positions[i] = np.array([32.0, 32.0])
+455:        env.radii[i] = 3.0
+456:        env.masses[i] = 3.0
+457:        env.velocities[i] = np.array([0.0, 0.0])
+458:    env.pointer_pos = np.array([32.0, 32.0])
+459:    env.pointer_vel = np.array([0.0, 0.0])
+461:    nav_rng_probe = np.random.RandomState(999)
+462:    probes_hit = 0
+463:    total_steps_check = 500
+464:    steps_in_range = 0
+466:        ptr_acc = np.zeros(2)  # Don't move
+467:        hit, idx, _ = env.step(ptr_acc)
+469:            steps_in_range += 1
+471:                probes_hit += 1
+474:    S6_pass = (steps_in_range == total_steps_check) and (0 < probes_hit <= PROBE_BUDGET)
+475:    all_pass = all_pass and S6_pass
+476:    results['S6'] = {
+489:    env = PhysicsSandbox2D(N=N_OBJ, substeps=SUBSTEPS, seed=7)
+490:    env.pointer_pos = PTR_START.copy()
+491:    env.pointer_vel = PTR_VEL_INIT.copy()
+493:        env.step(pointer_acc=np.zeros(2))
+494:        env.pointer_vel = _cap_velocity(env.pointer_vel, VEL_CAP)  # won't change since acc=0
+497:    static_collisions = env._collision_counts.tolist()
+498:    mean_static_coll = np.mean(static_collisions)
+499:    S7_pass = mean_static_coll <= GATE1_THRESH
+500:    all_pass = all_pass and S7_pass
+501:    results['S7'] = {
+505:        'description': f'Static pointer seed 7: collisions=({static_collisions[0]},{static_collisions[1]},{static_collisions[2]}), mean={mean_static_coll:.2f}',
+507:    print(f"    S7: collisions=({static_collisions[0]},{static_collisions[1]},{static_collisions[2]}), mean={mean_static_coll:.2f}")
+519:    gate = {}
+522:    gate1_per_seed = []
+524:        passes = r['mean_probe_count'] <= GATE1_THRESH
+531:    n_pass_g1 = sum(1 for s in gate1_per_seed if s['pass'])
+532:    gate['gate1'] = {
+538:        'pass': n_pass_g1 >= N_SEEDS_PASS,
+542:    per_seed_cvs = [r['cv_probes'] for r in seeds_results]
+543:    mean_cv = float(np.mean(per_seed_cvs))
+544:    std_cv = float(np.std(per_seed_cvs))
+545:    gate['gate1b'] = {
+552:        'pass_mean': mean_cv >= GATE1B_THRESH,
+553:        'pass_std': std_cv <= GATE1B_STD_THRESH,
+554:        'pass': mean_cv >= GATE1B_THRESH and std_cv <= GATE1B_STD_THRESH,
+558:    gate2_per_seed = []
+560:        passes = r['cv_probes'] >= GATE2_THRESH
+567:    n_pass_g2 = sum(1 for s in gate2_per_seed if s['pass'])
+568:    gate['gate2'] = {
+574:        'pass': n_pass_g2 >= N_SEEDS_PASS,
+577:    gate['all_pass'] = gate['gate1']['pass'] and gate['gate1b']['pass'] and gate['gate2']['pass']
+582:def compute_coverage(trajectory, arena=ARENA_SIZE, cell_size=1.0):
+584:    visited = set()
+586:        gx = int(x / cell_size)
+587:        gy = int(y / cell_size)
+588:        gx = max(0, min(int(arena / cell_size) - 1, gx))
+589:        gy = max(0, min(int(arena / cell_size) - 1, gy))
+591:    total_cells = int(arena / cell_size) ** 2
+597:    os.makedirs(OUT_DIR, exist_ok=True)
+599:    print("=" * 70)
+601:    print("=" * 70)
+602:    print(f"Parameters: N={N_OBJ}, arena={ARENA_SIZE}x{ARENA_SIZE}")
+603:    print(f"  Steps={N_STEPS}, Substeps={SUBSTEPS}")
+604:    print(f"  Pointer: radius={PTR_RADIUS}, mass={PTR_MASS}, start=(32,32)")
+607:    print(f"  Probe: radius={PROBE_RADIUS}, p={PROBE_P}, budget={PROBE_BUDGET}")
+614:    sanity_results, sanity_all_pass = run_sanity_checks()
+621:    seeds_results = []
+622:    all_trajectories = {}
+624:        print(f"  Seed {seed}...", end=" ", flush=True)
+625:        r = run_one_seed(seed, record_trajectory=True)
+626:        all_trajectories[seed] = r.pop('trajectory')
+628:        print(f"mean={r['mean_probe_count']:.2f}, "
+629:              f"CV={r['cv_probes']:.3f}, "
+630:              f"fired={r['probes_fired']}, "
+631:              f"collisions={sum(r['collision_counts'])}")
+635:    gates = evaluate_gates(seeds_results)
+638:    print("=" * 70)
+640:    print("=" * 70)
+642:    print("\nGate-1 (Non-saturation): mean per-object probe count <= 3.0")
+645:        r = next(x for x in seeds_results if x['seed'] == s['seed'])
+646:        mark = "PASS" if s['pass'] else "FAIL"
+650:    print("\nGate-1b (CV stability): mean(CV) >= 0.30 AND std(CV) <= 0.25")
+651:    print(f"  {'Seed':>6} | {'CV':>10}")
+653:        print(f"  {seed_idx:>6} | {cv_val:>10.3f}")
+654:    print(f"  Mean CV: {gates['gate1b']['mean_cv']:.3f} (threshold: >= {gates['gate1b']['mean_cv_threshold']:.2f})")
+655:    print(f"  Std  CV: {gates['gate1b']['std_cv']:.3f} (threshold: <= {gates['gate1b']['std_cv_threshold']:.2f})")
+660:    print("\nGate-2 (Heterogeneity): per-seed CV >= 0.50")
+661:    print(f"  {'Seed':>6} | {'CV':>10} | {'Pass':>5}")
+663:        mark = "PASS" if s['pass'] else "FAIL"
+664:        print(f"  {s['seed']:>6} | {s['cv_probes']:>10.3f} | {mark:>5}")
+668:    g1 = "PASS" if gates['gate1']['pass'] else "FAIL"
+669:    g1b = "PASS" if gates['gate1b']['pass'] else "FAIL"
+670:    g2 = "PASS" if gates['gate2']['pass'] else "FAIL"
+671:    overall = "PASS" if gates['all_pass'] else "FAIL"
+690:            reasons = []
+701:    print("=" * 70)
+706:    with open(os.path.join(OUT_DIR, 'probe_events.csv'), 'w', newline='') as f:
+707:        w = csv.writer(f)
+720:    with open(os.path.join(OUT_DIR, 'diagnostic_collisions.csv'), 'w', newline='') as f:
+721:        w = csv.writer(f)
+733:        f.write("=" * 70 + "\n\n")
+735:        s1 = sanity_results['S1']
+753:        s4 = sanity_results['S4']
+759:        s5 = sanity_results['S5']
+765:        s6 = sanity_results['S6']
+771:        s7 = sanity_results['S7']
+774:        f.write(f"  Mean: {s7['mean']:.2f} (threshold: <= {GATE1_THRESH})\n")
+775:        f.write(f"  (Re-verification of passive pointer still giving mean <= 3.0)\n")
+782:        f.write("=" * 70 + "\n")
+784:        f.write("=" * 70 + "\n\n")
+786:        f.write(f"  Arena: {ARENA_SIZE}x{ARENA_SIZE}, N={N_OBJ}, Steps={N_STEPS}, Substeps={SUBSTEPS}\n")
+787:        f.write(f"  Pointer: radius={PTR_RADIUS}, mass={PTR_MASS}, start=(32,32), vel_init=(0,0)\n")
+788:        f.write(f"  Object radii: [{OBJ_RADIUS_RANGE[0]}, {OBJ_RADIUS_RANGE[1]}], mass=radius\n")
+792:        f.write(f"  Probe: radius={PROBE_RADIUS}, p={PROBE_P}, budget={PROBE_BUDGET}\n")
+796:        f.write(f"  Threshold: mean per-object probe count <= {GATE1_THRESH}\n")
+797:        f.write(f"  Decision rule: >= {N_SEEDS_PASS}/{len(SEEDS)} seeds must individually pass\n")
+799:            r = next(x for x in seeds_results if x['seed'] == s['seed'])
+800:            mark = "PASS" if s['pass'] else "FAIL"
+801:            f.write(f"  Seed {s['seed']:>3}: counts=({r['probe_counts'][0]},{r['probe_counts'][1]},{r['probe_counts'][2]}), "
+802:                    f"mean={s['mean_probe_count']:.3f} -> {mark}\n")
+807:        f.write(f"  Thresholds: mean(CV) >= {GATE1B_THRESH}, std(CV) <= {GATE1B_STD_THRESH}\n")
+809:            f.write(f"  Seed {seed_idx:>3}: CV={cv_val:.3f}\n")
+815:        f.write(f"  Threshold: per-seed CV >= {GATE2_THRESH}\n")
+816:        f.write(f"  Decision rule: >= {N_SEEDS_PASS}/{len(SEEDS)} seeds must individually pass\n")
+818:            mark = "PASS" if s['pass'] else "FAIL"
+819:            f.write(f"  Seed {s['seed']:>3}: CV={s['cv_probes']:.3f} -> {mark}\n")
+842:                f.write(f"  -> Gate-1b: mean CV={gates['gate1b']['mean_cv']:.3f} vs >={gates['gate1b']['mean_cv_threshold']:.2f}, "
+843:                        f"std CV={gates['gate1b']['std_cv']:.3f} vs <={gates['gate1b']['std_cv_threshold']:.2f}\n")
+849:        f.write("=" * 70 + "\n")
+852:    with open(os.path.join(OUT_DIR, 'trajectory_stats.csv'), 'w', newline='') as f:
+853:        w = csv.writer(f)
+857:            traj = all_trajectories[seed]
+858:            r = next(x for x in seeds_results if x['seed'] == seed)
+859:            total_dist = r['total_distance']
+860:            mean_speed = total_dist / N_STEPS
+861:            coverage = compute_coverage(traj)
+862:            total_cells = int(ARENA_SIZE) ** 2
+863:            cells_visited = int(round(coverage * total_cells))
+888:if __name__ == '__main__':
+
+stderr: ]
+All parameters are confirmed correct. Both files are complete and verified.
+
+**Summary of completed work:**
+
+### Step 1: Updated `src/pre_registration.md`
+Appended three new sections without removing any existing content:
+- **## 4. Object Placement Protocol** — UNIFORM-RANDOM placement, margin = radius_i + 0.5, explicit prohibition on placement bias, CV must emerge from dynamics
+- **## 5. Statistical Discipline** — frozen seeds [7, 31, 53, 71, 83], no post-hoc additions, single parameterization, mid-run tuning forbidden, std(CVs) interpreted at face value
+- **## 6. Reporting Language** — approved phrasings ("consistent with bracket-admission", "does not refute the null"), banned words ("demonstrates", "proves", etc.), PASS → human handoff, FAIL → re-frame scope
+
+### Step 2: Created `src/run_iter038_nav_gates.py`
+- **PhysicsSandbox2D** rebuilt from iter_037 with: UNIFORM-RANDOM object placement (not segment-based), probe mechanism using PROBE_RADIUS=10.0 (collision events are diagnostic only), velocity cap applied after full step
+- **Navigation RNG**: separate from environment RNG via `seed * 1000 + 7`
+- **Frozen parameters**: all match pre-registration exactly
+- **7 sanity checks**: S1 (physics conservation), S2-S3 (bounds via assertions), S4 (random acceleration validation), S5 (velocity cap), S6 (probe mechanism), S7 (re-verify iter_037 static pointer)
+- **3 gates**: Gate-1 (mean ≤ 3.0, ≥4/5 seeds), Gate-1b (mean CV ≥ 0.30 & std CV ≤ 0.25), Gate-2 (per-seed CV ≥ 0.50, ≥4/5 seeds)
+- **5 output files** to `archive/iter_038/results/`: `probe_events.csv`, `diagnostic_collisions.csv`, `sanity_checks.txt`, `gate_summary.txt`, `trajectory_stats.csv`
+- **Exit rule**: PASS → human handoff; FAIL → iter_039 re-frame scope
+
+
+[NUDGE RESPONSE]
+```yaml
+status: ok
+artifacts:
+  - src/pre_registration.md
+  - src/run_iter038_nav_gates.py
+metrics:
+  files_written: 1
+  files_modified: 1
+  sanity_checks_defined: 7
+  gates_defined: 3
+  frozen_seeds_count: 5
+experimenter_view: |
+  Successfully completed both tasks for iter_038 pre-execution.
+  
+  1. Updated src/pre_registration.md: Appended Sections 4-6 covering
+     Object Placement Protocol (UNIFORM-RANDOM, margin=radius+0.5, no placement bias),
+     Statistical Discipline (frozen seeds, face-value std(CV), no mid-run tuning),
+     and Reporting Language (approved phrasings, banned words, human handoff on pass).
+     No existing content was removed.
+  
+  2. Created src/run_iter038_nav_gates.py: Full navigation gate experiment script
+     built on iter_037 PhysicsSandbox2D. Key changes: UNIFORM-RANDOM object placement
+     (not segment-based), navigating pointer with random acceleration Uniform[-1.5,1.5]^2,
+     probe mechanism (PROBE_RADIUS=10, p=0.015, budget=15, NEAREST object only),
+     collision physics preserved but diagnostic only. Separate navigation RNG
+     (seed*1000+7). All frozen parameters match pre-registration. 7 sanity checks (S1-S7),
+     3 gates evaluated with correct thresholds. 5 output files to archive/iter_038/results/.
+  
+  Python syntax verification passed. Parameter grep verification confirmed all frozen values.
+  Script is ready to run in the next sub-goal.
+notes: "Pre-registration updated and iter_038 script created. Ready for execution."
+```

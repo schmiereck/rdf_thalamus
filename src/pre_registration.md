@@ -247,5 +247,58 @@ claims about the representation, methodology, and environmental findings.
 - All standing mandates (M1, M3, GDASR log-only, decoder-free, iter_028 substrate)
 - M2 remains untestable, not falsified
 
+## 4. Object Placement Protocol
+
+- Object initial positions are sampled UNIFORM-RANDOM in the arena interior.
+  Both x and y coordinates are drawn independently from
+  Uniform([margin, ARENA_SIZE - margin]) where margin = radius_i + 0.5.
+  This is **NOT** segment-based placement. Objects may cluster near each
+  other or near the geometric center — this is expected and not controlled.
+- The pointer spawns at the geometric center (32, 32) **independent of
+  object positions**. It does not receive any knowledge of where objects are.
+- The "expected CV ≈ 0.50" claim in the hypothesis is reframed: it is a
+  prediction about **EMERGENT** random-walk clustering from autocorrelated
+  trajectories + wall bounces, **NOT** from chosen object placement. If
+  CV ≥ 0.50 cannot survive uniform-random object placement, the gate MUST
+  fail. The heterogeneity must come from the dynamics, not from the setup.
+- **Explicit statement:** No object placement bias is permitted. The CV must
+  emerge from the dynamics of the random walk and the resulting spatial
+  clustering, not from any constructional advantage.
+
+## 5. Statistical Discipline
+
+- The std(per-seed CVs) in Gate-1b is a sample-of-5 statistic interpreted at
+  face value, not bootstrapped. The failure mode is honest, not statistical-magic.
+  If the five seeds produce wildly different CVs, that is a real finding, not
+  a sampling artifact.
+- The seed list **[7, 31, 53, 71, 83] is FROZEN**. No post-hoc seed
+  additions to chase a gate. Adding more seeds is a form of p-hacking.
+- **Single declared parameterization** — no parameter sweep, no fallback
+  parameterization. This design either passes or fails. If one parameter
+  combination passes and another fails, that is not evidence in favor of
+  the hypothesis; it is evidence that the result depends on tuning.
+- **Mid-run tuning of any parameter** (p, PROBE_RADIUS, budget, velocity cap,
+  arena size) is **FORBIDDEN**. The parameters declared here are the only
+  parameters that will be tested.
+
+## 6. Reporting Language
+
+- Results must be phrased using the following approved formulations:
+  - "is consistent with bracket-admission"
+  - "does not refute the null"
+  - "the tested parameterization fails Gate-X at X.XX vs threshold Y.YY"
+- **NEVER** use the following language:
+  - "demonstrates"
+  - "proves"
+  - "shows that 2D navigation works"
+  - "validates"
+- **On PASS:** hand off to HUMAN go/no-go on full 2D rebuild. The agent
+  does **NOT** begin 2D rebuild work. The scope of a full rebuild (estimated
+  ~10-14 iterations) must be acknowledged as a human decision, not an
+  automated continuation.
+- **On FAIL of any gate:** the six re-frame claims in the existing exit rule
+  (Section 3, Step 5 FAIL branch) become the iter_039 scope. The failure is
+  recorded as a data point, not as a narrative failure.
+
 ---
 *Created automatically by the RDF Orchestrator prior to iteration execution.*
