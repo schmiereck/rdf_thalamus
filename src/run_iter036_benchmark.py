@@ -48,12 +48,13 @@ class FoveatedGazeSandbox(PhysicsSandbox):
     """
 
     def __init__(self, N=3, substeps=10, seed=None, pass_through=False, gaze_radius=8):
-        super().__init__(N=N, substeps=substeps, seed=seed)
+        # Must set attributes before super().__init__() because parent reset() calls render()
         self.pass_through = pass_through
         self.gaze_radius = gaze_radius
         self.probe_budget = PROBE_BUDGET
         self.probe_events = []  # list of (step, obj_idx, v_gaze_pre, v_obj_pre, v_gaze_post, v_obj_post)
         self._pending_probe_events = []
+        super().__init__(N=N, substeps=substeps, seed=seed)
 
     def reset(self, seed=None):
         result = super().reset(seed=seed)
@@ -520,13 +521,14 @@ def main():
     env2.pointer_pos = 50.0  # on object 0 (within gaze_radius=8)
     env2.pointer_vel = 5.0
 
+    pre_budget2 = env2.probe_budget
     pre_v2 = env2.velocities.copy()
     pre_gaze_v2 = float(env2.pointer_vel)
     obs2, info2 = env2.step({'acc': 0.0, 'probe': True})
     post_v2 = info2['velocities'].copy()
     post_gaze_v2 = float(env2.pointer_vel)
 
-    probe_worked = (info2['probe_budget'] < env2.probe_budget) and len(info2['probe_events']) > 0
+    probe_worked = (info2['probe_budget'] < pre_budget2) and len(info2['probe_events']) > 0
     print(f"  Probe events recorded: {len(info2['probe_events'])}")
     print(f"  Gaze vel: {pre_gaze_v2} -> {post_gaze_v2}")
     print(f"  Obj 0 vel: {pre_v2[0]} -> {post_v2[0]}")
@@ -668,9 +670,11 @@ def main():
         all_sanity = all(p for _, p, d in s_details)
         sanity[arm]['_all'] = all_sanity
 
-        for k, (p, d) in sanity[arm].items():
-            if not k.startswith('_'):
-                print(f"  Arm={arm} {k}: {'PASS' if p else 'FAIL'} — {d}")
+        for k, v in sanity[arm].items():
+            if k.startswith('_'):
+                continue
+            p, d = v
+            print(f"  Arm={arm} {k}: {'PASS' if p else 'FAIL'} — {d}")
         print(f"  Arm={arm} All sanity: {'PASS' if all_sanity else 'FAIL'}")
 
     # ── Metrics per arm ──
