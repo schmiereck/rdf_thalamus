@@ -1,44 +1,6 @@
 
 ---
 ```yaml
-cached_tokens: 1028187
-cost_usd: 0.64097
-hypothesis: 'phase-8: evaluate unsupervised spatial bottlenecks and closed-loop output-as-input
-  active probing'
-input_tokens: 1391243
-iter: 8
-metrics:
-  best_avg_centroid_r: 0.2907
-  best_avg_decoding_mse: 69.1092
-  collapse_prevention_rate_exp: 100.0
-  collapse_rate_control: 40.0
-  control_avg_decoding_mse: 83.1196
-  recruitment_rate: 80.0
-  spatial_variance_reduction_pct: 95.0
-output_tokens: 6956
-status: ok
-```
-
-## iter_008: phase-8: evaluate unsupervised spatial bottlenecks and closed-loop output-as-input active probing
-
-**Analysis:** In Phase 7, we discovered a "Spatial Specialization Gap": unconstrained temporal-prediction error and VICReg spread coordinate information across the entire latent manifold rather than localizing it onto a single recruited channel, leading to high seed-to-seed variance.
-In Phase 8, we addressed this gap by introducing a spatial convolutional bottleneck and a soft spatial variance minimization pena
-
-**Status:** ok
-
-**Metrics:** `{'best_avg_centroid_r': 0.2907, 'best_avg_decoding_mse': 69.1092, 'control_avg_decoding_mse': 83.1196, 'spatial_variance_reduction_pct': 95.0, 'collapse_prevention_rate_exp': 100.0, 'collapse_rate_control': 40.0, 'recruitment_rate': 80.0}`
-
-**Experimenter view:** We executed Phase 8 (Pillar D & E integration with Spatial Bottlenecks) under a rigorous, 5-seed comparative sweep.
-Our experiments successfully validated the introduction of an unsupervised spatial bottleneck (minimizing soft spatial variance) coupled with closed-loop active probing.
-
-Key Findings:
-1. MASSIVE SOFT SPATIAL VARIANCE REDUCTION (iter_008.3): Squeezing the spatial activation map of th
-
-**Notes:** Phase 8 complete. The trade-off between spatial localization and cognitive predictive capacity was systematically mapped.
-
-
----
-```yaml
 cached_tokens: 705546
 cost_usd: 0.53081
 hypothesis: 'phase-9: evaluate surprise-modulated adaptive bottleneck curriculum (DSMC)
@@ -1573,4 +1535,70 @@ px/step) in a 64×64 arena with N=3 uniformly-placed objects and a probe mechani
 Gate-1 (Non-saturation) PASSES: all 5 seeds have mean per-object probe count ≤
 
 **Notes:** Gate-1b FAIL at std CV 0.320 > 0.25. Exit rule FAIL branch applied. Six re-frame claims become iter_039 scope.
+
+
+---
+```yaml
+cached_tokens: 1691327
+campaign: collapse-elimination
+campaign_status: completed
+campaign_summary: 'The collapse-elimination campaign (iter_027-039) identified sim_loss_dyn
+  as the
+
+  collapse driver, established separate-backbone as the working anti-collapse
+
+  configuration, localized the mean-pool readout bottleneck, discovered
+
+  cross-backbone attention coupling as a novel collapse mechanism, and
+
+  systematically attempted behavioral validation across five environment designs
+
+  before declaring the strategy intractable and closing with six documented
+
+  falsifiable claims.'
+cost_usd: 4.05216
+hypothesis: 'phase-39: Closing project report documents MIGRATING-OBSTRUCTION meta-finding,
+  six re-frame claims with precise status tags, UNTESTABLE-NOT-FALSIFIED M2 status,
+  structural-ceiling-gate methodology, and key iteration index.'
+input_tokens: 2576648
+iter: 39
+metrics:
+  M2_status: UNTESTABLE-NOT-FALSIFIED
+  claim_A_status: VALIDATED
+  claim_B_status: VALIDATED
+  claim_C_status: VALIDATED
+  claim_D_status: VALIDATED-IN-COMPANION-PROJECT
+  claim_E_status: WORKING-CONFIGURATION-VALIDATED
+  claim_F_status: DESCRIPTIVELY-VALIDATED
+  claims_documented: 6
+  falsification_criteria_met: 6/6
+  obstruction_classes_documented: 5
+  sections_in_report: 6
+output_tokens: 49908
+status: ok
+```
+
+## iter_039: phase-39: Closing project report documents MIGRATING-OBSTRUCTION meta-finding, six re-frame claims with precise status tags, UNTESTABLE-NOT-FALSIFIED M2 status, structural-ceiling-gate methodology, and key iteration index.
+
+**Analysis:** This was the final iteration of rdf_thalamus. The sole deliverable was the
+closing project report, requiring strict adherence to pre-registered status
+tags and language discipline. Two sub-goals were completed sequentially:
+
+Sub-goal 39.1 (medium executor): Updated src/pre_registration.md with three
+Manager corrections — the M2 Wording Lock, Language Discipline Guard, and
+Construction Check on MIG
+
+**Status:** ok
+
+**Metrics:** `{'sections_in_report': 6, 'claims_documented': 6, 'claim_A_status': 'VALIDATED', 'claim_B_status': 'VALIDATED', 'claim_C_status': 'VALIDATED', 'claim_D_status': 'VALIDATED-IN-COMPANION-PROJECT', 'claim_E_status': 'WORKING-CONFIGURATION-VALIDATED', 'claim_F_status': 'DESCRIPTIVELY-VALIDATED', 'M2_status': 'UNTESTABLE-NOT-FALSIFIED', 'obstruction_classes_documented': 5, 'falsification_criteria_met': '6/6'}`
+
+**Experimenter view:** The closing project report (archive/iter_039/final_report.md) has been written
+and archived. Sub-goal 39.1 updated src/pre_registration.md with three Manager
+corrections (M2 Wording Lock, Language Discipline Guard, Construction Check on
+MIGRATING-OBSTRUCTION). Sub-goal 39.2 ran a planner agent that synthesized all
+iteration data into the final report following the exact six-section structure.
+
+All
+
+**Notes:** rdf_thalamus project formally closed. Final report archived.
 
