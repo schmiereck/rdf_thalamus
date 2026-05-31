@@ -1,0 +1,83 @@
+falsification_criterion: "The benchmark is falsified if EITHER:\n(F1) RANDOM_MAPE\
+  \ - ORACLE_MAPE < 0.15 (the ORACLE-TARGETED policy does not\n     substantially\
+  \ outperform random action on mass estimation), OR\n(F2) The lower 95% bootstrap\
+  \ CI of (RANDOM_MAPE - ORACLE_MAPE) includes zero\n     (the gap is not statistically\
+  \ reliable), OR\n(F3) Any ORACLE sanity-check precondition fails:\n     S1: ORACLE\
+  \ achieves ≥3 collisions per object (targeting works),\n     S2: ORACLE total collision\
+  \ count ≥ PASSIVE total collision count,\n     S3: ≥90% of logged collision events\
+  \ show |Δv| > 0.5 px/step,\n     S4: ORACLE mean surprise per step ∈ [0.01, 100]\
+  \ (physical range,\n         not 146k as in the buggy iter_033 v1/v2),\n     S5:\
+  \ ≥80% of ORACLE surprise spikes align (±2 steps) with ground-truth\n         collision\
+  \ events.\nIf F3 fires, the ORACLE implementation is buggy and no comparison is\
+  \ interpreted.\n"
+hypothesis: 'A dynamics-learning benchmark with N=3 objects, where the primary metric
+  is
+
+  mass-estimation MAPE (Mean Absolute Percentage Error) computed from ground-truth
+
+  collision logs, is non-degenerate: an ORACLE-TARGETED policy that actively probes
+
+  under-observed objects achieves mass-estimation MAPE at least 0.15 lower than a
+
+  RANDOM policy (RANDOM_MAPE - ORACLE_MAPE ≥ 0.15), with the lower 95% bootstrap
+
+  CI of this gap ≥ 0.05 over ≥8 seeds including hard seeds 53 and 71. The metric
+
+  directly measures the Pillar-E end-goal capability (hidden-parameter inference
+
+  through active interaction) without routing through the EMA-coupled motor
+
+  controller, thereby neutralizing the 33-vs-58 px tracking artifact from iter_033.
+
+  '
+pre_registration_file: src/pre_registration.md
+proposed_method: "Step 1: Create src/run_iter034_benchmark.py implementing the full\
+  \ experiment.\n\nENVIRONMENT: PhysicsSandbox(N=3), 2000 interaction steps, 8 seeds\n\
+  [7, 31, 53, 71, 83, 97, 113, 163].\n\nTHREE CONDITIONS (no LEARNED representation\
+  \ — that is iter_035):\n\n(A) ORACLE-TARGETED: Custom policy that (i) maintains\
+  \ per-object collision\n    count, (ii) moves pointer toward the object with fewest\
+  \ observed collisions\n    using PD control (Kp=2.0, Kd=0.5), (iii) pushes when\
+  \ within |error| ≤ 6.0\n    of target, (iv) uses the full-physics simulate_physics()\
+  \ from iter_033 v3\n    for surprise computation. Does NOT use CLTSMotorController\
+  \ — avoids the\n    EMA confound entirely by implementing a clean information-gain-maximizing\n\
+  \    policy directly.\n\n(B) RANDOM: Uniform random acceleration ∈ [-10, 10], random\
+  \ push with p=0.1,\n    no motor controller.\n\n(C) PASSIVE: No pointer action (acc=0,\
+  \ push=False). Pointer acts as a\n    passive object. Only natural object-object\
+  \ collisions provide mass info.\n\nMASS ESTIMATION PROCEDURE:\n- During interaction,\
+  \ log all collision events: (step, obj_i, obj_j, v_i_pre,\n  v_j_pre, v_i_post,\
+  \ v_j_post). Collision detection: |pos_i - pos_j| <\n  radii_i + radii_j + threshold\
+  \ AND |Δv| > 0.5 for either object.\n- From elastic collision physics, each collision\
+  \ (i,j) gives:\n  m_i * (v_i - v_i') = m_j * (v_j' - v_j)\n  → linear constraint\
+  \ on mass vector [m_0, m_1, m_2].\n- Pointer-object collisions give absolute mass\
+  \ (pointer mass = 10).\n- Solve overdetermined system via least-squares (np.linalg.lstsq).\n\
+  - Objects with 0 observed collisions: m_hat = 5.5 (prior mean).\n- MAPE = mean(|m_hat_i\
+  \ - m_true_i| / m_true_i) across 3 objects.\n\nPRIMARY METRIC: MAPE (lower is better).\n\
+  Gate 1 (non-degeneracy): RANDOM_MAPE - ORACLE_MAPE ≥ 0.15, lower 95% CI ≥ 0.05.\n\
+  Gate 2 (end-goal validity): The metric measures hidden-parameter inference\nthrough\
+  \ active interaction, which IS the Pillar-E artificial-curiosity\ncapability, not\
+  \ a proxy for it. Justified because mass is only observable\nthrough collisions,\
+  \ and active probing systematically increases collision\ncoverage.\n\nSECONDARY\
+  \ METRIC: Held-out velocity prediction MSE.\nSplit collision data 80/20 by time.\
+  \ Fit masses from training collisions,\npredict post-collision velocities on test\
+  \ collisions, compute MSE.\n\nORACLE SANITY CHECKS (pre-conditions, must ALL pass\
+  \ before interpreting F1/F2):\nS1: ORACLE achieves ≥3 collisions per object (mean\
+  \ across seeds).\nS2: ORACLE total collision count ≥ PASSIVE total collision count\
+  \ (per seed).\nS3: ≥90% of logged collision events show |Δv| > 0.5 px/step.\nS4:\
+  \ ORACLE mean surprise per step ∈ [0.01, 100].\nS5: ≥80% of ORACLE surprise spikes\
+  \ align (±2 steps) with collisions.\n\nEMA CONFOUND NEUTRALIZATION (stated explicitly\
+  \ per Manager hint):\nThe mass-estimation metric is computed entirely from ground-truth\
+  \ collision\nlogs (positions, velocities from env.info), NOT from the agent's surprise\n\
+  signal or motor controller state. The ORACLE-TARGETED policy uses a custom\ninformation-gain-maximizing\
+  \ controller (not CLTSMotorController), so the\ndifferent surprise distributions\
+  \ between conditions cannot affect the metric.\nThe iter_033 tracking artifact (ORACLE\
+  \ 58 px vs LEARNED 33 px) arose because\nthe CLTSMotorController's EMA calibrated\
+  \ differently under qualitatively\ndifferent surprise distributions, causing different\
+  \ attention switching rates.\nBy not routing the metric through the EMA-coupled\
+  \ motor, this artifact is\nstructurally impossible in the new benchmark.\n\nStep\
+  \ 2: Run the experiment (8 seeds × 3 conditions = 24 runs).\n\nStep 3: Analyze results.\
+  \ Report per-seed MAPE for each condition, compute\ngap and CI, check all sanity\
+  \ preconditions, apply gates.\n\nFILES CREATED/MODIFIED:\n- src/run_iter034_benchmark.py\
+  \ (new, main experiment)\n- src/pre_registration.md (auto-generated from plan)\n\
+  \nPRESERVED (per directive): separate backbone architecture, d_t=3 frozen,\nGDASR\
+  \ log-only (M3), decoder-free, no positional encoding, M2 not reopened.\nNo LEARNED\
+  \ representation is used in this iteration.\n"

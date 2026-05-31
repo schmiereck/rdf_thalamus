@@ -1,75 +1,112 @@
-# Pre-Registration: Iter_033 — Three-Condition Oracle Bracket (Corrected per Manager Review)
+# RDF Scientific Pre-Registration
 
-## Hypothesis
-The best available mean-pool representations (SFA+VICReg sfa_weight=5.0, separate backbone, ΔR²≈0.275, 0% collapse, iter_029 Arm B; AND VICReg-only, separate backbone, ΔR²≈0.045, 0% collapse, iter_029 Arm A) support functional surprise-driven behavior that accounts for at least 20% of the gap between random (lower bound) and oracle (perfect-perception upper bound) baselines, as measured by post-collision attention selectivity (version B: attended object matches max-velocity-change object) on N=2 collision-sparse environments with d_t=3 frozen.
+*   **Iteration:** 034
+*   **Pre-Registration File:** src/pre_registration.md
 
-## Conditions (4 total, all sharing identical environment, seed bank, and CLTSMotorController logic)
+## 1. Hypothesis
+A dynamics-learning benchmark with N=3 objects, where the primary metric is
+mass-estimation MAPE (Mean Absolute Percentage Error) computed from ground-truth
+collision logs, is non-degenerate: an ORACLE-TARGETED policy that actively probes
+under-observed objects achieves mass-estimation MAPE at least 0.15 lower than a
+RANDOM policy (RANDOM_MAPE - ORACLE_MAPE ≥ 0.15), with the lower 95% bootstrap
+CI of this gap ≥ 0.05 over ≥8 seeds including hard seeds 53 and 71. The metric
+directly measures the Pillar-E end-goal capability (hidden-parameter inference
+through active interaction) without routing through the EMA-coupled motor
+controller, thereby neutralizing the 33-vs-58 px tracking artifact from iter_033.
 
-1. **RANDOM (lower bound):** CLTSMotorController with random token_locus selection each step. All EMA statistics (mu, sigma) are zeroed/reset each step so no learned structure influences behavior. Attention cooldown is set to 0 so locus is re-randomized every step.
+## 2. Falsification Criterion
+The benchmark is falsified if EITHER:
+(F1) RANDOM_MAPE - ORACLE_MAPE < 0.15 (the ORACLE-TARGETED policy does not
+     substantially outperform random action on mass estimation), OR
+(F2) The lower 95% bootstrap CI of (RANDOM_MAPE - ORACLE_MAPE) includes zero
+     (the gap is not statistically reliable), OR
+(F3) Any ORACLE sanity-check precondition fails:
+     S1: ORACLE achieves ≥3 collisions per object (targeting works),
+     S2: ORACLE total collision count ≥ PASSIVE total collision count,
+     S3: ≥90% of logged collision events show |Δv| > 0.5 px/step,
+     S4: ORACLE mean surprise per step ∈ [0.01, 100] (physical range,
+         not 146k as in the buggy iter_033 v1/v2),
+     S5: ≥80% of ORACLE surprise spikes align (±2 steps) with ground-truth
+         collision events.
+If F3 fires, the ORACLE implementation is buggy and no comparison is interpreted.
 
-2. **LEARNED-VICReg (test arm A):** Load iter_029 Arm A checkpoints (VICReg-only, separate backbone, mean-pool readout, d_max=8, d_t=3). Run encoder + predictor forward pass, feed z_pred_coord, z_target_coord, z_pred_dyn, z_target_dyn to the standard CLTSMotorController.get_action(). Checkpoint naming: a_vicreg-only_control_seed{N}.pt
+## 3. Proposed Method
+Step 1: Create src/run_iter034_benchmark.py implementing the full experiment.
 
-3. **LEARNED-SFA (test arm B):** Load iter_029 Arm B checkpoints (SFA+VICReg sfa_weight=5.0, separate backbone, mean-pool readout, d_max=8, d_t=3). Run encoder + predictor forward pass, feed to the same CLTSMotorController.get_action(). Checkpoint naming: b_sfavicreg,_sfa_5.0_seed{N}.pt
+ENVIRONMENT: PhysicsSandbox(N=3), 2000 interaction steps, 8 seeds
+[7, 31, 53, 71, 83, 97, 113, 163].
 
-4. **ORACLE (upper bound):** Feed ground-truth positions (info['positions'][:d_t]) as z_coord, ground-truit mean-color per object (np.mean(info['colors'][:d_t], axis=1)) as z_dyn, linear-extrapolation predicted positions (prev_pos + prev_vel * dt) as z_pred_coord, and z_dyn as z_pred_dyn (identity is constant). Feed these tensors to the SAME CLTSMotorController.get_action() method — identical surprise computation (per-channel MSE + EMA normalization + attention cooldown), identical PD tracking, identical push logic.
+THREE CONDITIONS (no LEARNED representation — that is iter_035):
 
-**IMPORTANT:** The ORACLE condition represents the behavioral ceiling UNDER THE EXISTING MOTOR CODE (with its EMA statistics and push thresholds calibrated implicitly against noisy learned surprise). The ORACLE will produce qualitatively different surprise distributions (near-zero between collisions, sharp spikes at collisions). This bracket quantifies how much of the ORACLE-RANDOM gap is captured by the learned representations, not the absolute behavioral ceiling.
+(A) ORACLE-TARGETED: Custom policy that (i) maintains per-object collision
+    count, (ii) moves pointer toward the object with fewest observed collisions
+    using PD control (Kp=2.0, Kd=0.5), (iii) pushes when within |error| ≤ 6.0
+    of target, (iv) uses the full-physics simulate_physics() from iter_033 v3
+    for surprise computation. Does NOT use CLTSMotorController — avoids the
+    EMA confound entirely by implementing a clean information-gain-maximizing
+    policy directly.
 
-### Channel-to-Object Mapping
-All conditions use the same closest-centroid mapping: for each channel c, find the object whose position is closest to centroids[0, c]. For ORACLE, centroids are the ground-truth positions, so the mapping is trivially correct. For LEARNED conditions, the mapping uses the learned soft-argmax centroids. For RANDOM, the mapping uses whatever centroids are available (which will be meaningless, providing the random baseline).
+(B) RANDOM: Uniform random acceleration ∈ [-10, 10], random push with p=0.1,
+    no motor controller.
 
-### Surprise Decomposition
-Under ORACLE, z_pred_dyn = z_dyn (identity is constant), so err_dyn = 0 and surprise is purely position-driven (err_coord). Under LEARNED conditions, surprise is the sum err_coord + err_dyn. This difference is reported per-condition as part of the surprise distribution characterization.
+(C) PASSIVE: No pointer action (acc=0, push=False). Pointer acts as a
+    passive object. Only natural object-object collisions provide mass info.
 
-## Environment
-PhysicsSandbox(N=2) — collision-sparse by design (2 objects in 128 pixels). Mass perturbation at step 1000: multiply object 0's mass by 1.5x. 2000 evaluation steps per seed.
+MASS ESTIMATION PROCEDURE:
+- During interaction, log all collision events: (step, obj_i, obj_j, v_i_pre,
+  v_j_pre, v_i_post, v_j_post). Collision detection: |pos_i - pos_j| <
+  radii_i + radii_j + threshold AND |Δv| > 0.5 for either object.
+- From elastic collision physics, each collision (i,j) gives:
+  m_i * (v_i - v_i') = m_j * (v_j' - v_j)
+  → linear constraint on mass vector [m_0, m_1, m_2].
+- Pointer-object collisions give absolute mass (pointer mass = 10).
+- Solve overdetermined system via least-squares (np.linalg.lstsq).
+- Objects with 0 observed collisions: m_hat = 5.5 (prior mean).
+- MAPE = mean(|m_hat_i - m_true_i| / m_true_i) across 3 objects.
 
-## Seed Bank
-12 seeds: [7, 17, 31, 53, 71, 83, 97, 101, 107, 113, 137, 163]
-Includes hard seeds 53 and 71 (mandated by user/manager).
+PRIMARY METRIC: MAPE (lower is better).
+Gate 1 (non-degeneracy): RANDOM_MAPE - ORACLE_MAPE ≥ 0.15, lower 95% CI ≥ 0.05.
+Gate 2 (end-goal validity): The metric measures hidden-parameter inference
+through active interaction, which IS the Pillar-E artificial-curiosity
+capability, not a proxy for it. Justified because mass is only observable
+through collisions, and active probing systematically increases collision
+coverage.
 
-## d_t = 3 (FROZEN)
-All conditions use d_t=3. For N=2, one channel is unused. This matches the architecture under test (trained at d_t=3) and tests whether the unused channel stays VICReg-clean or collapses. This is a deliberate deviation from the earlier plan (which used d_t=2) to keep the architecture identical to the named config.
+SECONDARY METRIC: Held-out velocity prediction MSE.
+Split collision data 80/20 by time. Fit masses from training collisions,
+predict post-collision velocities on test collisions, compute MSE.
 
-## Primary Behavioral Metric
-Post-collision attention selectivity (version B): for each collision event, within POST_COLLISION_WINDOW=15 steps after the collision, the fraction of steps where the attended object (token_locus mapped to object index via closest-centroid) matches the max-velocity-change object. This is the same metric as iter_031 Part B, directly calibrating the 0.59-vs-0.44 signal.
+ORACLE SANITY CHECKS (pre-conditions, must ALL pass before interpreting F1/F2):
+S1: ORACLE achieves ≥3 collisions per object (mean across seeds).
+S2: ORACLE total collision count ≥ PASSIVE total collision count (per seed).
+S3: ≥90% of logged collision events show |Δv| > 0.5 px/step.
+S4: ORACLE mean surprise per step ∈ [0.01, 100].
+S5: ≥80% of ORACLE surprise spikes align (±2 steps) with collisions.
 
-## Secondary Metrics (reported but do NOT drive the gate)
-- Mean tracking error (pointer position vs attended centroid, in pixels)
-- Perturbation selectivity (fraction of steps 1000-1099 where attended object = object 0)
+EMA CONFOUND NEUTRALIZATION (stated explicitly per Manager hint):
+The mass-estimation metric is computed entirely from ground-truth collision
+logs (positions, velocities from env.info), NOT from the agent's surprise
+signal or motor controller state. The ORACLE-TARGETED policy uses a custom
+information-gain-maximizing controller (not CLTSMotorController), so the
+different surprise distributions between conditions cannot affect the metric.
+The iter_033 tracking artifact (ORACLE 58 px vs LEARNED 33 px) arose because
+the CLTSMotorController's EMA calibrated differently under qualitatively
+different surprise distributions, causing different attention switching rates.
+By not routing the metric through the EMA-coupled motor, this artifact is
+structurally impossible in the new benchmark.
 
-## Ordering Sanity Check (PRE-COMMITTED)
-Before computing g, require: ORACLE_primary >= RANDOM_primary (at minimum). If LEARNED beats ORACLE, or RANDOM beats ORACLE, the metric or oracle construction is broken and g is meaningless — report this outcome plainly rather than computing a ratio.
+Step 2: Run the experiment (8 seeds × 3 conditions = 24 runs).
 
-## Branch (c) Threshold (PRE-COMMITTED)
-If |ORACLE_primary - RANDOM_primary| < 0.10, the task or motor protocol is the bottleneck, NOT perception. This invalidates the behavioral-pivot strategy for this specific protocol. The report must state this plainly, not reinterpret partial signals.
+Step 3: Analyze results. Report per-seed MAPE for each condition, compute
+gap and CI, check all sanity preconditions, apply gates.
 
-## Decision Rule (PRE-COMMITTED, VERBATIM)
-g = (LEARNED_primary - RANDOM_primary) / (ORACLE_primary - RANDOM_primary)
+FILES CREATED/MODIFIED:
+- src/run_iter034_benchmark.py (new, main experiment)
+- src/pre_registration.md (auto-generated from plan)
 
-Computed separately for LEARNED-VICReg (g_vr) and LEARNED-SFA (g_sfa).
+PRESERVED (per directive): separate backbone architecture, d_t=3 frozen,
+GDASR log-only (M3), decoder-free, no positional encoding, M2 not reopened.
+No LEARNED representation is used in this iteration.
 
-(a) g >= 0.70 AND lower bootstrapped 95% CI >= 0.50: representation is consistent with sufficiency for the behavior. Project ADVANCES to Phase 2/3 integration on the mean-pool representation.
-
-(b) g <= 0.20: representation PROVABLY limits behavior. ONLY THEN is constraint-relaxation justified (iter_034+: decoder, higher d_t, or the deferred VICReg-upstream-of-gate fix for iter_032 cross-backbone collapse), with the concrete target set by the measured (ORACLE - RANDOM) gap.
-
-(c) |ORACLE_primary - RANDOM_primary| < 0.10: the TASK or MOTOR PROTOCOL is the bottleneck, NOT perception. Fix the protocol/environment. Do NOT touch the representation. This branch invalidates the behavioral-pivot strategy for this specific protocol.
-
-(d) 0.20 < g < 0.70: partial sufficiency. Advance to Phase 2/3 but flag perception as a known secondary limiter to revisit.
-
-## Reporting Requirements
-- Report the raw triple (RANDOM_primary, LEARNED_primary, ORACLE_primary) with CIs (mean plus/minus std across seeds), not only g.
-- Report g with bootstrapped 95% CI (10000 resamples of seeds).
-- If the lower CI of g does not exclude the boundary between adjacent branches, report BOTH branches as possible.
-- Report per-condition surprise distributions (mean, std, histogram of surprise values).
-- Report err_coord vs err_dyn decomposition for LEARNED conditions.
-- Use restrained language: consistent with sufficiency under this protocol / does not refute the representation's adequacy for the measured behavior — never the representation is sufficient.
-- A passed gate at n=12 with one primary metric on one environment is evidence, not proof.
-
-## Preserved Constraints
-- Separate backbone + iter_029 configs (Arm A: VICReg-only, Arm B: SFA+VICReg sfa=5.0)
-- d_t=3 frozen (GDASR log-only, M3)
-- Decoder-free (no reconstruction)
-- No positional encoding
-- M2 mandate stays untestable until constraint-relaxation phase
-- No new representation-side delta_R2 gate alongside the behavioral gate
+---
+*Created automatically by the RDF Orchestrator prior to iteration execution.*
