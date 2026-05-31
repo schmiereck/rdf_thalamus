@@ -1,0 +1,56 @@
+falsification_criterion: "The hypothesis is falsified if ANY of:\n(F1) RANDOM_POMLRE\
+  \ - ORACLE_POMLRE < 0.15 (ORACLE does not substantially outperform RANDOM), OR\n\
+  (F2) The lower 95% bootstrap CI of (RANDOM_POMLRE - ORACLE_POMLRE) includes zero\
+  \ (gap not statistically reliable), OR\n(F3) Any ORACLE sanity check fails:\n  S1:\
+  \ ORACLE achieves ≥3 informative pointer-object collisions per object (mean across\
+  \ seeds),\n  S2: ORACLE push budget utilization ≥ 80% (≥12 of 15 pushes used),\n\
+  \  S3: ≥80% of collision events used for mass estimation have |Δv_obj| > 1.0,\n\
+  \  S4: No single object receives >80% of ORACLE's total pushes (even targeting),\n\
+  \  S5: ORACLE pointer stays in bounds ≥95% of steps.\nIf F3 fires, the ORACLE implementation\
+  \ is buggy and no comparison is interpreted.\n"
+hypothesis: "In a pass-through physics sandbox (N=3 objects that pass through each\
+  \ other; \nonly pointer-object collisions remain elastic) with a 15-push budget\
+  \ over 2000 steps, \nthe ORACLE targeted-exploration policy (PD-tracks the least-collided\
+  \ object, pushes \nwhen within 6px) achieves a Per-Object Median Log-Ratio Error\
+  \ (POMLRE) at least 0.15 \nlower than a RANDOM policy, with the lower 95% paired\
+  \ bootstrap CI of \n(RANDOM_POMLRE - ORACLE_POMLRE) clear of zero over 8 seeds.\
+  \ The ordering \nORACLE_POMLRE < RANDOM_POMLRE < PASSIVE_POMLRE holds in the mean.\n"
+pre_registration_file: src/pre_registration.md
+proposed_method: "Step 1: Create src/run_iter035_benchmark.py implementing:\n\nA.\
+  \ PassThroughPhysicsSandbox — subclass of PhysicsSandbox where the step() method\
+  \ \n   skips elastic collision resolution between non-pointer entities. Only collisions\
+  \ \n   involving the pointer (index N) are resolved. Objects pass through each other\
+  \ \n   but bounce off walls normally.\n\nB. Three conditions (NO learned representation\
+  \ — benchmark validation only):\n   - ORACLE: Custom controller that (a) maintains\
+  \ per-object pointer-collision count,\n     (b) PD-tracks the least-collided object\
+  \ (Kp=2.0, Kd=0.5), (c) when within \n     |error|≤6.0, sets pointer_vel=5.0 toward\
+  \ target (1 push budget unit), \n     (d) after push, switches target to next least-collided\
+  \ object, (e) after \n     15 pushes exhausted, continues PD tracking without pushing.\n\
+  \   - RANDOM: Random acceleration ∈ [-10,10], random push (p=0.1) until budget \n\
+  \     exhausted. No targeting.\n   - PASSIVE: No action (acc=0, push=False). Pointer\
+  \ only moves from incidental \n     collisions with objects.\n\nC. Collision detection\
+  \ (same as iter_034): Before/after each env.step(), compare \n   entity velocities.\
+  \ Log pointer-object collision events with pre/post velocities.\n\nD. Metric — POMLRE\
+  \ (Per-Object Median Log-Ratio Error):\n   For each object i:\n     1. Collect pointer-object\
+  \ collision events for object i\n     2. Compute m_est_k = -10 * Δv_ptr_k / Δv_obj_k\
+  \ for each event k\n     3. Filter: keep only events where |Δv_obj_k| > 1.0\n  \
+  \   4. If ≥3 valid events: m_hat_i = median(m_est_k), error_i = |log(m_hat_i / m_true_i)|\n\
+  \     5. If 1-2 valid events: m_hat_i = mean(m_est_k), error_i = |log(m_hat_i /\
+  \ m_true_i)|\n     6. If 0 valid events: error_i = 2.0 (maximum penalty)\n   POMLRE\
+  \ = mean(error_i across 3 objects)\n\nE. Pre-run analytical ceiling: Before running,\
+  \ compute expected POMLRE for PASSIVE \n   analytically (stationary pointer at 64,\
+  \ objects bouncing freely in [0,128], \n   estimate expected informative collision\
+  \ count per object).\n\nF. Run 8 seeds × 3 conditions = 24 episodes, 2000 steps\
+  \ each.\n\nG. Compute bootstrap CI (10000 samples, paired by seed) for \n   (RANDOM_POMLRE\
+  \ - ORACLE_POMLRE) and check all gates.\n\nStep 2: Run the experiment, analyze results,\
+  \ check all gates.\n\nStep 3: If gate passes → benchmark validated, proceed to iter_036\
+  \ with LEARNED.\n        If gate fails → null finding: \"perception is not behaviorally\
+  \ load-bearing \n        under full observation even with pass-through dynamics.\"\
+  \ Escalate to \n        foveated-gaze mechanism (goal.md Section 8.2) for partial\
+  \ observation.\n\nFILES CREATED:\n- src/run_iter035_benchmark.py (new, main experiment)\n\
+  - archive/iter_035/results/ (output directory)\n\nPRESERVED: iter_028 substrate\
+  \ (separate backbone), d_t=3 frozen, GDASR log-only (M3),\ndecoder-free, no positional\
+  \ encoding, M2 not reopened. No LEARNED representation used.\n\nPRE-COMMITTED ESCALATION:\
+  \ If ORACLE-RANDOM gap < 0.15 on pass-through environment,\nthat is itself the finding,\
+  \ and the project pulls foveated-gaze (Section 8.2) forward \nfrom deferred. No\
+  \ additional environment tweaks before escalation.\n"
