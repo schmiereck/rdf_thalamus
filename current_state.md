@@ -1,29 +1,33 @@
 # Current Research State
-Phase: Meta-escalation triggered after F5 failure
+Phase: Decision point — 2D gates measured, human go/no-go required
 
 ## Goal
 Achieve a training regime where the encoder collapses on ≤10% of seeds. Build a
 decoder-free, curiosity-driven representation agent with thalamic gating and motor.
-Currently: behavioral benchmark validation — meta-escalation decision required.
+Currently: environmental redesign decision point after 1D null chain and 2D gate measurement.
 
-## Confirmed (iter_036)
-- **F5 FIRED IN BOTH ARMS (agent 36.4):** Foveated gaze with GAZE_RADIUS=8 and
-  ghostly pointer does NOT create sufficient coverage heterogeneity under RANDOM
-  policy. Arm A CV=0.36, Arm B CV=0.46, both below 0.50 threshold.
-- **FULL BRACKET NOT RUN:** Per pre-registered protocol, arms failing the CV gate
-  are excluded from the bracket. Both arms failed, so no bracket was executed.
-- **STRUCTURAL EXPLANATION:** With 3 objects in 128 pixels and gaze radius 8
-  (covering 12.5% of the arena), random gaze motion encounters all objects with
-  ~37.5% probability per probe, distributing coverage too evenly for targeted
-  probing to improve upon.
-- **IMPLEMENTATION CORRECTNESS:** Five pre-registered bugs were fixed (Δv
-  across-substep, CV gate metric, sanity checks S1-S6, ORACLE gaze radius
-  check, probe tracking). Three additional minor bugs fixed during execution.
+## Confirmed (iter_037)
+- **2D GATE-1 PASSES (5/5 seeds):** PASSIVE pointer at center of 64×64 arena accumulates
+  only 0.0-1.0 valid collisions/object vs 12.27 in 1D. 2D removes collision inevitability.
+  All sanity checks pass (momentum/energy conservation verified, bounds respected, ~20 probes fired).
+- **2D GATE-1b FAILS (3/5 seeds):** CV of per-object collision counts ≥0.30 in only 3/5
+  seeds. Failure mode: collisions too rare for CV to be stable (0-1 events total per seed
+  in most cases). Seeds 7,71 have 0 events; seeds 31,83 have 1 event; seed 53 has 3 events.
+  This is a consequence of Gate-1 passing "too well."
+- **2D GATE-2 FAILS (1/5 seeds):** CV of per-object probe counts ≥0.50 in only 1/5 seeds.
+  CV values cluster around Poisson baseline (~0.39): 0.981, 0.202, 0.374, 0.408, 0.288.
+  2D random walk with gaze_radius=8 in 64×64 still produces near-uniform coverage.
+- **OVERALL: Path (i) blocked at tested parameterization.** Two of three gates fail.
+- **1D NULL FINDING CRYSTALLIZED:** "The 1D × N=3 × 128px sandbox cannot make perception
+  behaviorally load-bearing under an ORACLE-vs-RANDOM bracket across four mechanism-distinct
+  redesigns" (iter_033-036). Documented as standalone citable finding.
+- **OPTION (iii) REJECTED:** Decoder-free relaxation is mis-targeted — the binding constraint
+  is environmental, not representational. Reconstruction+VICReg already tested (iter_031).
 
 ## Confirmed (prior iterations, still valid)
 - Pass-through physics insufficient: PASSIVE gets 12.27 collisions/object (iter_035)
-- v2 MALRE: coverage-discrimination test (active-vs-passive gap=0.83) but
-  ORACLE-vs-RANDOM gap=0.031 (iter_034)
+- Foveated gaze insufficient: RANDOM CV 0.36/0.46 vs 0.50 (iter_036)
+- v2 MALRE: coverage-discrimination but ORACLE-vs-RANDOM gap=0.031 (iter_034)
 - ORACLE ≈ RANDOM on behavioral-pivot protocol (iter_033)
 - M2 MANDATE: comprehensively falsified iter_023-030
 - SIM_LOSS_DYN IS THE COLLAPSE DRIVER (iter_027); SEPARATE BACKBONE IS LOAD-BEARING (iter_028)
@@ -31,32 +35,30 @@ Currently: behavioral benchmark validation — meta-escalation decision required
 - Cross-backbone attention coupling causes collapse (iter_032)
 - ΔR²_color ≥ 0.30 NOT achieved by ANY objective or architecture tested (iter_020-032)
 
-## Chain of Environment-Design Failures
-- iter_033: ORACLE ≈ RANDOM (motor protocol doesn't discriminate)
-- iter_034: MALRE coverage gap strong but ORACLE-RANDOM gap negligible
-- iter_035: Pass-through physics insufficient (PASSIVE gets too many collisions)
-- iter_036: Foveated gaze insufficient (RANDOM coverage too even)
+## New Structural Insight
+- **Gate-1/Gate-1b tension:** In 2D with a static central pointer, if collisions are rare
+  enough to pass Gate-1, they tend to be uniformly rare, making Gate-1b unmeasurable.
+  This tension may be fundamental to any static-pointer 2D setup and suggests the
+  behavioral test design may need to shift from selective attention (which object to
+  perceive?) to active navigation (where to go?).
 
 ## Best Available
 - Representation: VICReg-only, mean-pool, separate backbone (ΔR²≈0.045, 0% collapse)
 - Strongest identity: SFA+VICReg sfa=5.0, mean-pool, separate backbone (ΔR²≈0.275, 0% collapse)
-- Behavioral benchmark: v2 MALRE (coverage discrimination only)
-- Environment: No 1D environment design produces ORACLE > RANDOM discrimination
+- 1D behavioral: NULL — no 1D configuration makes perception load-bearing
+- 2D behavioral: Gate-1 passes (collisions reduced), but heterogeneity gates fail
 
-## Meta-Escalation Options (pre-committed)
-(i) 2D environment redesign — may create sufficient spatial structure for
-    coverage heterogeneity and meaningful behavioral validation
-(ii) Re-frame deliverable around representation + thalamic gating claims
-    without behavioral validation — accept that the 1D sandbox cannot
-    validate perception-driven behavior
-(iii) Revisit decoder-free constraint — allow reconstruction to shape the
-    representation, which sml showed matches VICReg performance
+## Decision Required
+Human must choose among:
+(a) Explore different 2D parameterizations (with new pre-registered gates)
+(b) Full 2D rebuild based on Gate-1 alone (~7-10 iters, ~4× FLOPs)
+(c) Re-frame deliverable around representation + mechanism findings
+(d) Another path not yet identified
 
 ## Open Questions
-1. Is the 1D sandbox itself the structural confound for behavioral validation?
-2. Can a 2D environment create sufficient coverage heterogeneity?
-3. Should the project re-frame around representation quality rather than behavior?
-4. Would a smaller gaze radius pass the CV gate, or is 1D the fundamental limit?
-5. Is mass estimation from elastic collisions too noise-sensitive for any 1D benchmark?
-6. Can thalamic gating + motor claims be validated on a different task?
-7. Should the decoder-free constraint be revisited given sml's reconstruction results?
+1. Is the Gate-1/Gate-1b tension fundamental to all 2D static-pointer setups?
+2. Would active-navigation (not selective-attention) behavioral testing work in 2D?
+3. Can different gaze radius/probe budget pass Gate-2, or is Poisson limit insurmountable?
+4. Should the project accept the environmental null and re-frame?
+5. Could a different behavioral task (not mass estimation) be load-bearing?
+6. M2 remains untestable, not falsified

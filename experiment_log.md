@@ -1,45 +1,6 @@
 
 ---
 ```yaml
-cached_tokens: 2645638
-cost_usd: 1.87851
-hypothesis: 'phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness
-  (global and Noisy-TV distractors)'
-input_tokens: 3818879
-iter: 6
-metrics:
-  b1_large_mean_test_loss: 0.07076
-  b1_mean_test_loss: 0.07576
-  dynamic_mean_test_loss: 0.07119
-  gdasr_recruitment_rate: 0.8
-  loss_ratio_global_vs_clean: 0.9883
-  loss_ratio_noisy_tv_vs_clean: 0.9983
-  recruited_dimension_state_correlation: 0.0456
-  relative_overlap_efficiency_global: 0.9386
-  relative_overlap_efficiency_noisy_tv: 0.9386
-output_tokens: 14619
-status: ok
-```
-
-## iter_006: phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness (global and Noisy-TV distractors)
-
-**Analysis:** We executed Phase 4 (Generalization & Noise Robustness) under the strict guidelines of our pre-registered hypotheses.
-The results provide strong empirical support for our attentional watchdog resilience under both high-frequency global noise and structured Noisy-TV distractors.
-The Z-score normalized surprise Watchdog achieved an exceptional relative tracking efficiency of 93.86% (against the 80.0
-
-**Status:** ok
-
-**Metrics:** `{'b1_mean_test_loss': 0.07576, 'b1_large_mean_test_loss': 0.07076, 'dynamic_mean_test_loss': 0.07119, 'gdasr_recruitment_rate': 0.8, 'relative_overlap_efficiency_global': 0.9386, 'relative_overlap_efficiency_noisy_tv': 0.9386, 'loss_ratio_global_vs_clean': 0.9883, 'loss_ratio_noisy_tv_vs_clean': 0.9983, 'recruited_dimension_state_correlation': 0.0456}`
-
-**Experimenter view:** Phase 4 rigorously evaluated our Dynamic JEPA (GDASR) and Z-score normalized surprise watchdog architectures.
-We observed that introducing a 4th object triggers dynamic recruitment of a 4th representation dimension with an 80% success rate (4 out of 5 seeds).
-The dynamic model successfully adapted post-transition, achieving a 6.0% prediction loss reduction over the rigid under-parameterized B1 bas
-
-**Notes:** Phase 4 sweeps and scientific evaluation report completed and saved successfully.
-
-
----
-```yaml
 cached_tokens: 692275
 cost_usd: 0.48612
 hypothesis: 'phase-7: evaluation of active-probing-driven emergent specialization
@@ -1512,4 +1473,56 @@ Both below the CV ≥ 0.5 threshold. RANDOM distributes probes too evenly across
 the 3 objects f
 
 **Notes:** F5 fired in both arms. Pre-committed meta-escalation triggered.
+
+
+---
+```yaml
+cached_tokens: 1194054
+campaign: collapse-elimination
+cost_usd: 4.27686
+hypothesis: 'phase-37: 2D cheap-gate de-risking — Gate-1 passes (collision inevitability
+  removed), Gate-1b and Gate-2 fail (heterogeneity not achieved); path (i) blocked
+  at tested parameterization; decision-support delivered'
+input_tokens: 2411627
+iter: 37
+metrics:
+  gate1_1d_baseline: 12.27
+  gate1_mean_valid_collisions_per_object: '0.33'
+  gate1_pass_seeds: 5/5
+  gate1b_mean_cv: '0.91'
+  gate1b_pass_seeds: 3/5
+  gate2_mean_cv: '0.45'
+  gate2_pass_seeds: 1/5
+  gate2_poisson_baseline_cv: 0.39
+  overall_gates: FAIL (2/3 gates fail)
+  s1_ke_error: 0.0
+  s1_momentum_error: 0.0
+  s5_mean_probes: 19.6
+output_tokens: 127817
+status: ok
+```
+
+## iter_037: phase-37: 2D cheap-gate de-risking — Gate-1 passes (collision inevitability removed), Gate-1b and Gate-2 fail (heterogeneity not achieved); path (i) blocked at tested parameterization; decision-support delivered
+
+**Analysis:** This phase executed a de-risking and decision-support iteration, as mandated by
+the meta-escalation from iter_036. Three sub-goals were completed sequentially:
+
+1. Pre-registration update + 1D null finding document: The Manager's three critique
+points (gate calibration justification, Gate-1b addition, per-seed decision rules)
+were all addressed. The four-iteration null chain (iter_033-036) was cry
+
+**Status:** ok
+
+**Metrics:** `{'gate1_pass_seeds': '5/5', 'gate1_mean_valid_collisions_per_object': '0.33', 'gate1_1d_baseline': 12.27, 'gate1b_pass_seeds': '3/5', 'gate1b_mean_cv': '0.91', 'gate2_pass_seeds': '1/5', 'gate2_mean_cv': '0.45', 'gate2_poisson_baseline_cv': 0.39, 'overall_gates': 'FAIL (2/3 gates fail)', 's1_momentum_error': 0.0, 's1_ke_error': 0.0, 's5_mean_probes': 19.6}`
+
+**Experimenter view:** Three sub-goals completed:
+
+Sub-goal 37.1 (Pre-registration + null finding document):
+Pre-registration updated with three Manager-requested fixes:
+(1) Gate threshold calibration justifications for all three gates,
+(2) New Gate-1b (PASSIVE collision heterogeneity, CV≥0.30),
+(3) Per-seed decision rule (≥4/5 seeds must individually pass).
+Four-iteration null finding document written to archive/iter_0
+
+**Notes:** Decision-support iteration complete. Two 2D gates fail; path (i) blocked at tested parameterization. Human go/no-go required.
 
