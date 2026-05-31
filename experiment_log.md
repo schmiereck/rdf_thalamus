@@ -1,45 +1,6 @@
 
 ---
 ```yaml
-cached_tokens: 875937
-cost_usd: 0.68927
-hypothesis: 'phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed
-  comparison sweep'
-input_tokens: 1321538
-iter: 4
-metrics:
-  b1_test_l2_loss_mean: 0.0452
-  gated_test_l2_loss_mean: 0.02301
-  gated_test_l2_loss_std: 0.00718
-  gated_test_overlap: 0.112
-  gated_train_overlap: 0.2275
-  levene_p_value: 0.356
-  loss_reduction_vs_b1_pct: 49.09
-  nongated_test_l2_loss_mean: 0.02811
-  nongated_test_l2_loss_std: 0.0116
-output_tokens: 8229
-status: ok
-```
-
-## iter_004: phase-4: implement and evaluate Thalamic Gating (Pillar D) under a 5-seed comparison sweep
-
-**Analysis:** We executed Phase 2 under the strict falsification audit guidelines of our pre-registered hypothesis. While the Thalamic Gated network delivered outstanding predictive gains (49.1% better than B1, 18.1% better than non-gated control), the hypothesis is formally falsified.
-
-The main scientific insight is the discovery of the "tracking lag" physical bottleneck: a rigid token-holding cooldown (200 st
-
-**Status:** ok
-
-**Metrics:** `{'gated_test_l2_loss_mean': 0.02301, 'gated_test_l2_loss_std': 0.00718, 'nongated_test_l2_loss_mean': 0.02811, 'nongated_test_l2_loss_std': 0.0116, 'b1_test_l2_loss_mean': 0.0452, 'loss_reduction_vs_b1_pct': 49.09, 'gated_test_overlap': 0.112, 'gated_train_overlap': 0.2275, 'levene_p_value': 0.356}`
-
-**Experimenter view:** We completed the 5-seed systematic comparison sweep for Phase 2 (Thalamic Gating).
-Dynamic gradient gating, Z-score soft-normalization, and the Relative Stability Lock were fully validated.
-The gated ThalamusNet achieved an immense 49.1% prediction loss reduction compared to the single-layer B1 JEPA baseline and an 18.1% reduction compared to the non-gated multi-layer control, proving that gating 
-
-**Notes:** Thalamic Gating implemented and evaluated. Hypothesis falsified on tracking overlap and significance, but confirmed massive 49.1% representational loss reduction.
-
-
----
-```yaml
 cached_tokens: 1415259
 cost_usd: 1.06778
 hypothesis: 'phase-5: closed-loop motor coupling reduces post-collision prediction
@@ -1503,4 +1464,44 @@ pushes objects, the worse the estimate gets.
 v2 (MALRE from MED
 
 **Notes:** Benchmark validated as coverage discrimination test; active-vs-passive gap is strong but ORACLE-vs-RANDOM gap is negligible.
+
+
+---
+```yaml
+cached_tokens: 278406
+campaign: collapse-elimination
+cost_usd: 4.52077
+hypothesis: 'phase-35: pass-through environment redesign insufficient — passive pointer
+  gets 12.27 valid collisions/object in 1D; foveated gaze escalation triggered'
+input_tokens: 1563543
+iter: 35
+metrics:
+  analytical_ceiling_gate_passed: false
+  analytical_ceiling_gate_threshold: 3.0
+  pass_through_test_passed: true
+  passive_mean_valid_collisions_per_obj: 12.27
+output_tokens: 138993
+status: ok
+```
+
+## iter_035: phase-35: pass-through environment redesign insufficient — passive pointer gets 12.27 valid collisions/object in 1D; foveated gaze escalation triggered
+
+**Analysis:** Phase 35 tested the core hypothesis from the Manager's pre-planning hints: that removing
+object-object collisions (pass-through physics) would make perception-driven targeting
+load-bearing for mass estimation. This was the cheapest sufficient environment redesign.
+
+The analytical ceiling gate revealed a fundamental structural problem: in 1D physics,
+a passive pointer inevitably collides with bounc
+
+**Status:** ok
+
+**Metrics:** `{'passive_mean_valid_collisions_per_obj': 12.27, 'analytical_ceiling_gate_threshold': 3.0, 'analytical_ceiling_gate_passed': False, 'pass_through_test_passed': True}`
+
+**Experimenter view:** The PassThroughPhysicsSandbox was correctly implemented (objects pass through each other,
+only pointer-object elastic collisions are preserved — verified by test showing no velocity
+exchange between overlapping objects). However, the analytical ceiling gate FAILED
+conclusively: in the pass-through environment, the PASSIVE pointer (no acceleration, no
+pushing) still accumulates a mean of 12.27 vali
+
+**Notes:** Analytical ceiling gate failed; pass-through dynamics insufficient to constrain passive information gathering in 1D. Escalation to foveated gaze triggered.
 
