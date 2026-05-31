@@ -1,0 +1,734 @@
+I'll start by understanding the current codebase state, particularly the 2D environment from iter_037, the existing motor/pointer infrastructure, and the gate definitions.
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      diag_iter034.py
+      diagnose_oracle.py
+      diagnose_oracle_v2.py
+      diagnose_oracle_v3.py
+      diagnose_oracle_v4.py
+      diagnose_oracle_v5.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_recon.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_arm1_integration_smoke_test.py
+      run_iter030_arm2.py
+      run_iter031_partA.py
+      run_iter031_partB.py
+      run_iter032.py
+      run_iter033.py
+      run_iter033_v2.py
+      run_iter033_v3.py
+      run_iter034_benchmark.py
+      run_iter034_v2.py
+      run_iter035_benchmark.py
+      run_iter036_benchmark.py
+      run_iter037_2d_gates.py
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_mask_dyn_sim_shared.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_p...]
+
+
+[Tool Call: list_dir({'path': 'archive'})]
+
+[Tool Result: [DIR] iter_001
+[DIR] iter_002
+[DIR] iter_003
+[DIR] iter_004
+[DIR] iter_005
+[DIR] iter_006
+[DIR] iter_007
+[DIR] iter_008
+[DIR] iter_009
+[DIR] iter_010
+[DIR] iter_011
+[DIR] iter_012
+[DIR] iter_013
+[DIR] iter_014
+[DIR] iter_015
+[DIR] iter_016
+[DIR] iter_017
+[DIR] iter_018
+[DIR] iter_019
+[DIR] iter_020
+[DIR] iter_021
+[DIR] iter_022
+[DIR] iter_023
+[DIR] iter_024
+[DIR] iter_025
+[DIR] iter_026
+[DIR] iter_027
+[DIR] iter_028
+[DIR] iter_029
+[DIR] iter_030
+[DIR] iter_031
+[DIR] iter_032
+[DIR] iter_033
+[DIR] iter_034
+[DIR] iter_035
+[DIR] iter_036
+[DIR] iter_037
+[DIR] iter_038
+[DIR] iter_14]
+
+
+[Tool Call: read_iteration({'iter_num': 37})]
+
+[Tool Result: ```yaml
+cached_tokens: 1194054
+campaign: collapse-elimination
+cost_usd: 4.27686
+hypothesis: 'phase-37: 2D cheap-gate de-risking — Gate-1 passes (collision inevitability
+  removed), Gate-1b and Gate-2 fail (heterogeneity not achieved); path (i) blocked
+  at tested parameterization; decision-support delivered'
+input_tokens: 2411627
+iter: 37
+metrics:
+  gate1_1d_baseline: 12.27
+  gate1_mean_valid_collisions_per_object: '0.33'
+  gate1_pass_seeds: 5/5
+  gate1b_mean_cv: '0.91'
+  gate1b_pass_seeds: 3/5
+  gate2_mean_cv: '0.45'
+  gate2_pass_seeds: 1/5
+  gate2_poisson_baseline_cv: 0.39
+  overall_gates: FAIL (2/3 gates fail)
+  s1_ke_error: 0.0
+  s1_momentum_error: 0.0
+  s5_mean_probes: 19.6
+output_tokens: 127817
+status: ok
+```
+
+## iter_037: phase-37: 2D cheap-gate de-risking — Gate-1 passes (collision inevitability removed), Gate-1b and Gate-2 fail (heterogeneity not achieved); path (i) blocked at tested parameterization; decision-support delivered
+
+**Analysis:** This phase executed a de-risking a...]
+
+
+[Tool Call: read_file({'path': 'src/run_iter037_2d_gates.py'})]
+
+[Tool Result: """src/run_iter037_2d_gates.py
+
+2D Cheap Gate Experiment for the Thalamus project.
+Core de-risking experiment for a potential 2D environment migration.
+All parameters, gate definitions, and decision rules are pre-registered in
+src/pre_registration.md and must not be modified.
+"""
+
+import os
+import sys
+import csv
+import numpy as np
+
+# Fix stdout encoding on Windows for redirection compatibility
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
+# ── Pre-registered parameters (FROZEN) ───────────────────────────────────────
+SEEDS = [7, 31, 53, 71, 83]
+N_OBJ = 3
+N_STEPS = 2000
+SUBSTEPS = 10
+ARENA_SIZE = 64.0
+PTR_RADIUS = 4.0
+PTR_MASS = 10.0
+PTR_START_POS = np.array([32.0, 32.0])
+OBJ_RADIUS_RANGE = [3.0, 8.0]
+OBJ_VEL_RANGES = [(-2.0, -0.5), (0.5, 2.0)]
+PROX_THRESH = 4.0
+DV_THRESH = 0.5
+GAZE_RADIUS = 8.0
+PROBE_P = 0.01
+PROBE_BUDGET = 20
+GAZE_MASS = 10.0
+GAZE_ACC_RANGE = (-10.0, 10.0)
+GATE1_THRESH = 3.0
+GATE1B_THRESH = 0.30
+GATE2_THRESH = 0.50
+N_SEEDS_PASS =...]
+
+Now let me look at the existing environment code and understand the 1D infrastructure, plus the iter_037 gate results:
+
+[Tool Call: read_result_file({'filename': 'results/gate_summary.txt', 'iter_num': 37})]
+
+[Tool Result: ============================================================
+iter_037: 2D Cheap Gate Experiment - Summary
+============================================================
+
+Pre-registered Parameters:
+  Arena: 64.0x64.0, N=3, Steps=2000, Substeps=10
+  Pointer: radius=4.0, mass=10.0, start=[32. 32.]
+  Object radii: [3.0, 8.0], mass=radius
+  Seeds: [7, 31, 53, 71, 83]
+  Gate-1 threshold:  mean valid collisions <= 3.0
+  Gate-1b threshold: CV valid collisions >= 0.3
+  Gate-2 threshold:  CV probe events >= 0.5
+  Decision rule: >=4/5 seeds must individually pass
+
+Gate-1 (PASSIVE Boundedness) - Per-Seed:
+  Seed   7: valid=(0,0,0), mean=0.00, raw=(0,0,0), mean_raw=0.00 -> PASS
+  Seed  31: valid=(0,1,0), mean=0.33, raw=(0,1,0), mean_raw=0.33 -> PASS
+  Seed  53: valid=(0,1,2), mean=1.00, raw=(0,1,2), mean_raw=1.00 -> PASS
+  Seed  71: valid=(0,0,0), mean=0.00, raw=(0,0,0), mean_raw=0.00 -> PASS
+  Seed  83: valid=(0,1,0), mean=0.33, raw=(0,1,0), mean_raw=0.33 -> PASS
+  Overall: 5/5 s...]
+
+
+[Tool Call: read_result_file({'filename': 'results/gate1_results.csv', 'iter_num': 37})]
+
+[Tool Result: seed,obj_0_valid,obj_1_valid,obj_2_valid,mean_valid,cv_valid,obj_0_raw,obj_1_raw,obj_2_raw,mean_raw,cv_raw,gate1_pass,gate1b_pass
+7,0,0,0,0.0,0.0,0,0,0,0.0,0.0,1,0
+31,0,1,0,0.3333333333333333,1.4142135623730951,0,1,0,0.3333333333333333,1.4142135623730951,1,1
+53,0,1,2,1.0,0.816496580927726,0,1,2,1.0,0.816496580927726,1,1
+71,0,0,0,0.0,0.0,0,0,0,0.0,0.0,1,0
+83,0,1,0,0.3333333333333333,1.4142135623730951,0,1,0,0.3333333333333333,1.4142135623730951,1,1
+]
+
+
+[Tool Call: read_result_file({'filename': 'results/gate2_results.csv', 'iter_num': 37})]
+
+[Tool Result: seed,obj_0_probes,obj_1_probes,obj_2_probes,mean_probes,cv,total_probes_fired,gate2_pass
+7,0,2,7,3.0,0.9813067629253163,20,1
+31,2,2,3,2.3333333333333335,0.20203050891044214,18,0
+53,3,2,5,3.3333333333333335,0.3741657386773941,20,0
+71,1,2,3,2.0,0.408248290463863,20,0
+83,3,6,4,4.333333333333333,0.2878197989826109,20,0
+]
+
+Now let me look at the existing motor controller and environment infrastructure:
+
+[Tool Call: read_file({'end_line': 80, 'path': 'src/motor.py', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 80 of 212 ---
+import numpy as np
+import torch
+
+class SubsumptionMotorController:
+    def __init__(self, Kp=1.0, Kd=0.1, Kv=0.5, error_thresh=4.0, stability_thresh=0.05, 
+                 push_cooldown=15, push_magnitude=20.0, dt=1.0, ablation=None):
+        """
+        Subsumption Motor Controller with 3 hierarchical layers.
+        
+        Args:
+            Kp (float): Proportional gain for reflexive PD tracking.
+            Kd (float): Derivative gain for reflexive PD tracking.
+            Kv (float): Velocity gain for predictive kinematics.
+            error_thresh (float): Threshold under which the pointer is close enough to target to trigger boredom.
+            stability_thresh (float): Threshold under which surprise change is stable.
+            push_cooldown (int): Cooldown steps after a push is triggered.
+            push_magnitude (float): Override acceleration magnitude during a deliberate push.
+            dt (float): Control loop time step.
+            abla...]
+
+
+[Tool Call: read_file({'end_line': 80, 'path': 'src/environment.py', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 80 of 341 ---
+import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = ...]
+
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 037
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+In a minimal 2D physics arena (64×64 pixels, N=3 circular objects with radius
+∈ [3,8], velocity components ∈ [-2.0,-0.5]∪[0.5,2.0], mass ∝ radius, substeps=10),
+the two structural constraints that defeated the 1D testbed are removed:
+
+Gate-1 (Boundedness): A PASSIVE physical pointer (radius=4, mass=10, starting
+at arena center (32,32) with zero velocity) accumulates ≤ 3.0 valid elastic
+collisions per object over 2000 steps, because objects can pass the pointer
+off-axis in the y-dimension (unlike 1D where all entities share the axis).
+A "valid collision" is defined identically to iter_035: proximity
+(2D distance < r_ptr + r_obj + 4.0) AND |Δv| > 0.5 per component.
+
+Gate-1b (PASSIVE collision heterogeneity): Under the same PASSIVE conditions,
+the coefficient of variation (CV = std/mean) of per-object collision counts
+is ≥ 0.30, indicating that different objec...]
+
+
+[Tool Call: read_file({'end_line': 212, 'path': 'src/motor.py', 'start_line': 80})]
+
+[Tool Result: --- lines 80 to 212 of 212 ---
+            
+        dedt = (error - self.prev_error) / self.dt
+        a_reflexive = self.Kp * error + self.Kd * dedt
+        
+        # 3. Middle Layer: Predictive Kinematics
+        # Find segment to predict
+        if locus == 4:
+            # Fallback to segment with highest mean visual intensity
+            seg_means = [obs[:, i*32:(i+1)*32].mean() for i in range(4)]
+            pred_locus = int(np.argmax(seg_means))
+        else:
+            pred_locus = locus
+            
+        z_pred_attn = z_pred_segments[pred_locus] # (1, d_max) or (B, d_max)
+        if z_pred_attn.dim() > 2:
+            z_pred_attn = z_pred_attn[0]
+            
+        with torch.no_grad():
+            pred_pos_future = model.pos_readout(z_pred_attn).mean().item()
+            
+        # Target predicted velocity
+        v_predicted_target = (pred_pos_future - target_pos) / self.dt
+        a_predictive = self.Kv * (v_predicted_target - pointer_vel)
+        
+        # 4. Upper...]
+
+Let me check if there's already content in the iter_038 directory and also review the null finding document from iter_037:
+
+[Tool Call: list_dir({'path': 'archive/iter_038'})]
+
+[Tool Result:       manager_log.md
+      manager_pre_planning_hints.txt
+      planner_plan_prompt.txt]
+
+
+[Tool Call: read_result_file({'filename': 'results/null_finding_1d.md', 'iter_num': 37})]
+
+[Tool Result: # Four-Iteration Null Finding: The 1D × N=3 × 128px Sandbox
+
+*   **Iteration:** 037
+*   **Covers:** iter_033, iter_034, iter_035, iter_036
+*   **File:** archive/iter_037/results/null_finding_1d.md
+
+---
+
+## Statement of Finding
+
+Across four mechanism-distinct redesigns, the 1D × N=3 × 128px sandbox
+cannot make perception behaviorally load-bearing under an ORACLE-vs-RANDOM
+bracket. This is a negative result about this specific environment
+parameterization; it does **not** claim that no 1D environment could
+ever work, and it makes no claim about M2 (the thalamic gating module).
+
+The following sections document each iteration's mechanism and failure
+mode, forming a complete null chain: each redesign directly addressed
+the specific failure of its predecessor, and the chain terminates at
+the most radical redesign possible within the 1D constraint.
+
+---
+
+## iter_033 — Behavioral-Pivot Metric Saturation
+
+**Mechanism tested:** The original ORACLE-vs-RANDOM behavioral br...]
+
+Now let me look at the full results from the iter_037 decision support document and understand the 2D physics infrastructure:
+
+[Tool Call: read_result_file({'filename': 'results/decision_support.md', 'iter_num': 37})]
+
+[Tool Result: # Decision-Support Package: iter_037 — 2D Environment Gates
+
+*   **Iteration:** 037
+*   **File:** `archive/iter_037/results/decision_support.md`
+*   **Purpose:** Measured evidence and cost analysis for a human go/no-go decision on path (i) — 2D environment redesign
+*   **Note:** This document does NOT make the decision. It provides structured evidence for the human researcher to evaluate.
+
+---
+
+## 1. Gate Results Summary
+
+### Pre-Registered Parameters
+
+| Parameter | Value |
+|-----------|-------|
+| Arena | 64×64 pixels |
+| N (objects) | 3 |
+| Object radius | 3.0 – 8.0 (mass = radius) |
+| Object velocity per component | [−2.0, −0.5] ∪ [0.5, 2.0] |
+| Pointer | radius=4.0, mass=10.0, start=(32,32) |
+| Gaze radius (Gate-2) | 8 pixels |
+| Probe budget (Gate-2) | 20 |
+| Probe probability (Gate-2) | 0.01 |
+| Steps / Substeps | 2000 / 10 |
+| Seeds | [7, 31, 53, 71, 83] |
+| Decision rule | ≥4/5 seeds must individually pass each gate |
+
+### Gate-1 (PASSIVE Boundedness):...]
+
+Now let me look at the iter_036 experiment for context on the foveated gaze design:
+
+[Tool Call: read_iteration({'iter_num': 36})]
+
+[Tool Result: ```yaml
+cached_tokens: 1120361
+cost_usd: 6.21845
+hypothesis: 'phase-36: F5 fired in both arms — foveated gaze with GAZE_RADIUS=8 does
+  not create sufficient coverage heterogeneity under RANDOM; pre-committed meta-escalation
+  triggered'
+input_tokens: 4589453
+iter: 36
+metrics:
+  arm_A_CV: 0.3594
+  arm_A_mean_per_obj_count: 1.9333
+  arm_B_CV: 0.4555
+  arm_B_mean_per_obj_count: 2.5333
+  both_arms_failed_gate: true
+  cv_gate_threshold: 0.5
+  f5_fired: true
+  full_bracket_run: false
+output_tokens: 120087
+status: ok
+```
+
+## iter_036: phase-36: F5 fired in both arms — foveated gaze with GAZE_RADIUS=8 does not create sufficient coverage heterogeneity under RANDOM; pre-committed meta-escalation triggered
+
+**Analysis:** Phase 36 implemented and executed the foveated gaze benchmark as pre-registered.
+The ghostly (non-physical) gaze pointer with explicit probe action was the
+proposed solution to iter_035's finding that a physical 1D pointer inevitably
+collides with bouncing objects. The foveated ...]
+
+Now let me look at the current pre-registration to understand what needs updating:
+
+[Tool Call: read_file({'end_line': 50, 'path': 'src/pre_registration.md', 'start_line': 1})]
+
+[Tool Result: --- lines 1 to 50 of 277 ---
+# RDF Scientific Pre-Registration
+
+*   **Iteration:** 037
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+In a minimal 2D physics arena (64×64 pixels, N=3 circular objects with radius
+∈ [3,8], velocity components ∈ [-2.0,-0.5]∪[0.5,2.0], mass ∝ radius, substeps=10),
+the two structural constraints that defeated the 1D testbed are removed:
+
+Gate-1 (Boundedness): A PASSIVE physical pointer (radius=4, mass=10, starting
+at arena center (32,32) with zero velocity) accumulates ≤ 3.0 valid elastic
+collisions per object over 2000 steps, because objects can pass the pointer
+off-axis in the y-dimension (unlike 1D where all entities share the axis).
+A "valid collision" is defined identically to iter_035: proximity
+(2D distance < r_ptr + r_obj + 4.0) AND |Δv| > 0.5 per component.
+
+Gate-1b (PASSIVE collision heterogeneity): Under the same PASSIVE conditions,
+the coefficient of variation (CV = std/mean) of per-object collision counts
+is ≥ 0.30, in...]
+
+
+[Tool Call: read_file({'end_line': 200, 'path': 'src/environment.py', 'start_line': 80})]
+
+[Tool Result: --- lines 80 to 200 of 341 ---
+            if low >= high:
+                low = i * W + W / 2.0
+                high = low
+            self.positions[i] = np.random.uniform(low, high)
+            
+            # Velocity from [-2.0, 2.0], non-zero
+            v = np.random.uniform(0.5, 2.0)
+            if np.random.rand() < 0.5:
+                v = -v
+            self.velocities[i] = v
+            
+        # Reset pointer position and velocity
+        self.pointer_pos = 64.0
+        self.pointer_vel = 0.0
+        self.pointer_radius = 4.0
+        self.pointer_mass = 10.0
+        self.pointer_color = np.array([1.0, 1.0, 1.0])
+        
+        # Reset Noisy-TV entity if active
+        if self.noisy_tv:
+            self.noisy_tv_radius = np.random.uniform(3.0, 8.0)
+            self.noisy_tv_pos = np.random.uniform(self.noisy_tv_radius, 128.0 - self.noisy_tv_radius)
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+        
+        # Reset Structured Distractor if ac...]
+
+Now I have a comprehensive understanding of the project state, the iter_037 results, the gate definitions, and the existing 2D infrastructure. Let me synthesize my analysis into a rigorous plan.
+
+**Key findings from the exploration:**
+
+1. **iter_037 results:** Gate-1 passed (0.33 mean, well below 3.0), but Gate-1b failed (3/5 seeds — CV undefined when events=0) and Gate-2 failed (1/5 seeds — CV only 0.20-0.41 for 4/5 seeds under ghostly gaze random walk).
+
+2. **The structural opposition:** In iter_037's static-pointer 2D design, Gate-1 and Gate-1b are in opposition because: collisions too rare (Gate-1 passes "too well") → few events → CV undefined or noise-dominated (Gate-1b fails). The gaze-based Gate-2 also failed because the ghostly gaze pointer covered the arena too uniformly.
+
+3. **The navigation hypothesis:** A MOVING pointer that must NAVIGATE to objects to probe them creates more encounter opportunities (addressing Gate-1b's "too few events" problem) while keeping events non-inevitable (addressing Gate-1's saturation concern), and the spatial clustering of the random walk creates uneven visit rates (addressing Gate-2's heterogeneity requirement).
+
+4. **Existing infrastructure:** PhysicsSandbox2D from iter_037 provides all the 2D physics (elastic collisions, wall bounces, collision event recording). The navigation probe extends this with a moving pointer and probe mechanism.
+
+Let me now carefully construct the plan with the geometric argument the Manager requires.
+
+```yaml
+hypothesis: |
+  In a 2D arena (64×64, N=3 objects) with a PHYSICALLY NAVIGATING pointer (random
+  acceleration ∈ [-1.5, 1.5]², velocity capped at 3.5 px/step per component) that
+  must navigate to objects and actively probe them (probe probability p=0.015 per
+  step when within PROBE_RADIUS=10 of any object, budget=15 probes), the three
+  structural constraints that blocked the behavioral bracket across iter_033-037
+  are simultaneously relaxed:
+
+  Gate-1 (Non-saturation): Mean per-object probe-event count under RANDOM
+  navigation ≤ 3.0. Random navigation produces bounded, non-saturating
+  information access because 2D geometry allows off-axis passage and the probe
+  budget + probability cap total events.
+
+  Gate-1b (CV stability): Per-object probe-event count CV is structurally
+  meaningful and reproducible across seeds (mean per-seed CV ≥ 0.30 AND
+  std(per-seed CVs) ≤ 0.25). The navigation pointer creates enough events
+  (estimated ~7-10 per seed) for CV to reflect structural spatial clustering
+  rather than Poisson noise, unlike iter_037 where 0-1 events per seed made
+  CV undefined or noise-dominated.
+
+  Gate-2 (Heterogeneity): Mean per-seed per-object probe-event CV ≥ 0.50
+  (with ≥4/5 seeds individually ≥ 0.50). A 2D random walk with moderate speed
+  (~3 px/step) in a 64×64 arena has mixing time ~455 steps; over 2000 steps
+  (~4.4 mixing times), the walk retains partial spatial structure, creating
+  naturally uneven per-object visit rates. Objects in the center sector (where
+  the walk starts and to which wall-bounces frequently redirect) receive more
+  visits than objects in peripheral sectors.
+
+falsification_criterion: |
+  The hypothesis is falsified if ANY gate fails under the per-seed decision rule:
+
+  Gate-1 FAIL: Fewer than 4 of 5 seeds achieve mean per-object probe-event
+  count ≤ 3.0 under RANDOM navigation. This means the moving pointer creates
+  too many information events, leaving insufficient headroom for ORACLE targeting.
+
+  Gate-1b FAIL: Either (a) mean per-seed CV < 0.30, meaning the heterogeneity
+  is too weak to be structurally meaningful even after averaging across seeds; or
+  (b) std(per-seed CVs) > 0.25, meaning the heterogeneity is not reproducible —
+  it varies wildly from seed to seed, dominated by trajectory luck rather than
+  structural spatial effects.
+
+  Gate-2 FAIL: Fewer than 4 of 5 seeds achieve per-object probe-event CV ≥ 0.50.
+  This means random navigation does not create sufficient per-object heterogeneity
+  for ORACLE's targeted perception to exploit.
+
+  If any gate fails, the behavioral-validation strategy is declared not tractable
+  within project scope, and the project pivots to path (ii) re-frame.
+
+proposed_method: |
+  ## Experiment: 2D Navigation Gate Probe
+
+  ### Step 1 — Pre-Registration and Null Finding Preservation
+  Update src/pre_registration.md with iter_038 parameters and gate definitions.
+  Preserve the iter_037 null finding document (archive/iter_037/results/null_finding_1d.md)
+  as a standing reference — no modification.
+
+  ### Step 2 — Implement Navigation Gate Experiment
+  Create src/run_iter038_nav_gates.py extending PhysicsSandbox2D from iter_037.
+
+  **Environment parameters (pre-registered, FROZEN):**
+  - Arena: 64×64 (same as iter_037)
+  - N=3 objects (same as iter_037: radius ∈ [3.0, 8.0], mass=radius,
+    velocity per component ∈ [-2.0, -0.5] ∪ [0.5, 2.0])
+  - Pointer: radius=4, mass=10, starts at (32, 32) with velocity (0, 0)
+  - Substeps: 10, dt = 1/substeps
+  - Seeds: [7, 31, 53, 71, 83] (same as iter_037)
+
+  **Navigation (RANDOM policy):**
+  - Each step: sample 2D acceleration from Uniform[-1.5, 1.5]²
+  - Apply acceleration to pointer velocity via substep integration
+  - Velocity cap: 3.5 px/step per component (applied after each step)
+  - Physical elastic collisions between pointer and objects (same as iter_037)
+  - Wall bounces for pointer and objects (same as iter_037)
+
+  **Probe mechanism:**
+  - PROBE_RADIUS = 10.0 (pointer center within 10 pixels of object center)
+  - At each step, if any object is within PROBE_RADIUS, a probe opportunity exists
+  - Probe decision: probability p = 0.015 per step (when opportunity exists)
+  - Probe budget: 15 total probes per rollout
+  - On successful probe: record event for the NEAREST object within PROBE_RADIUS
+  - After budget exhausted: pointer still navigates but no more probe events
+  - Physical collisions are SEPARATE from probe events (collision dynamics still
+    occur, but don't count as information events for the gates)
+
+  **Measurements (per seed):**
+  - Per-object probe-event counts (count_0, count_1, count_2)
+  - Per-object probe-event CV = std(counts) / mean(counts)
+  - Per-object valid collision counts (diagnostic, for comparison with iter_037)
+  - Per-object proximity-event counts (diagnostic: within PROBE_RADIUS, no probe)
+  - Total probes fired, budget remaining
+  - Pointer trajectory statistics (mean speed, arena coverage)
+
+  **Gate definitions:**
+  Gate-1 (Non-saturation):
+  - Metric: mean per-object probe-event count
+  - Threshold: ≤ 3.0
+  - Per-seed rule: ≥4/5 seeds must individually pass
+  - Justification: same as iter_037; 3.0 provides headroom for ORACLE to
+    produce 5-10× more events via targeted navigation
+
+  Gate-1b (CV stability):
+  - Condition (a): mean of per-seed CVs across 5 seeds ≥ 0.30
+  - Condition (b): std of per-seed CVs across 5 seeds ≤ 0.25
+  - Both conditions must hold
+  - Justification: (a) ensures the heterogeneity is not trivially zero;
+    (b) ensures it's reproducible (not driven by lucky/unlucky trajectories).
+    In iter_037, per-seed CVs were [0.00, 1.41, 0.82, 0.00, 1.41] (std=0.62)
+    — wildly unstable. With active navigation producing more events,
+    CV should be more stable.
+
+  Gate-2 (Heterogeneity):
+  - Metric: per-seed per-object probe-event CV
+  - Threshold: ≥ 0.50
+  - Per-seed rule: ≥4/5 seeds must individually pass
+  - Justification: CV ≥ 0.50 indicates meaningful per-object heterogeneity
+    that ORACLE's targeted navigation could exploit differently than RANDOM.
+    Below 0.50, the random navigator already accesses all objects fairly
+    equally, leaving no behavioral leverage for perception.
+
+  **Sanity checks:**
+  - S1: Physics conservation (2D elastic collision, same as iter_037)
+  - S2: Pointer stays within [0, 64]² throughout
+  - S3: Objects stay within [0, 64]² throughout
+  - S4: RANDOM navigation actually applies random acceleration (no targeting)
+  - S5: Velocity cap enforced (max 3.5 per component per step)
+  - S6: Probe mechanism fires correctly (within PROBE_RADIUS, with probability)
+  - S7: PASSIVE sanity check: rerun iter_037 Gate-1 on 1 seed to confirm
+    static pointer still gives mean ≤ 3.0 (re-verification, not new measurement)
+
+  ### Step 3 — Geometric Argument for Joint Gate Satisfaction
+
+  **Why this design escapes the Gate-1/Gate-1b opposition identified in iter_037:**
+
+  In iter_037 (static pointer at center), the opposition was:
+  - Gate-1 passes "too well" → collisions are very rare (0-1 per object)
+  - Gate-1b fails → too few events for CV to be structurally meaningful
+  - These are coupled: the same geometric fact (2D allows off-axis passage)
+  that keeps collisions low also makes them too rare for CV measurement.
+
+  The navigation task DECOUPLES these concerns through two mechanisms:
+
+  (1) **Active event generation:** The moving pointer traverses the arena,
+  encountering objects more frequently than the static pointer. The probe
+  mechanism (PROBE_RADIUS=10, p=0.015) produces ~7-10 probe events per seed
+  (vs 0-2 for the static pointer), providing enough data for CV to be
+  structurally meaningful. This addresses Gate-1b directly.
+
+  (2) **Budget-capped event rate:** The probe budget (15) and probability
+  (0.015) ensure the total event rate is bounded, even though the pointer
+  moves. The estimated mean per-object count (~2.3) is well below the Gate-1
+  threshold of 3.0. This preserves Gate-1.
+
+  The coupling is broken because event generation is now determined by
+  navigation (which the agent controls) rather than passive collision
+  probability (which is a fixed property of the geometry).
+
+  **Why spatial clustering supports Gate-2:**
+
+  A 2D random walk with speed ~3 px/step in a 64×64 arena has diffusion
+  coefficient D ≈ 4.5 and mixing time τ_mix ≈ L²/(2D) ≈ 455 steps. Over
+  2000 steps (~4.4 τ_mix), the walk retains partial spatial structure:
+  - The walk's position is autocorrelated (it tends to continue in the same
+    direction for 50-100 steps before changing course)
+  - It spends extended periods near one object before diffusing to another
+  - Objects in the center sector (where the walk starts and to which wall
+    bounces frequently redirect) receive more visits than peripheral objects
+
+  With segment-based object initialization (Object 1 in the center sector),
+  the pointer starts near Object 1 and visits it more frequently in the
+  first ~500 steps. This initial bias persists even after mixing because
+  the walk returns to the center more often (wall bounces redirect toward
+  center). The expected per-object visit probability distribution is
+  approximately [0.25, 0.40, 0.35], producing expected CV ≈ 0.50 from
+  structural asymmetry alone. Random walk clustering amplifies this above
+  the Poisson baseline (~0.39 for uniform allocation of 9 probes).
+
+  ### Step 4 — Run Experiment and Record Results
+  Execute src/run_iter038_nav_gates.py, save all results to
+  archive/iter_038/results/.
+
+  ### Step 5 — Apply Pre-Committed Exit Rule
+
+  **PASS branch (all three gates clear):**
+  Write up the result. Explicitly hand off to HUMAN go/no-go on full 2D rebuild.
+  The agent does NOT auto-start the rebuild. The human decides whether to commit
+  ~10-14 iterations to the 2D migration. Document:
+  - The specific gate measurements that passed
+  - The estimated cost/scope of a full 2D rebuild (from iter_037 decision support)
+  - What carries over unchanged (M1, M3, iter_028 substrate, decoder-free)
+  - What must be rebuilt (2D encoder, 2D soft-argmax, production PhysicsSandbox2D,
+    2D CLTSMotorController, re-validate non-collapse, re-validate bracket)
+  - Caveat: gates passing does NOT guarantee the full bracket discriminates
+
+  **FAIL branch (any gate fails):**
+  Declare the behavioral-validation strategy not tractable within project scope.
+  Iter_039 becomes path (ii) re-frame, with the following pre-registered
+  falsifiable claims (each with its own gate):
+
+  1. **M1 pooled-VICReg necessity:** Without batch-level VICReg, the
+     separate-backbone architecture collapses in ≥4/5 seeds. Gate: train
+     without VICReg; check has_collapsed or per-dim std < 5.0.
+
+  2. **iter_028 collapse mechanism:** sim_loss_dyn is the causal driver of
+     z_dyn collapse on the shared backbone (removing it reduces collapse from
+     ≥30% to ≤10%); the separate backbone eliminates collapse regardless.
+     Gate: (a) shared backbone without sim_loss_dyn collapses ≤1/5 seeds;
+     (b) separate backbone collapses 0/5 seeds.
+
+  3. **iter_031 mean-pool bottleneck:** Mean-pool spatial readout limits
+     ΔR²_color < 0.10. No alternative readout achieves ΔR² ≥ 0.30 without
+     collapse. Gate: test centroid-gated or max-pool; falsified if any
+     achieves ΔR² ≥ 0.30 in ≥4/5 seeds.
+
+  4. **Structural-ceiling-gate primitive:** The analytical ceiling gate
+     (measuring PASSIVE information access to predict bracket viability)
+     is a valid research primitive. Gate: apply to a fresh task with known
+     ground-truth discriminability; falsified if prediction is wrong.
+
+  5. **1D environmental null (documented):** The four-iteration null chain
+     (iter_033-036) is a standing negative finding — not re-tested but
+     preserved as a citable result.
+
+  6. **2D navigation null (from iter_038):** The specific gate failure from
+     iter_038 is documented with the failure mode, parameterization, and
+     measured values — a data point, not a narrative.
+
+  Each claim is falsifiable with its own gate. The re-frame is NOT a
+  deliverable-by-narration; it is a set of specific, testable, quantitative
+  claims about the representation, methodology, and environmental findings.
+
+  ### Files Created
+  - src/run_iter038_nav_gates.py (new — 2D navigation gate experiment)
+  - src/pre_registration.md (updated with iter_038 parameters)
+  - archive/iter_038/results/ (output directory with gate results)
+
+  ### Files Preserved (NO modification)
+  - src/environment.py (1D environment unchanged)
+  - src/models_dual_stream.py (1D encoder unchanged)
+  - src/models_separate_dyn.py (separate backbone unchanged)
+  - src/motor.py (CLTSMotorController unchanged)
+  - src/run_iter037_2d_gates.py (preserved for reference)
+  - All standing mandates (M1, M3, GDASR log-only, decoder-free, iter_028 substrate)
+  - M2 remains untestable, not falsified
+
+pre_registration_file: "src/pre_registration.md"
+```

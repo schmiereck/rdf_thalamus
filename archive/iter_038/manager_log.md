@@ -1,9 +1,20 @@
-# RDF Scientific Pre-Registration
+# Research Manager Log - Iteration 038
 
-*   **Iteration:** 038
-*   **Pre-Registration File:** src/pre_registration.md
+## Iteration 038 -> Planner [Pre-Planning Hints]
 
-## 1. Hypothesis
+Manager's Pre-Planning Hints (iter_038, pre-planning):
+
+1. **Directional scope lock — execute exactly one cheap 2D-navigation gate probe, nothing more.** The next iteration is a rollout-only structural measurement of a MOVING pointer in a 2D arena that must navigate to an object's location to probe/excite it, with object-dynamics information emitted only on successful arrival under a finite action budget, measured under a RANDOM navigation policy with ≥5 seeds. No training, no learned model, no representation work, no ORACLE bracket, no parameter sweep beyond a single pre-declared parameterization. This is explicitly the user-mandated path (a) in disciplined form, and is explicitly NOT path (b) (do not start the 10–14-iteration rebuild on the strength of any partial result). M1, M3, decoder-free, and the iter_028 substrate are preserved verbatim and must not be touched.
+
+2. **Scientific discipline — pre-register the binding three-gate exit rule and the navigation-task specification in writing BEFORE any rollout, and treat the discovered Gate-1/Gate-1b opposition as a falsifier, not a tuning knob.** All three gates must clear at the single declared parameterization for PASS: Gate-1 (PASSIVE per-object collisions non-saturating, ≤3.0), Gate-1b (per-object collision-count CV stable across ≥5 seeds, with the stability criterion numerically defined in the plan — e.g. CV's own across-seed dispersion below a stated bound, not eyeballed), and Gate-2 (RANDOM per-object event CV ≥0.50). Per-seed decision rules and the exact arena/N/gaze_radius/budget/rollout-length must be posted before measurement, justified by a brief geometric argument for why this parameterization can in principle satisfy all three jointly (since iter_037 just showed they can be in structural opposition — if the planner cannot articulate why this design escapes that opposition, the iteration is mis-specified). Result language must stay restrained: "consistent with bracket-admission" or "does not refute," never "shows" or "proves."
+
+3. **Pre-commit both branches of the exit rule, and forbid the agent from auto-executing either escalation.** On PASS: write up the result and explicitly hand off to a HUMAN go/no-go on the full 2D rebuild — the agent does not start the rebuild. On FAIL on any gate: the behavioral-validation strategy is declared not tractable within project scope, and iter_039 becomes path (ii) re-frame, which must be scoped now (not later) as a list of pre-registered falsifiable claims each with its own gate (representation: M1 pooled-VICReg necessity, the iter_028 separate-backbone+mask_dyn_sim collapse mechanism, the iter_031 mean-pool-readout bottleneck localization; methodology: structural-ceiling-gate primitive demonstrated on a fresh task; environment: the 1D-forecloses-load-bearing-perception null plus the 2D static-pointer opposition finding) — not a deliverable-by-narration. The planner's draft must contain both branch specifications so neither outcome leaves the project in an undefined state.
+
+---
+
+## Iteration 038 -> Manager [Proposed Research Plan]
+
+**Proposed Hypothesis:**
 In a 2D arena (64×64, N=3 objects) with a PHYSICALLY NAVIGATING pointer (random
 acceleration ∈ [-1.5, 1.5]², velocity capped at 3.5 px/step per component) that
 must navigate to objects and actively probe them (probe probability p=0.015 per
@@ -31,7 +42,7 @@ naturally uneven per-object visit rates. Objects in the center sector (where
 the walk starts and to which wall-bounces frequently redirect) receive more
 visits than objects in peripheral sectors.
 
-## 2. Falsification Criterion
+**Proposed Falsification Criterion:**
 The hypothesis is falsified if ANY gate fails under the per-seed decision rule:
 
 Gate-1 FAIL: Fewer than 4 of 5 seeds achieve mean per-object probe-event
@@ -51,7 +62,7 @@ for ORACLE's targeted perception to exploit.
 If any gate fails, the behavioral-validation strategy is declared not tractable
 within project scope, and the project pivots to path (ii) re-frame.
 
-## 3. Proposed Method
+**Proposed Method:**
 ## Experiment: 2D Navigation Gate Probe
 
 ### Step 1 — Pre-Registration and Null Finding Preservation
@@ -248,4 +259,18 @@ claims about the representation, methodology, and environmental findings.
 - M2 remains untestable, not falsified
 
 ---
-*Created automatically by the RDF Orchestrator prior to iteration execution.*
+
+## Iteration 038 -> Planner [Strategic Guidance]
+
+# Manager's Note (iter_038, plan critique)
+
+The plan is well-structured and respects the dual-branch pre-commitment discipline. Three concerns require resolution before the Orchestrator writes `src/pre_registration.md` and the experiment is run.
+
+**1. Construction-vs-empirical risk on Gate-2 — object placement must NOT be engineered for the predicted CV.** The geometric argument in Step 3 says "Object 1 in the center sector (where the walk starts and to which wall-bounces frequently redirect) receive more visits than peripheral objects," and projects "expected per-object visit probability distribution is approximately [0.25, 0.40, 0.35], producing expected CV ≈ 0.50 from structural asymmetry alone." If you achieve Gate-2 by placing one object near the pointer start, the CV is *constructional* — it merely restates "you put an object near the spawn point" — and that bias will not survive ORACLE comparison (an ORACLE policy would exploit the same bias, collapsing the differential). The pre-registration MUST specify (a) object initial positions are sampled uniform-random in the arena interior, matching iter_037's protocol; (b) the pointer spawn is at the geometric center independent of object positions; and (c) the "expected CV ≈ 0.50" claim is reframed as a prediction about emergent random-walk clustering from autocorrelated trajectories + wall bounces, NOT from chosen placement. If CV ≥ 0.50 cannot survive random object placement, the gate must fail and the project pivots to (ii); do not patch by introducing placement bias.
+
+**2. Gate-1 headroom is suspiciously thin and Gate-1b std criterion is fragile.** Estimated mean per-object probe-event count is ~2.3 (from ~7 events / 3 objects) against a threshold of 3.0 — a ~23% margin where any miscalibration of `p=0.015` or PROBE_RADIUS pushes through. Worse, your earlier worked example shows ~7–10 events / 3 objects can yield individual seeds with 4+ events on one object. Lock the parameters now and explicitly forbid mid-run tuning. Separately, Gate-1b's `std(per-seed CVs) ≤ 0.25` over only N=5 seeds is itself a noisy estimator (the std of 5 numbers has ~50% sampling-error CI); state in the pre-registration that this is a sample-of-5 statistic interpreted at face value and not bootstrapped, so the failure mode is honest, not statistical-magic.
+
+**3. Pre-registration write order, language discipline, and the binding exit rule.** Per the Orchestrator's protocol, the `hypothesis` and `falsification_criterion` fields above will be written automatically to `src/pre_registration.md` and committed BEFORE the rollout runs — the sub-agents MUST read that file and adhere to it without re-tuning. Add three items to the file: (i) the fixed seed list `[7, 31, 53, 71, 83]` and the explicit ban on adding seeds post-hoc to chase a gate; (ii) the statement "no parameter sweep, no fallback parameterization — a single declared design either passes or fails"; (iii) restrained reporting language — results must be phrased as "is consistent with bracket-admission" / "does not refute the null" / "the tested parameterization fails Gate-X at X.XX vs threshold Y.YY," never "demonstrates," "proves," or "shows that 2D navigation works." On PASS: hand off to human go/no-go, do NOT begin 2D rebuild work. On FAIL of any gate: the six re-frame claims in Step 5 are the iter_039 scope — that scope must be referenced (not re-derived) in iter_039 so the FAIL branch is institutional, not improvised.
+
+---
+
