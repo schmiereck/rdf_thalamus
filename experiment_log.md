@@ -1,44 +1,6 @@
 
 ---
 ```yaml
-cached_tokens: 1415259
-cost_usd: 1.06778
-hypothesis: 'phase-5: closed-loop motor coupling reduces post-collision prediction
-  error by 75% but increases environmental entropy, lowering spatial overlap.'
-input_tokens: 2113647
-iter: 5
-metrics:
-  m_active_post_collision_l2: 0.02365
-  m_active_tracking_overlap: 0.228
-  m_no_motor_post_collision_l2: 0.09479
-  m_random_post_collision_l2: 0.05573
-  reduction_ratio_no_motor: 0.2495
-  reduction_ratio_random: 0.4243
-  test_loss_ratio_self_vs_primed: 1.0593
-output_tokens: 5191
-status: ok
-```
-
-## iter_005: phase-5: closed-loop motor coupling reduces post-collision prediction error by 75% but increases environmental entropy, lowering spatial overlap.
-
-**Analysis:** Phase 5 (Phase 3 of the implementation scope) aimed to integrate continuous physical actions (pointer acceleration, push commands) and establish closed-loop motor coupling via Subsumption Motorics.
-Our first sub-task (5.1) verified the integration of the continuous pointer physics sandbox, spatial centroid extraction (derived purely from local activations of the attended segment with zero ground-t
-
-**Status:** ok
-
-**Metrics:** `{'m_active_post_collision_l2': 0.02365, 'm_no_motor_post_collision_l2': 0.09479, 'm_random_post_collision_l2': 0.05573, 'm_active_tracking_overlap': 0.228, 'test_loss_ratio_self_vs_primed': 1.0593, 'reduction_ratio_no_motor': 0.2495, 'reduction_ratio_random': 0.4243}`
-
-**Experimenter view:** We executed the Phase 3 (Motor & Closed Loop) implementation and evaluation under the strict directives of the Strategic Research Manager.
-The closed-loop integration of the Thalamus dynamic attention mechanism and the Subsumption Motorics architecture was fully validated.
-
-Key Findings:
-1. CAUSAL SENSITIVITY CONFIRMED: Active probing via intentional collisions achieved a phenomenal 75.05% reducti
-
-**Notes:** Phase 3 complete. Closed-loop active probing achieved a 75% prediction error reduction. Hypothesis formally falsified on tracking overlap and baseline comparison.
-
-
----
-```yaml
 cached_tokens: 2645638
 cost_usd: 1.87851
 hypothesis: 'phase-6: evaluate generalization (N=3 to N=4 transition) and noise robustness
@@ -1504,4 +1466,50 @@ conclusively: in the pass-through environment, the PASSIVE pointer (no accelerat
 pushing) still accumulates a mean of 12.27 vali
 
 **Notes:** Analytical ceiling gate failed; pass-through dynamics insufficient to constrain passive information gathering in 1D. Escalation to foveated gaze triggered.
+
+
+---
+```yaml
+cached_tokens: 1120361
+cost_usd: 6.21845
+hypothesis: 'phase-36: F5 fired in both arms — foveated gaze with GAZE_RADIUS=8 does
+  not create sufficient coverage heterogeneity under RANDOM; pre-committed meta-escalation
+  triggered'
+input_tokens: 4589453
+iter: 36
+metrics:
+  arm_A_CV: 0.3594
+  arm_A_mean_per_obj_count: 1.9333
+  arm_B_CV: 0.4555
+  arm_B_mean_per_obj_count: 2.5333
+  both_arms_failed_gate: true
+  cv_gate_threshold: 0.5
+  f5_fired: true
+  full_bracket_run: false
+output_tokens: 120087
+status: ok
+```
+
+## iter_036: phase-36: F5 fired in both arms — foveated gaze with GAZE_RADIUS=8 does not create sufficient coverage heterogeneity under RANDOM; pre-committed meta-escalation triggered
+
+**Analysis:** Phase 36 implemented and executed the foveated gaze benchmark as pre-registered.
+The ghostly (non-physical) gaze pointer with explicit probe action was the
+proposed solution to iter_035's finding that a physical 1D pointer inevitably
+collides with bouncing objects. The foveated gaze mechanism (GAZE_RADIUS=8)
+was supposed to make perception load-bearing by forcing the agent to allocate
+a limited pr
+
+**Status:** ok
+
+**Metrics:** `{'arm_A_CV': 0.3594, 'arm_A_mean_per_obj_count': 1.9333, 'arm_B_CV': 0.4555, 'arm_B_mean_per_obj_count': 2.5333, 'cv_gate_threshold': 0.5, 'f5_fired': True, 'both_arms_failed_gate': True, 'full_bracket_run': False}`
+
+**Experimenter view:** The foveated gaze benchmark (iter_036) executed correctly but both arms failed the
+pre-registered CV gate (F5). Under RANDOM gaze+probe policy with GAZE_RADIUS=8:
+- Arm A (normal obj-obj): CV=0.3594, mean per-obj count=1.93 — FAIL
+- Arm B (pass-through obj-obj): CV=0.4555, mean per-obj count=2.53 — FAIL
+
+Both below the CV ≥ 0.5 threshold. RANDOM distributes probes too evenly across
+the 3 objects f
+
+**Notes:** F5 fired in both arms. Pre-committed meta-escalation triggered.
 

@@ -1,0 +1,1071 @@
+I'll start by understanding the current codebase before planning sub-goals. Let me review the relevant files and prior iterations.
+
+[Tool Call: read_iteration({'iter_num': 35})]
+
+[Tool Result: ```yaml
+cached_tokens: 278406
+campaign: collapse-elimination
+cost_usd: 4.52077
+hypothesis: 'phase-35: pass-through environment redesign insufficient — passive pointer
+  gets 12.27 valid collisions/object in 1D; foveated gaze escalation triggered'
+input_tokens: 1563543
+iter: 35
+metrics:
+  analytical_ceiling_gate_passed: false
+  analytical_ceiling_gate_threshold: 3.0
+  pass_through_test_passed: true
+  passive_mean_valid_collisions_per_obj: 12.27
+output_tokens: 138993
+status: ok
+```
+
+## iter_035: phase-35: pass-through environment redesign insufficient — passive pointer gets 12.27 valid collisions/object in 1D; foveated gaze escalation triggered
+
+**Analysis:** Phase 35 tested the core hypothesis from the Manager's pre-planning hints: that removing
+object-object collisions (pass-through physics) would make perception-driven targeting
+load-bearing for mass estimation. This was the cheapest sufficient environment redesign.
+
+The analytical ceiling gate revealed a fundamental structural proble...]
+
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      diag_iter034.py
+      diagnose_oracle.py
+      diagnose_oracle_v2.py
+      diagnose_oracle_v3.py
+      diagnose_oracle_v4.py
+      diagnose_oracle_v5.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_recon.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_arm1_integration_smoke_test.py
+      run_iter030_arm2.py
+      run_iter031_partA.py
+      run_iter031_partB.py
+      run_iter032.py
+      run_iter033.py
+      run_iter033_v2.py
+      run_iter033_v3.py
+      run_iter034_benchmark.py
+      run_iter034_v2.py
+      run_iter035_benchmark.py
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_mask_dyn_sim_shared.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      r...]
+
+
+[Tool Call: read_file({'path': 'src/environment.py'})]
+
+[Tool Result: import numpy as np
+
+class PhysicsSandbox:
+    def __init__(self, N=2, substeps=10, sigma_blur=0.5, seed=None, pixel_noise_std=0.0, noisy_tv=False, structured_distractor=False):
+        """
+        PhysicsSandbox simulates N elastic colliding objects plus 1 physical pointer in a 1D space [0, 128].
+        Mapped to a 1D array of 128 RGB pixels.
+        
+        Args:
+            N (int): Number of objects (usually 2 or 3).
+            substeps (int): Number of integration sub-steps per environment step.
+            sigma_blur (float): Softness of the continuous rendering.
+            seed (int, optional): Random seed.
+            pixel_noise_std (float): Standard deviation of global pixel-level Gaussian noise.
+            noisy_tv (bool): Whether to simulate a Noisy-TV entity that random-walks and flickers.
+            structured_distractor (bool): Whether to simulate a Sinusoidal Oscillator distractor.
+        """
+        self.N = N
+        self.substeps = substeps
+        self.sigma_b...]
+
+
+[Tool Call: read_file({'path': 'src/run_iter035_benchmark.py'})]
+
+[Tool Result: #!/usr/bin/env python3
+"""
+iter_035: Pass-Through Physics Benchmark
+
+Tests whether perception-driven targeting is load-bearing for mass estimation
+in an environment where objects pass through each other (no obj-obj collisions).
+Only pointer-object collisions remain, so the agent MUST target objects to get
+information about their masses.
+"""
+import os, sys, csv, numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from environment import PhysicsSandbox
+
+# ── Constants ──
+SEEDS = [7, 31, 53, 71, 83, 97, 113, 163]
+N_OBJ = 3
+N_STEPS = 2000
+PTR_IDX = N_OBJ  # pointer index in concatenated arrays
+PTR_MASS = 10.0
+KP, KD = 2.0, 0.5
+PUSH_DIST = 6.0
+PUSH_VEL = 5.0
+PUSH_CD = 15
+MAX_PUSHES = 15
+PROX_THRESH = 4.0
+DV_THRESH = 0.5
+N_BOOT = 10000
+OUT = os.path.join('archive', 'iter_035', 'results')
+
+
+# ── PassThroughPhysicsSandbox ──
+class PassThroughPhysicsSandbox(PhysicsSandbox):
+    """Objects pass through each other; only pointer-object collisions are elastic."""
+    
+    de...]
+
+Now let me read the pre-registration file and the iter_034 benchmark code for reference:
+
+[Tool Call: read_file({'path': 'src/pre_registration.md'})]
+
+[Tool Result: # RDF Scientific Pre-Registration
+
+*   **Iteration:** 036
+*   **Pre-Registration File:** src/pre_registration.md
+
+## 1. Hypothesis
+In a foveated 1D physics sandbox (N=3 objects, ghostly gaze pointer with
+GAZE_RADIUS=8 pixels, probe action applying 1D elastic collision between
+gaze [M_gaze=10] and nearest object within gaze window, probe budget B=20
+over 2000 steps) — under both Arm A (normal obj-obj collisions retained)
+and Arm B (pass-through obj-obj, only probe reveals dynamics) — the ORACLE
+targeted-exploration policy (PD-tracks least-probed object, probes when
+target center is within GAZE_RADIUS of gaze and |error|≤6.0) achieves
+Per-Object Median Log-Ratio Error (POMLRE) at least 0.15 lower than a
+RANDOM gaze+probe policy, with the lower bound of the two-sided 95% paired
+bootstrap CI of (RANDOM_POMLRE - ORACLE_POMLRE) clear of zero over 8 seeds
+(including hard seeds 53, 71). The ordering
+ORACLE_POMLRE < RANDOM_POMLRE < PASSIVE_POMLRE holds in the mean within
+each arm. The success c...]
+
+
+[Tool Call: read_file({'path': 'src/run_iter034_benchmark.py'})]
+
+[Tool Result: """
+iter_034 Dynamics-Learning Benchmark
+
+Implements the pre-registered experiment to validate a mass-estimation MAPE metric
+with ground-truth collision logs and injected velocity observation noise.
+"""
+
+import os
+import sys
+import csv
+import numpy as np
+import torch
+
+# Set torch threads as specified
+torch.set_num_threads(4)
+
+# Import environment
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from environment import PhysicsSandbox
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+SEEDS = [7, 31, 53, 71, 83, 97, 113, 163]
+CONDITIONS = ['ORACLE', 'RANDOM', 'PASSIVE']
+N_STEPS = 2000
+N_OBJECTS = 3
+POINTER_IDX = N_OBJECTS  # entity index of pointer in concatenated arrays
+THRESHOLD = 4.0
+DV_THRESHOLD = 0.5
+SIGMA_VEL = 0.5
+POINTER_MASS = 10.0
+KP = 2.0
+KD = 0.5
+PUSH_DISTANCE = 6.0
+PUSH_VEL = 5.0
+PUSH_COOLDOWN_STEPS = 15
+N_BOOTSTRAP = 10000
+OUTPUT_DIR = os.path....]
+
+Let me check the iter_035 analytical ceiling result and the most recent experiment code for reference:
+
+[Tool Call: read_result_file({'iter_num': 35, 'filename': 'results/analytical_ceiling.txt'})]
+
+[Tool Result: PASSIVE mean valid collisions per object: [11.0, 10.6, 15.2]
+Overall mean: 12.27
+Gate (mean < 3.0): FAIL
+Environment redesign FAILED: PASSIVE gets enough collisions without targeting.
+]
+
+Now I have a thorough understanding of the codebase, the pre-registration, and the Manager's directives. Let me plan this phase.
+
+**Phase 36 Plan:**
+
+The pre-registration is already written and locked. The task is to implement and run the foveated gaze benchmark as specified. This is a single bounded execution task — implement the sandbox, run the CV gate, run the bracket if the gate passes, produce analysis. I'll use one high-complexity agent for implementation and execution.
+
+Key Manager directives to embed in the task:
+1. The Δv for the mass estimator must be across-substep (pre-step before probe, post-step after full physics) — NOT across-collision-only
+2. F6 (coverage-vs-estimation decomposition) must be reported on equal footing with F1/F2
+3. CV gate evaluated only on gate-specific seeds, decision logged before bracket
+4. Per-condition distribution over POMLRE branches (0/1-2/≥3 valid events) as diagnostic
+5. Headline POMLRE gap re-computed with all conditions forced into same branch
+6. No soft language ("trend toward", "approaching")
+
+[Tool Call: run_agent({'iter_id': '036.1', 'task': '## Task: Implement and Run iter_036 Foveated Gaze Benchmark\n\nYou must implement `src/run_iter036_benchmark.py` and run the full experiment according to the pre-registration at `src/pre_registration.md`. Read it first.\n\n### Context\n\nThe Thalamus project has been trying to validate a behavioral benchmark where perception-driven targeting is load-bearing for mass estimation. iter_035 showed that in 1D with a physical pointer, even pass-through physics doesn\'t help because a passive pointer inevitably collides with bouncing objects (12.27 collisions/object). The solution: make the pointer **ghostly** (non-physical — passes through objects), and use an explicit **probe action** that applies a 1D elastic collision between the gaze pointer and a nearby object. Combined with **foveated gaze** (only a window of GAZE_RADIUS=8 pixels is "visible"), this should make perception load-bearing.\n\n### Implementation Specification\n\nCreate `src/run_iter036_benchmark.py` implementing:\n\n#### A. FoveatedGazeSandbox — subclass of PhysicsSandbox with:\n\n1. **Ghostly pointer**: During the physics substep loop, the gaze pointer passes through objects (NO pointer-object collision resolution). The pointer still bounces off walls at 0 and 128, and still receives acceleration from action[\'acc\']. This breaks the 1D geometric inevitability from iter_035.\n\n2. **Probe action**: When `action[\'probe\']=True` and `probe_budget > 0`:\n   - Find the nearest object with center within GAZE_RADIUS=8 pixels of the gaze center.\n   - If found: apply 1D elastic collision between gaze (M_gaze=10.0) and that object. Update both gaze velocity and object velocity using the standard elastic collision formula. Decrement probe_budget.\n   - If not found: probe is wasted (no collision). Decrement probe_budget.\n   - Record: (step, obj_idx, v_gaze_pre_step, v_obj_pre_step, v_gaze_post_step, v_obj_post_step)\n   - **Critical Δv definition (Manager directive):** Pre-step velocities are recorded BEFORE the probe collision is applied AND before the substep loop runs. Post-step velocities are recorded AFTER the full physics substep loop completes. The Δv values therefore include confounding physics (wall bounces, obj-obj collisions) — this ensures the mass estimator is NOT a definitional identity.\n\n3. **Foveated render**: Override render() so that only pixels within [gaze_pos - GAZE_RADIUS, gaze_pos + GAZE_RADIUS] are visible. Outside this window, canvas is zero.\n\n4. **pass_through parameter**: If True, objects also pass through each other (same as PassThroughPhysicsSandbox from iter_035). This enables the Arm B factorial condition.\n\n5. **Constructor**: `FoveatedGazeSandbox(N=3, substeps=10, seed=None, pass_through=False, gaze_radius=8)`\n\n#### B. Three Conditions (NO learned representation):\n\n1. **ORACLE**: Perfect knowledge of all object positions and velocities.\n   - Maintains per-object probe-event count.\n   - PD-tracks the least-probed object (Kp=2.0, Kd=0.5).\n   - When the target\'s center is within GAZE_RADIUS of gaze center AND |error| ≤ 6.0, fires probe.\n   - After probing, switches target to next least-probed object.\n   - After probe budget exhausted, continues PD tracking without probing.\n   - Probe budget B=20 over 2000 steps.\n\n2. **RANDOM**: Random gaze acceleration ∈ [-10, 10]. Random probe with probability p = 0.01 per step (expected ~20 probes over 2000 steps) until budget exhausted. No targeting. Probe budget B=20.\n\n3. **PASSIVE**: Gaze starts at 64.0, no acceleration, no probing. 0 probe events → POMLRE = 2.0 (ceiling).\n\n#### C. Metric — POMLRE (Per-Object Median Log-Ratio Error):\n\nFor each object i:\n1. Collect probe events for object i with |Δv_obj| > 1.0.\n2. m_est_k = -M_gaze * Δv_gaze_k / Δv_obj_k for each event k.\n3. If ≥3 valid events: m_hat_i = median(m_est_k), error_i = |log(m_hat_i / m_true_i)|.\n4. If 1-2 valid events: m_hat_i = mean(m_est_k), error_i = |log(m_hat_i / m_true_i)|.\n5. If 0 valid events: error_i = 2.0 (maximum penalty).\nPOMLRE = mean(error_i across 3 objects).\n\n**Manager directive — branch distribution diagnostic:** Report the per-condition distribution over the three branches (0 events → 2.0, 1-2 events → mean, ≥3 events → median) as a diagnostic table. Also re-compute the headline POMLRE gap restricting to seed×object cells where BOTH ORACLE and RANDOM have ≥3 valid events (this is the F6 decomposition, but compute it as a PRIMARY output, not a footnote).\n\n#### D. Factorial Design:\n\n- **Arm A**: Foveated gaze + normal obj-obj collisions (foveation lever alone).\n- **Arm B**: Foveated gaze + pass-through obj-obj collisions (both levers).\nPrimary metric computed separately per arm. Factorial comparison identifies the contribution of each lever.\n\n#### E. Analytical Ceiling Gate (computed FIRST, before bracket):\n\nRun RANDOM for 5 seeds × 2 arms = 10 short episodes (2000 steps each).\nGate seeds: [7, 31, 53, 71, 83]\nFor each arm, compute:\n- Per-object probe-event counts under RANDOM.\n- CV = std(counts) / mean(counts) across the 3 objects, averaged over seeds.\n- Mean per-object event count.\nGate criteria (BOTH arms must pass):\n- CV ≥ 0.5: RANDOM coverage is sufficiently uneven for ORACLE to improve.\n- Mean per-object count ≥ 0.5: RANDOM gets at least some events.\n**Manager directive:** The gate decision is made and logged BEFORE the 8-seed bracket launches. No peeking at bracket data.\n\nIf gate fails in either arm, report: "Foveated gaze with GAZE_RADIUS=8 does not create sufficient coverage imbalance under RANDOM policy in Arm [A/B]." Do NOT proceed to full bracket for that arm.\n\n#### F. Full Bracket (if gate passes):\n\n8 seeds × 2 arms × 3 conditions = 48 episodes, 2000 steps each.\nSeeds: [7, 31, 53, 71, 83, 97, 113, 163] (hard seeds 53, 71 included).\n\n#### G. Falsification Criteria (from pre-registration):\n\nF1: RANDOM_POMLRE - ORACLE_POMLRE < 0.15 in either arm → falsified\nF2: Lower bound of 95% paired bootstrap CI of gap includes zero → falsified\nF3: ORACLE sanity checks fail (S1-S6 below) → buggy, no comparison interpreted\nF4: Ordering PASSIVE > RANDOM > ORACLE violated → metric rejected\nF5: CV gate fails (RANDOM coverage too even) → null\nF6: Estimation-only gap < 0.05 in BOTH arms → "ORACLE wins by coverage, not perception-quality discrimination"\n\n**ORACLE Sanity Checks (S1-S6):**\nS1: ORACLE achieves ≥3 probe-induced collision events per object (mean across seeds)\nS2: ORACLE probe success rate ≥ 60% (≥12 of 20 probe attempts result in a collision)\nS3: ≥80% of ORACLE\'s probe-induced collision events have |Δv_obj| > 1.0\nS4: No single object receives >80% of ORACLE\'s total probe events\nS5: ORACLE gaze stays in bounds ≥95% of steps\nS6: Each of 3 objects receives ≥10% of ORACLE\'s total probe events\n\n#### H. Analysis and Reporting:\n\n1. Per-seed POMLRE for each condition × arm.\n2. Bootstrap CI (10000 paired resamples, paired by seed).\n3. Sanity checks S1-S6.\n4. Coverage-vs-estimation decomposition (F6) — **reported on equal footing with F1/F2, not as footnote**.\n5. Branch distribution diagnostic (how many seed×object cells fall into each POMLRE branch per condition).\n6. Factorial comparison: gap in Arm A vs gap in Arm B.\n\n#### I. Output Files:\n\nSave to `archive/iter_036/results/`:\n- `per_run.csv`: condition, seed, arm, pomlre, per-obj valid counts, per-obj errors, true masses, probe stats, branch info\n- `cv_gate.txt`: gate results per arm\n- `sanity_checks.txt`: S1-S6 per arm\n- `analysis.md`: full analysis with all tables, gates, conclusion\n- `branch_distribution.txt`: per-condition branch distribution\n\n#### J. Language Discipline (Manager directive):\n\n- NO soft language: "trend toward", "approaching", "validates", "demonstrates", "proves"\n- Correct framing: "is consistent with foveated gaze making perception load-bearing under the declared protocol" or "does not refute the null that foveated gaze is insufficient"\n- A clean null with pre-committed meta-escalation is a first-class success of the method\n\n#### K. Pre-Committed Escalation:\n\nIf null result (ORACLE-RANDOM gap < 0.15 in BOTH arms, or CV gate fails in both arms), that triggers meta-escalation: the project must confront whether the 1D sandbox itself is the structural confound. No additional foveated-gaze parameter adjustments before meta-escalation.\n\n### Reference Files\n\n- `src/environment.py` — PhysicsSandbox base class\n- `src/run_iter035_benchmark.py` — PassThroughPhysicsSandbox and POMLRE implementation (reuse patterns)\n- `src/pre_registration.md` — Full pre-registration (hypothesis, falsification criteria, method)\n\n### Execution\n\n1. Create `src/run_iter036_benchmark.py`\n2. Run: `cd /home/user && python src/run_iter036_benchmark.py`\n3. Verify output files are produced in `archive/iter_036/results/`\n4. Read and report the key results\n\nThe script should be self-contained and runnable. Use `numpy` only (no torch needed for this benchmark). Set `np.random.seed()` appropriately for reproducibility.', 'complexity': 'high', 'estimated_runtime_sec': 600, 'timeout_sec': 900})]
+
+[Tool Result: {"error": "Wrong iter_id '036.1' for iteration 36. Use ids like '36.1', '36.2', etc. (not numbers from a previous or future iteration)."}]
+
+
+[Tool Call: run_agent({'complexity': 'high', 'estimated_runtime_sec': 600, 'iter_id': '36.1', 'task': '## Task: Implement and Run iter_036 Foveated Gaze Benchmark\n\nYou must implement `src/run_iter036_benchmark.py` and run the full experiment according to the pre-registration at `src/pre_registration.md`. Read it first.\n\n### Context\n\nThe Thalamus project has been trying to validate a behavioral benchmark where perception-driven targeting is load-bearing for mass estimation. iter_035 showed that in 1D with a physical pointer, even pass-through physics doesn\'t help because a passive pointer inevitably collides with bouncing objects (12.27 collisions/object). The solution: make the pointer **ghostly** (non-physical — passes through objects), and use an explicit **probe action** that applies a 1D elastic collision between the gaze pointer and a nearby object. Combined with **foveated gaze** (only a window of GAZE_RADIUS=8 pixels is "visible"), this should make perception load-bearing.\n\n### Implementation Specification\n\nCreate `src/run_iter036_benchmark.py` implementing:\n\n#### A. FoveatedGazeSandbox — subclass of PhysicsSandbox with:\n\n1. **Ghostly pointer**: During the physics substep loop, the gaze pointer passes through objects (NO pointer-object collision resolution). The pointer still bounces off walls at 0 and 128, and still receives acceleration from action[\'acc\']. This breaks the 1D geometric inevitability from iter_035.\n\n2. **Probe action**: When `action[\'probe\']=True` and `probe_budget > 0`:\n   - Find the nearest object with center within GAZE_RADIUS=8 pixels of the gaze center.\n   - If found: apply 1D elastic collision between gaze (M_gaze=10.0) and that object. Update both gaze velocity and object velocity using the standard elastic collision formula. Decrement probe_budget.\n   - If not found: probe is wasted (no collision). Decrement probe_budget.\n   - Record: (step, obj_idx, v_gaze_pre_step, v_obj_pre_step, v_gaze_post_step, v_obj_post_step)\n   - **Critical Δv definition (Manager directive):** Pre-step velocities are recorded BEFORE the probe collision is applied AND before the substep loop runs. Post-step velocities are recorded AFTER the full physics substep loop completes. The Δv values therefore include confounding physics (wall bounces, obj-obj collisions) — this ensures the mass estimator is NOT a definitional identity.\n\n3. **Foveated render**: Override render() so that only pixels within [gaze_pos - GAZE_RADIUS, gaze_pos + GAZE_RADIUS] are visible. Outside this window, canvas is zero.\n\n4. **pass_through parameter**: If True, objects also pass through each other (same as PassThroughPhysicsSandbox from iter_035). This enables the Arm B factorial condition.\n\n5. **Constructor**: `FoveatedGazeSandbox(N=3, substeps=10, seed=None, pass_through=False, gaze_radius=8)`\n\n#### B. Three Conditions (NO learned representation):\n\n1. **ORACLE**: Perfect knowledge of all object positions and velocities.\n   - Maintains per-object probe-event count.\n   - PD-tracks the least-probed object (Kp=2.0, Kd=0.5).\n   - When the target\'s center is within GAZE_RADIUS of gaze center AND |error| ≤ 6.0, fires probe.\n   - After probing, switches target to next least-probed object.\n   - After probe budget exhausted, continues PD tracking without probing.\n   - Probe budget B=20 over 2000 steps.\n\n2. **RANDOM**: Random gaze acceleration ∈ [-10, 10]. Random probe with probability p = 0.01 per step (expected ~20 probes over 2000 steps) until budget exhausted. No targeting. Probe budget B=20.\n\n3. **PASSIVE**: Gaze starts at 64.0, no acceleration, no probing. 0 probe events → POMLRE = 2.0 (ceiling).\n\n#### C. Metric — POMLRE (Per-Object Median Log-Ratio Error):\n\nFor each object i:\n1. Collect probe events for object i with |Δv_obj| > 1.0.\n2. m_est_k = -M_gaze * Δv_gaze_k / Δv_obj_k for each event k.\n3. If ≥3 valid events: m_hat_i = median(m_est_k), error_i = |log(m_hat_i / m_true_i)|.\n4. If 1-2 valid events: m_hat_i = mean(m_est_k), error_i = |log(m_hat_i / m_true_i)|.\n5. If 0 valid events: error_i = 2.0 (maximum penalty).\nPOMLRE = mean(error_i across 3 objects).\n\n**Manager directive — branch distribution diagnostic:** Report the per-condition distribution over the three branches (0 events → 2.0, 1-2 events → mean, ≥3 events → median) as a diagnostic table. Also re-compute the headline POMLRE gap restricting to seed×object cells where BOTH ORACLE and RANDOM have ≥3 valid events (this is the F6 decomposition, but compute it as a PRIMARY output, not a footnote).\n\n#### D. Factorial Design:\n\n- **Arm A**: Foveated gaze + normal obj-obj collisions (foveation lever alone).\n- **Arm B**: Foveated gaze + pass-through obj-obj collisions (both levers).\nPrimary metric computed separately per arm. Factorial comparison identifies the contribution of each lever.\n\n#### E. Analytical Ceiling Gate (computed FIRST, before bracket):\n\nRun RANDOM for 5 seeds × 2 arms = 10 short episodes (2000 steps each).\nGate seeds: [7, 31, 53, 71, 83]\nFor each arm, compute:\n- Per-object probe-event counts under RANDOM.\n- CV = std(counts) / mean(counts) across the 3 objects, averaged over seeds.\n- Mean per-object event count.\nGate criteria (BOTH arms must pass):\n- CV ≥ 0.5: RANDOM coverage is sufficiently uneven for ORACLE to improve.\n- Mean per-object count ≥ 0.5: RANDOM gets at least some events.\n**Manager directive:** The gate decision is made and logged BEFORE the 8-seed bracket launches. No peeking at bracket data.\n\nIf gate fails in either arm, report: "Foveated gaze with GAZE_RADIUS=8 does not create sufficient coverage imbalance under RANDOM policy in Arm [A/B]." Do NOT proceed to full bracket for that arm.\n\n#### F. Full Bracket (if gate passes):\n\n8 seeds × 2 arms × 3 conditions = 48 episodes, 2000 steps each.\nSeeds: [7, 31, 53, 71, 83, 97, 113, 163] (hard seeds 53, 71 included).\n\n#### G. Falsification Criteria (from pre-registration):\n\nF1: RANDOM_POMLRE - ORACLE_POMLRE < 0.15 in either arm → falsified\nF2: Lower bound of 95% paired bootstrap CI of gap includes zero → falsified\nF3: ORACLE sanity checks fail (S1-S6 below) → buggy, no comparison interpreted\nF4: Ordering PASSIVE > RANDOM > ORACLE violated → metric rejected\nF5: CV gate fails (RANDOM coverage too even) → null\nF6: Estimation-only gap < 0.05 in BOTH arms → "ORACLE wins by coverage, not perception-quality discrimination"\n\n**ORACLE Sanity Checks (S1-S6):**\nS1: ORACLE achieves ≥3 probe-induced collision events per object (mean across seeds)\nS2: ORACLE probe success rate ≥ 60% (≥12 of 20 probe attempts result in a collision)\nS3: ≥80% of ORACLE\'s probe-induced collision events have |Δv_obj| > 1.0\nS4: No single object receives >80% of ORACLE\'s total probe events\nS5: ORACLE gaze stays in bounds ≥95% of steps\nS6: Each of 3 objects receives ≥10% of ORACLE\'s total probe events\n\n#### H. Analysis and Reporting:\n\n1. Per-seed POMLRE for each condition × arm.\n2. Bootstrap CI (10000 paired resamples, paired by seed).\n3. Sanity checks S1-S6.\n4. Coverage-vs-estimation decomposition (F6) — **reported on equal footing with F1/F2, not as footnote**.\n5. Branch distribution diagnostic (how many seed×object cells fall into each POMLRE branch per condition).\n6. Factorial comparison: gap in Arm A vs gap in Arm B.\n\n#### I. Output Files:\n\nSave to `archive/iter_036/results/`:\n- `per_run.csv`: condition, seed, arm, pomlre, per-obj valid counts, per-obj errors, true masses, probe stats, branch info\n- `cv_gate.txt`: gate results per arm\n- `sanity_checks.txt`: S1-S6 per arm\n- `analysis.md`: full analysis with all tables, gates, conclusion\n- `branch_distribution.txt`: per-condition branch distribution\n\n#### J. Language Discipline (Manager directive):\n\n- NO soft language: "trend toward", "approaching", "validates", "demonstrates", "proves"\n- Correct framing: "is consistent with foveated gaze making perception load-bearing under the declared protocol" or "does not refute the null that foveated gaze is insufficient"\n- A clean null with pre-committed meta-escalation is a first-class success of the method\n\n#### K. Pre-Committed Escalation:\n\nIf null result (ORACLE-RANDOM gap < 0.15 in BOTH arms, or CV gate fails in both arms), that triggers meta-escalation: the project must confront whether the 1D sandbox itself is the structural confound. No additional foveated-gaze parameter adjustments before meta-escalation.\n\n### Reference Files\n\n- `src/environment.py` — PhysicsSandbox base class\n- `src/run_iter035_benchmark.py` — PassThroughPhysicsSandbox and POMLRE implementation (reuse patterns)\n- `src/pre_registration.md` — Full pre-registration (hypothesis, falsification criteria, method)\n\n### Execution\n\n1. Create `src/run_iter036_benchmark.py`\n2. Run: `cd /home/user && python src/run_iter036_benchmark.py`\n3. Verify output files are produced in `archive/iter_036/results/`\n4. Read and report the key results\n\nThe script should be self-contained and runnable. Use `numpy` only (no torch needed for this benchmark). Set `np.random.seed()` appropriately for reproducibility.', 'timeout_sec': 900})]
+
+[Tool Result: {"started": true, "iter_id": "36.1", "done": true, "final_result": {"status": "code_error", "artifacts": [], "metrics": {}, "log_excerpt": "No execution log available \u2014 the script was not created or run.\n", "experimenter_view": "The iter_036 specification was fully understood from the pre-registration\nand reference files. The required components are:\n1. FoveatedGazeSandbox subclass with ghostly pointer (no pointer-object\n   collision resolution), probe action (1D elastic collision with nearest\n   object within GAZE_RADIUS=8), foveated render, and pass_through flag.\n2. Three conditions: ORACLE (PD-track least-probed, probe when aligned),\n   RANDOM (random acc + p=0.01 probe), PASSIVE (fixed gaze, no probes).\n3. POMLRE metric with branch distribution diagnostic and F6 decomposition.\n4. CV gate (5 seeds) before full bracket (8 seeds \u00d7 2 arms \u00d7 3 conditions).\n5. Falsification criteria F1-F6 and sanity checks S1-S6.\nImplementation was not completed due to execution...]
+
+The agent ran out of execution budget. Let me check if any code was actually created:
+
+[Tool Call: list_dir({'path': 'src'})]
+
+[Tool Result: [DIR] __pycache__
+      compile_results.py
+      diag_iter034.py
+      diagnose_oracle.py
+      diagnose_oracle_v2.py
+      diagnose_oracle_v3.py
+      diagnose_oracle_v4.py
+      diagnose_oracle_v5.py
+      env_report.txt
+      environment.py
+      fix_report.py
+      itag.py
+      models.py
+      models_dual_stream.py
+      models_recon.py
+      models_separate_dyn.py
+      models_spatial.py
+      motor.py
+      pre_registration.md
+      run_arm1_integration_smoke_test.py
+      run_iter030_arm2.py
+      run_iter031_partA.py
+      run_iter031_partB.py
+      run_iter032.py
+      run_iter033.py
+      run_iter033_v2.py
+      run_iter033_v3.py
+      run_iter034_benchmark.py
+      run_iter034_v2.py
+      run_iter035_benchmark.py
+      run_phase0_collapse_sweep.py
+      run_phase0_id_probe.py
+      run_phase0_id_probe_v2.py
+      run_phase0_mask_dyn_sim_shared.py
+      run_phase0_separate_dyn.py
+      run_phase0_sfa.py
+      run_phase0_sfa_archceiling.py
+      run_phase0_sfa_cgir.py
+      r...]
+
+The file wasn't created. The task is too large for a single agent. Let me break it into two smaller steps: first create the code, then run it.
+
+[Tool Call: run_agent({'complexity': 'medium', 'estimated_runtime_sec': 300, 'iter_id': '36.2', 'task': "## Task: Create src/run_iter036_benchmark.py (WRITE CODE ONLY, DO NOT RUN)\n\nCreate the file `src/run_iter036_benchmark.py` implementing the foveated gaze benchmark. DO NOT run it — just write the code.\n\n### Key Reference Files (read first):\n- `src/environment.py` — PhysicsSandbox base class\n- `src/run_iter035_benchmark.py` — PassThroughPhysicsSandbox + POMLRE implementation patterns\n\n### Specification\n\n#### 1. FoveatedGazeSandbox (subclass of PhysicsSandbox)\n\nConstructor: `__init__(self, N=3, substeps=10, seed=None, pass_through=False, gaze_radius=8)`\n\nThe key difference from PhysicsSandbox: the pointer is **ghostly** — it passes through objects (no pointer-object collision resolution). The pointer still bounces off walls at 0 and 128, and still receives acceleration from action['acc'].\n\nOverride `step(self, action=None)`:\n- action can now include `action['probe']` (bool) in addition to `action['acc']`\n- The step method needs a `probe_budget` attribute (initialized to 20 in reset())\n- When `action['probe']=True` and `self.probe_budget > 0`:\n  1. Find the nearest object with center within gaze_radius pixels of the gaze center (self.pointer_pos)\n  2. If found: apply 1D elastic collision between gaze (mass=10.0) and that object. Update both gaze velocity and object velocity. Decrement probe_budget. Record the probe event.\n  3. If not found: probe is wasted. Decrement probe_budget.\n- In the physics substep loop: only resolve obj-obj collisions (skip pointer-object pairs). If `self.pass_through=True`, also skip obj-obj collisions.\n- Record pre-step velocities BEFORE probe collision + substep loop, post-step velocities AFTER full substep loop.\n\nOverride `render(self)`:\n- Only pixels within [gaze_pos - gaze_radius, gaze_pos + gaze_radius] are visible. Outside this window, canvas is zero. (For future LEARNED condition; does not affect ORACLE/RANDOM metrics.)\n\nAdd `probe_events` list attribute, reset each episode. Each event is a tuple: `(step, obj_idx, v_gaze_pre, v_obj_pre, v_gaze_post, v_obj_post)`\n\nIMPORTANT: Look at how the existing step() method works in PhysicsSandbox. The ghostly pointer means: during the collision resolution loop (sorted by position), SKIP any collision pair where one entity is the pointer (index N, i.e. the last element in the concatenated arrays). This means the pointer never collides with objects — it just passes through them.\n\nFor the probe mechanism: the probe is applied OUTSIDE the substep loop, before or after it. The standard approach:\n1. Record pre-step velocities\n2. If probe=True and budget>0 and an object is within gaze_radius: apply elastic collision immediately (updating self.pointer_vel and self.velocities[obj_idx])\n3. Then run the normal substep loop (which will NOT further collide the pointer with objects, since we skip pointer-object pairs)\n4. Record post-step velocities after the loop\n\n#### 2. Episode Runner: run_episode(condition, seed, arm)\n\narm is 'A' (normal obj-obj) or 'B' (pass-through obj-obj).\n\nCreate environment:\n```python\nenv = FoveatedGazeSandbox(N=3, substeps=10, seed=seed, pass_through=(arm=='B'), gaze_radius=8)\n```\n\nConditions:\n- **ORACLE**: Perfect knowledge of positions/velocities from env info.\n  - Maintains per-object probe-event count.\n  - PD-tracks least-probed object (Kp=2.0, Kd=0.5).\n  - When target center within GAZE_RADIUS=8 of gaze center AND |error| ≤ 6.0: fire probe.\n  - After probing, switch target to next least-probed.\n  - After probe budget exhausted, continue PD tracking without probing.\n  - Track: probe_attempts, probe_hits, per-object probe counts, steps in bounds.\n\n- **RANDOM**: Random gaze acceleration ∈ [-10, 10]. Random probe with p=0.01 per step until budget exhausted. No targeting.\n\n- **PASSIVE**: Gaze starts at 64.0, no acceleration, no probing. 0 probe events → POMLRE = 2.0.\n\nAll conditions: 2000 steps, probe_budget=20.\n\nReturn dict with: condition, seed, arm, pomlre, per_obj_n_valid, per_obj_errors, true_masses, probe_attempts (ORACLE), probe_hits (ORACLE), per_obj_probe_counts (ORACLE), steps_in_bounds_frac (ORACLE), n_probe_events, branch per (seed, obj) cell.\n\n#### 3. POMLRE Metric (reuse from iter_035 with branch tracking)\n\nFor each object i:\n1. Collect probe events with |Δv_obj| > 1.0.\n2. m_est_k = -M_gaze * Δv_gaze_k / Δv_obj_k\n3. Branch: 0 events → error=2.0, 1-2 events → median→mean of estimates, ≥3 events → median of estimates\n4. error_i = |log(m_hat_i / m_true_i)| (or 2.0 if no valid events)\n\nTrack which branch each (seed, obj_idx) falls into.\n\n#### 4. Main Flow\n\n```python\ndef main():\n    # 1. CV Gate (5 seeds × 2 arms)\n    GATE_SEEDS = [7, 31, 53, 71, 83]\n    SEEDS = [7, 31, 53, 71, 83, 97, 113, 163]\n    \n    # Run RANDOM only for gate\n    # Compute per-object probe-event counts, CV, mean\n    # Log gate decision BEFORE bracket\n    # If gate fails in an arm, skip that arm in bracket\n    \n    # 2. Full Bracket (8 seeds × remaining arms × 3 conditions)\n    \n    # 3. Analysis: F1-F6, S1-S6, branch distribution, coverage-vs-estimation\n    \n    # 4. Save output files\n```\n\nBootstrap CI function: 10000 paired resamples.\n\n#### 5. Output Files\n\nSave to `archive/iter_036/results/`:\n- `per_run.csv`\n- `cv_gate.txt`\n- `sanity_checks.txt`\n- `analysis.md`\n- `branch_distribution.txt`\n\n#### CRITICAL IMPLEMENTATION DETAILS:\n\n1. **Δv definition**: Pre-step = recorded BEFORE probe + substep loop. Post-step = recorded AFTER full substep loop. The Δv includes confounding physics.\n\n2. **Ghostly pointer in substep loop**: When iterating sorted pairs for collision resolution, SKIP any pair (i,j) where i==N or j==N (pointer index). This is the core mechanism.\n\n3. **Probe collision formula**: Standard 1D elastic collision:\n   ```\n   v1_new = (v1*(m1-m2) + 2*m2*v2) / (m1+m2)\n   v2_new = (v2*(m2-m1) + 2*m1*v1) / (m1+m2)\n   ```\n   where m1=M_gaze=10.0, v1=gaze_vel, m2=obj_mass, v2=obj_vel.\n\n4. **Seed handling**: Use `np.random.RandomState(seed * 1000 + hash(condition + arm) % 10000)` for policy randomness within episodes, so conditions are comparable.\n\n5. **No torch needed** — numpy only.\n\nWrite the complete file. Do NOT run it.", 'timeout_sec': 600})]
+
+[Tool Result: {"started": true, "iter_id": "36.2", "done": true, "final_result": {"status": "ok", "artifacts": ["src/run_iter036_benchmark.py"], "metrics": {}, "experimenter_view": "Created the Foveated Gaze Benchmark (iter_036) as specified. The script\nincludes: (1) FoveatedGazeSandbox with ghostly pointer physics (skips\npointer-object collision pairs in substep loop), probe budget mechanism\nwith elastic collision formula, and foveated rendering mask; (2) Episode\nrunner with ORACLE (PD-tracking + conditional probing), RANDOM, and\nPASSIVE policies; (3) POMLRE metric with branch tracking (0/1-2/\u22653\nvalid event branches); (4) Full CV gate \u2192 bracket flow with bootstrap\nCIs and output file generation. Code was written and refined (fixed\nprobe event collection logic in run_episode) but NOT executed per\ninstructions.\n", "notes": "iter_036 benchmark script written; ready for execution."}, "intermediate_state": "=== stdout (last 2000 chars) ===\ntracks least-probed object (Kp=2.0, Kd=0.5)...]
+
+Good, the code was written. Let me verify it exists and then run it:
+
+[Tool Call: read_file({'path': 'src/run_iter036_benchmark.py', 'start_line': 1, 'end_line': 50})]
+
+[Tool Result: --- lines 1 to 50 of 945 ---
+#!/usr/bin/env python3
+"""
+iter_036: Foveated Gaze Benchmark
+
+Tests whether perception-driven probing is load-bearing for mass estimation
+when the gaze pointer is ghostly (passes through all objects) and must use
+an explicit probe budget to elicit collisions.
+
+Two arms:
+  A — normal obj-obj collisions, ghostly pointer
+  B — pass-through obj-obj collisions, ghostly pointer
+
+Three conditions: ORACLE, RANDOM, PASSIVE
+"""
+import os, sys, csv, numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from environment import PhysicsSandbox
+
+# ── Constants ──
+GATE_SEEDS = [7, 31, 53, 71, 83]
+SEEDS = [7, 31, 53, 71, 83, 97, 113, 163]
+N_OBJ = 3
+N_STEPS = 2000
+PROBE_BUDGET = 20
+PTR_IDX = N_OBJ  # pointer index in concatenated arrays
+GAZE_MASS = 10.0
+KP, KD = 2.0, 0.5
+GAZE_RADIUS = 8
+PROBE_ERROR_THRESH = 6.0
+N_BOOT = 10000
+OUT = os.path.join('archive', 'iter_036', 'results')
+
+
+# ── FoveatedGazeSandbox ─────────────────────────────────────────────────...]
+
+Good, the file exists. Let me check the critical parts of the implementation more closely — the ghostly pointer collision skip and the probe mechanism:
+
+[Tool Call: grep_search({'pattern': 'SKIP pointer', 'include_pattern': 'run_iter036_benchmark.py'})]
+
+[Tool Result: No matches found.]
+
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': 'pointer-object|PTR_IDX|ghostly'})]
+
+[Tool Result: src\run_iter036_benchmark.py:6: when the gaze pointer is ghostly (passes through all objects) and must use
+src\run_iter036_benchmark.py:10: A — normal obj-obj collisions, ghostly pointer
+src\run_iter036_benchmark.py:11: B — pass-through obj-obj collisions, ghostly pointer
+src\run_iter036_benchmark.py:26: PTR_IDX = N_OBJ  # pointer index in concatenated arrays
+src\run_iter036_benchmark.py:39: (no pointer-object collision resolution during the substep loop).
+src\run_iter036_benchmark.py:135: # Resolve collisions — ONLY object-object pairs (skip pointer-object)
+src\run_iter036_benchmark.py:142: if i == PTR_IDX or j == PTR_IDX:
+src\run_iter036_benchmark.py:488: # Verify pointer is ghostly: place pointer on top of an object, step without probe,
+src\run_iter036_benchmark.py:504: print(f"  Pointer is ghostly (no obj vel change from no-probe step): "
+src\run_iter036_benchmark.py:782: f"load-bearing for mass estimation under ghostly pointer dynamics.")]
+
+
+[Tool Call: read_file({'path': 'src/run_iter036_benchmark.py', 'start_line': 55, 'end_line': 180})]
+
+[Tool Result: --- lines 55 to 180 of 945 ---
+        self.probe_events = []  # list of (step, obj_idx, v_gaze_pre, v_obj_pre, v_gaze_post, v_obj_post)
+
+    def reset(self, seed=None):
+        result = super().reset(seed=seed)
+        self.probe_budget = PROBE_BUDGET
+        self.probe_events = []
+        return result
+
+    def step(self, action=None):
+        if action is not None:
+            acc = action.get('acc', 0.0)
+            probe = action.get('probe', False)
+        else:
+            acc = 0.0
+            probe = False
+
+        # ── Record pre-step velocities (BEFORE probe + substep) ──
+        pre_ptr_vel = float(self.pointer_vel)
+        pre_obj_vels = self.velocities.copy()
+
+        # ── Probe collision (applied BEFORE the substep loop) ──
+        if probe and self.probe_budget > 0:
+            self.probe_budget -= 1
+            # Find nearest object whose center is within gaze_radius of gaze center
+            best_idx = None
+            best_dist = float('inf')
+            for i in ra...]
+
+
+[Tool Call: read_file({'end_line': 230, 'path': 'src/run_iter036_benchmark.py', 'start_line': 180})]
+
+[Tool Result: --- lines 180 to 230 of 945 ---
+            self.positions = temp_pos[:-1].copy()
+            self.velocities = temp_vel[:-1].copy()
+            self.pointer_pos = temp_pos[-1]
+            self.pointer_vel = temp_vel[-1]
+
+        # Increment step counter (for probe event recording)
+        self._step_counter = getattr(self, '_step_counter', 0) + 1
+
+        # Noisy-TV / Structured Distractor (inherited logic)
+        if self.noisy_tv:
+            step_noise = np.random.normal(0.0, 2.0)
+            self.noisy_tv_pos += step_noise
+            self.noisy_tv_pos = np.clip(
+                self.noisy_tv_pos, self.noisy_tv_radius, 128.0 - self.noisy_tv_radius
+            )
+            self.noisy_tv_color = np.random.uniform(0.3, 1.0, size=(3,))
+        if self.structured_distractor:
+            self.sd_t += 1
+            self.sd_pos = self.sd_center + self.sd_amplitude * np.sin(
+                self.sd_omega * self.sd_t + self.sd_phase
+            )
+
+        # ── Record post-step velocities (...]
+
+I see a critical issue with the implementation. The probe event records pre/post velocities from the probe collision itself (v_gaze, v_obj → v_gaze_post, v_obj_post), but per the Manager's directive, the Δv for the mass estimator must be across-substep (pre-step before everything, post-step after full physics). The probe event recording is recording the immediate probe collision velocities, not the pre/post step velocities. Let me check the run_episode function to see how it collects the actual pre/post step velocities:
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': 'pre_ptr_vel|post_ptr_vel|pre_obj_vels|post_obj_vels'})]
+
+[Tool Result: src\run_iter036_benchmark.py:72: pre_ptr_vel = float(self.pointer_vel)
+src\run_iter036_benchmark.py:73: pre_obj_vels = self.velocities.copy()
+src\run_iter036_benchmark.py:203: post_ptr_vel = float(self.pointer_vel)
+src\run_iter036_benchmark.py:204: post_obj_vels = self.velocities.copy()]
+
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': 'def run_episode'})]
+
+[Tool Result: src\run_iter036_benchmark.py:373: def run_episode(condition, seed, arm):]
+
+
+[Tool Call: read_file({'end_line': 550, 'path': 'src/run_iter036_benchmark.py', 'start_line': 373})]
+
+[Tool Result: --- lines 373 to 550 of 945 ---
+def run_episode(condition, seed, arm):
+    """
+    Run one episode.
+
+    arm: 'A' = normal obj-obj, 'B' = pass-through obj-obj
+    condition: 'ORACLE', 'RANDOM', 'PASSIVE'
+    """
+    env = FoveatedGazeSandbox(
+        N=N_OBJ, substeps=10, seed=seed,
+        pass_through=(arm == 'B'), gaze_radius=GAZE_RADIUS
+    )
+    # Deterministic per-condition RNG so conditions are comparable per seed
+    rng = np.random.RandomState(seed * 1000 + hash(condition + arm) % 10000)
+
+    # ORACLE policy state
+    if condition == 'ORACLE':
+        per_obj_probe_counts = [0, 0, 0]
+        prev_err = None
+        target = 0  # start with least-probed
+        probe_attempts = 0
+        probe_hits = 0
+
+    all_probe_events = []
+    prev_n_probe_events = 0  # track length of env.probe_events across steps
+    steps_in_bounds = 0
+
+    for step in range(N_STEPS):
+        # Compute action
+        if condition == 'ORACLE':
+            # PD-track least-probed object
+            targe...]
+
+
+[Tool Call: read_file({'end_line': 650, 'path': 'src/run_iter036_benchmark.py', 'start_line': 550})]
+
+[Tool Result: --- lines 550 to 650 of 945 ---
+    for arm in ['A', 'B']:
+        poms = [gate_results[arm][s]['pomlre'] for s in GATE_SEEDS]
+        cv = compute_cv(poms) if len(poms) > 1 else 0.0
+        gate_cv[arm] = cv
+        gate_pass[arm] = cv < 0.5  # CV < 0.5 for gate pass
+        print(f"  Arm={arm}: POMLRE mean={np.mean(poms):.4f}, std={np.std(poms):.4f}, CV={cv:.4f} "
+              f"— {'PASS' if gate_pass[arm] else 'FAIL'}")
+
+    arms_to_run = [arm for arm in ['A', 'B'] if gate_pass[arm]]
+
+    # Log gate decision BEFORE bracket
+    with open(os.path.join(OUT, 'cv_gate.txt'), 'w') as f:
+        f.write("iter_036 CV Gate\n")
+        f.write("=" * 50 + "\n\n")
+        for arm in ['A', 'B']:
+            f.write(f"Arm {arm} (obj-obj {'pass-through' if arm == 'B' else 'normal'}):\n")
+            poms = [gate_results[arm][s]['pomlre'] for s in GATE_SEEDS]
+            f.write(f"  Seeds: {GATE_SEEDS}\n")
+            f.write(f"  POMLRE values: {[round(p, 4) for p in poms]}\n")
+            f.write...]
+
+I see there are several issues with the implementation that need to be fixed:
+
+1. **CV gate is computing CV on POMLRE values, not on per-object probe-event counts** — the pre-registration says CV of per-object probe-event counts under RANDOM, not CV of POMLRE values.
+2. **Sanity checks S1-S6 don't match pre-registration** — the code uses different sanity checks.
+3. **Probe event velocity recording** — the events record immediate probe collision velocities, not pre/post-step velocities. The Δv for the mass estimator should use pre-step (before everything) and post-step (after full physics) velocities.
+4. **The ORACLE condition's probe trigger** — it probes when |error| ≤ PROBE_ERROR_THRESH=6.0, but should also check that the target is within GAZE_RADIUS=8.
+
+Let me check what the `compute_pomlre_and_branches` function uses for the mass estimator:
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': 'def compute_pomlre_and_branches'})]
+
+[Tool Result: src\run_iter036_benchmark.py:297: def compute_pomlre_and_branches(probe_events, true_masses):]
+
+
+[Tool Call: read_file({'end_line': 370, 'path': 'src/run_iter036_benchmark.py', 'start_line': 297})]
+
+[Tool Result: --- lines 297 to 370 of 945 ---
+def compute_pomlre_and_branches(probe_events, true_masses):
+    """
+    Per-Object Median Log-Ratio Error with branch tracking.
+
+    For each object i:
+      1. Collect probe events with |Δv_obj| > 1.0
+      2. m_est_k = -M_gaze * Δv_gaze_k / Δv_obj_k
+      3. Branch:
+         0 events  → error = 2.0
+         1-2 events → median→mean of estimates
+         ≥3 events  → median of estimates
+      4. error_i = |log(m_hat / m_true_i)| (or 2.0 if no valid events)
+
+    Returns:
+      pomlre, per_obj_n_valid, per_obj_errors, branch_dict
+        branch_dict: {(seed, obj_idx): branch_number}
+        branch_number: 0 = no events, 1 = 1-2 events, 2 = >=3 events
+        (These keys don't include seed at call-site; caller adds it.)
+    """
+    errors = []
+    per_obj_n_valid = []
+    per_obj_errors = []
+    branches = {}  # obj_idx -> branch number
+
+    for i in range(N_OBJ):
+        # Filter: probe events for object i with |Δv_obj| > 1.0
+        # probe_events: (step...]
+
+I see the problem. The probe events in the FoveatedGazeSandbox record the *immediate* pre/post collision velocities (v_gaze, v_obj → v_gaze_post, v_obj_post from the probe collision itself), but the pre-registration requires that the mass estimator uses Δv = (post-step velocity) - (pre-step velocity), where post-step is after the FULL physics substep loop. The current implementation records the across-collision Δv which is close to a definitional identity.
+
+The correct approach: in `run_episode`, save pre-step velocities before calling env.step(), then get post-step velocities from info after env.step(). The probe events should record these pre/post step velocities, not the immediate collision velocities.
+
+This is a significant bug. Let me also check the other issues and then create a corrected version. Let me read the rest of the main function:
+
+[Tool Call: read_file({'end_line': 945, 'path': 'src/run_iter036_benchmark.py', 'start_line': 650})]
+
+[Tool Result: --- lines 650 to 945 of 945 ---
+    print("\n" + "=" * 70)
+    print("PER-CONDITION POMLRE")
+    print("=" * 70)
+
+    arm_metrics = {}
+    for arm in arms_to_run:
+        oracle_pom = np.array([r['pomlre'] for r in by[arm]['ORACLE']])
+        random_pom = np.array([r['pomlre'] for r in by[arm]['RANDOM']])
+        passive_pom = np.array([r['pomlre'] for r in by[arm]['PASSIVE']])
+
+        # F1: RANDOM - ORACLE >= 0.15
+        f1_gap = float(np.mean(random_pom - oracle_pom))
+        f1_pass = f1_gap >= 0.15
+
+        # F2: bootstrap CI lower > 0
+        f2_lo, f2_hi = bootstrap_ci(oracle_pom, random_pom)
+        f2_pass = f2_lo > 0
+
+        # F3: all sanity checks
+        f3_pass = sanity[arm]['_all']
+
+        # F4: ordering PASSIVE > RANDOM > ORACLE
+        f4_pass = (np.mean(passive_pom) > np.mean(random_pom) > np.mean(oracle_pom))
+
+        # Coverage-vs-Estimation Decomposition
+        oracle_n_valid = np.array([r['per_obj_n_valid'] for r in by[arm]['ORACLE']])
+        random_n_valid = ...]
+
+Now I have a clear picture of the issues. The code has several bugs relative to the pre-registration:
+
+1. **Critical: Δv is across-collision-only, not across-substep.** The probe events record immediate collision velocities, but the Manager explicitly requires pre-step (before probe + substep) and post-step (after full physics). This makes the mass estimator nearly a definitional identity.
+
+2. **CV gate computes CV of POMLRE values, not CV of per-object probe-event counts.** The pre-registration says: "CV = std(counts) / mean(counts) across the 3 objects, averaged over seeds."
+
+3. **Sanity checks don't match pre-registration S1-S6.** The code uses different checks entirely.
+
+4. **The ORACLE condition doesn't check that the target is within GAZE_RADIUS.** It only checks |error| ≤ 6.0, but the pre-registration says "target's center is within GAZE_RADIUS=8 of the gaze center AND |error|≤6.0."
+
+5. **RANDOM probe probability is 0.01 (expected ~20 probes over 2000 steps)** — but with budget=20, that's about right. However the pre-registration says probe budget is 20.
+
+6. **PASSIVE POMLRE should be exactly 2.0** since it has 0 probe events, but the code still runs PASSIVE through compute_pomlre_and_branches.
+
+Let me create a corrected version of the benchmark script. I'll use a medium-complexity agent:
+
+[Tool Call: run_agent({'complexity': 'high', 'estimated_runtime_sec': 300, 'iter_id': '36.3', 'task': '## Task: Fix Critical Bugs in src/run_iter036_benchmark.py\n\nRead `src/run_iter036_benchmark.py` and fix the following bugs. The file is 945 lines. Write the corrected version back to the same path.\n\n### Bug 1 (CRITICAL): Δv is across-collision-only, not across-substep\n\nThe probe events currently record the immediate collision velocities (v_gaze before collision → v_gaze after collision). But per the Manager\'s directive, the mass estimator must use Δv = (post-step velocity) - (pre-step velocity), where:\n- Pre-step velocities are recorded BEFORE the probe collision is applied AND before the substep loop\n- Post-step velocities are recorded AFTER the full physics substep loop completes\n\nThis means the Δv includes confounding physics (wall bounces, obj-obj collisions in Arm A). The mass estimator is NOT a definitional identity because of this noise.\n\n**Fix approach:**\n- In FoveatedGazeSandbox.step(), the `probe_events` should record pre-step velocities (saved at the top of step(), before probe) and post-step velocities (saved after the full substep loop).\n- Each probe event should be: `(step, obj_idx, v_gaze_pre_step, v_obj_pre_step, v_gaze_post_step, v_obj_post_step)`\n  where v_gaze_pre_step = self.pointer_vel saved BEFORE probe application, v_obj_pre_step = self.velocities[obj_idx] saved BEFORE probe application, and v_gaze_post_step / v_obj_post_step are the values AFTER the full substep loop.\n- The problem: at the time we apply the probe, we know pre-step velocities but don\'t yet know post-step velocities. So we need to record pre-step info now and fill in post-step later.\n\n**Implementation:** Instead of recording the full event in the probe application, record a partial event with the pre-step info and the obj_idx. After the substep loop completes, fill in the post-step velocities.\n\nReplace the probe event recording in the probe application with:\n```python\n# Record partial probe event (pre-step info)\nself._pending_probe_events.append((step_num, best_idx, float(v_gaze), float(v_obj)))\n```\n\nThen after the substep loop, before returning:\n```python\n# Finalize probe events with post-step velocities\nfor (step_num, obj_idx, v_gaze_pre, v_obj_pre) in self._pending_probe_events:\n    self.probe_events.append((\n        step_num, obj_idx,\n        v_gaze_pre, v_obj_pre,\n        float(self.pointer_vel), float(self.velocities[obj_idx])\n    ))\nself._pending_probe_events = []\n```\n\nAnd in reset(), add: `self._pending_probe_events = []`\n\n### Bug 2: CV gate uses wrong metric\n\nThe CV gate currently computes CV of POMLRE values across seeds. The pre-registration says: compute per-object probe-event counts under RANDOM, then CV = std(counts)/mean(counts) across the 3 objects, averaged over seeds.\n\n**Fix:** Change the CV gate to:\n1. For each seed, get the per-object valid probe event counts (per_obj_n_valid) from the RANDOM run.\n2. For each seed, compute CV = std(per_obj_n_valid) / mean(per_obj_n_valid) across the 3 objects.\n3. Average CV across seeds.\n4. Gate: CV ≥ 0.5 (coverage is sufficiently uneven) AND mean per-object count ≥ 0.5 (RANDOM gets at least some events).\n\nAlso change `gate_pass[arm] = cv >= 0.5` (note: the current code has `cv < 0.5` which is inverted — CV should be HIGH, meaning RANDOM coverage is uneven, for ORACLE to improve).\n\n### Bug 3: Sanity checks don\'t match pre-registration\n\nReplace the current sanity checks with the pre-registered S1-S6:\n\nS1: ORACLE achieves ≥3 probe-induced collision events per object (mean across seeds)\nS2: ORACLE probe success rate ≥ 60% (≥12 of 20 probe attempts result in a collision event — an object was found within the gaze window)\nS3: ≥80% of ORACLE\'s probe-induced collision events have |Δv_obj| > 1.0 (informative velocity change for mass estimation)\nS4: No single object receives >80% of ORACLE\'s total probe events\nS5: ORACLE gaze stays in bounds ≥95% of steps\nS6: Each of the 3 objects receives ≥10% of ORACLE\'s total probe events\n\nFor S2: need to track probe_attempts (times do_probe=True) vs probe_hits (times a probe actually found an object within gaze_radius). These are different from what\'s currently tracked.\n\nFor S3: compute |Δv_obj| = |v_obj_post_step - v_obj_pre_step| for each probe event. Check that ≥80% of these have |Δv_obj| > 1.0.\n\nFor S4 and S6: use per_obj_probe_counts from the ORACLE runs.\n\n### Bug 4: ORACLE condition doesn\'t check gaze radius\n\nThe ORACLE condition currently probes when |error| ≤ 6.0. The pre-registration says: probe when the target\'s center is within GAZE_RADIUS=8 of the gaze center AND |error|≤6.0. Since |error| ≤ 6.0 already implies the target is within gaze_radius=8, this is technically fine (6 < 8), but to be explicit and match the pre-registration, add the gaze radius check too. Keep both checks.\n\n### Bug 5: ORACLE probe_attempts tracking\n\nIn the current code, `probe_attempts` is incremented whenever |error| ≤ PROBE_ERROR_THRESH and budget > 0. But for S2, we need to track the number of times the probe action was actually sent (action[\'probe\']=True), regardless of whether the gaze was near an object. Then `probe_hits` = number of times the probe found an object. Currently, the code tracks `probe_hits` as the number of new probe events from env, which counts successful probes. This is correct for hits. But `probe_attempts` should be the number of times action[\'probe\']=True was sent.\n\nActually looking more carefully, the current code has:\n```python\nif abs(error) <= PROBE_ERROR_THRESH and env.probe_budget > 0:\n    do_probe = True\n    probe_attempts += 1\n```\n\nThis counts attempts only when |error| ≤ threshold. But the probe might still miss (no object within gaze_radius). A "probe attempt" should be counted every time do_probe=True. And a "hit" is when the probe actually collides with an object. The current probe_hits tracking via `per_obj_probe_counts[e[1]] += 1` counts successful probes. So S2 = (sum of hits across seeds) / (sum of attempts across seeds) ≥ 0.60.\n\nActually wait - re-reading the pre-registration: "S2: ORACLE probe success rate ≥ 60% (≥12 of 20 probe attempts result in a collision event — an object was found within the gaze window)." This means we need to count how many of the 20 probe budget slots were actually used (attempts), and how many found an object (hits). The current code seems to count attempts correctly. But we need to make sure the hit counting is based on whether an object was within gaze_radius when the probe was fired, which is exactly what the env.probe_events records.\n\n### Summary of changes needed:\n\n1. Change probe event recording to use pre-step (before probe+substep) and post-step (after full physics) velocities\n2. Fix CV gate: compute CV of per-object probe-event counts, require CV ≥ 0.5 and mean ≥ 0.5\n3. Replace sanity checks with pre-registered S1-S6\n4. Minor: add gaze_radius check to ORACLE probe trigger (already implied by |error|≤6.0 < 8)\n5. Ensure probe_attempts/hits tracking matches S2 definition\n\nMake these changes and write the corrected file. Do NOT run it.', 'timeout_sec': 600})]
+
+[Tool Result: {"started": true, "iter_id": "36.3", "done": false, "final_result": null, "intermediate_state": "=== stdout (last 2000 chars) ===\n    f.write(f\"- F4 (ordering): {'PASS' if m['f4_pass'] else 'FAIL'}\\n\")\n            f.write(f\"- Est-only gap\u22650.05: {'PASS' if m['est_only_gate'] else 'FAIL'}, \"\n                    f\"gap={m['est_only_gap']:.4f}, n={m['n_matched_cells']}\\n\")\n\n            f.write(f\"\\n### Coverage vs Estimation\\n\\n\")\n            f.write(f\"Mean valid events per object: \"\n                    f\"ORACLE={m['oracle_cov_mean']:.2f}, \"\n                    f\"RANDOM={m['random_cov_mean']:.2f}, \"\n                    f\"PASSIVE={m['passive_cov_mean']:.2f}\\n\")\n            f.write(f\"Estimation-only (matched cells): \"]\n\n[Tool Call: read_file({'path': 'src/run_iter036_benchmark.py', 'start_line': 945, 'end_line': 972})]\n[Tool Result: --- lines 945 to 972 of 972 ---\n            f.write(f\"Estimation-only (matched cells): \"\n                    f\"n={m[...]
+
+
+[Tool Call: poll_agent({'iter_id': '36.3'})]
+
+[Tool Result: {"done": true, "final_result": {"status": "ok", "artifacts": ["src/run_iter036_benchmark.py"], "metrics": {}, "log_excerpt": "Applied 10 edits to src/run_iter036_benchmark.py (#1x1, #2x1, #3x1, #4x1, #5x1, #6x1, #7x1, #8x1, #9x1, #10x1)\n", "experimenter_view": "Fixed five critical bugs in src/run_iter036_benchmark.py without executing:\n1. \u0394v now computed across the full physics substep loop (pre-step \u2192 post-step) rather than just the immediate collision, by introducing _pending_probe_events that capture pre-step velocities and are finalized after the substep loop.\n2. CV gate now uses per-object probe-event counts from RANDOM runs (std/mean across 3 objects, averaged over seeds) with threshold CV \u2265 0.5 and mean \u2265 0.5.\n3. Sanity checks replaced with pre-registered S1\u2013S6, including per-object probe counts, success rate, informative-event fraction, coverage balance, in-bounds fraction, and minimum per-object share.\n4. ORACLE probe trigger now explicitly checks...]
+
+Good, the bugs were fixed. Let me verify the key fixes by reading the relevant sections:
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': '_pending_probe_events'})]
+
+[Tool Result: src\run_iter036_benchmark.py:56: self._pending_probe_events = []
+src\run_iter036_benchmark.py:62: self._pending_probe_events = []
+src\run_iter036_benchmark.py:104: self._pending_probe_events.append((
+src\run_iter036_benchmark.py:187: for (step_num, obj_idx, v_gaze_pre, v_obj_pre) in self._pending_probe_events:
+src\run_iter036_benchmark.py:193: self._pending_probe_events = []]
+
+
+[Tool Call: read_file({'end_line': 200, 'path': 'src/run_iter036_benchmark.py', 'start_line': 55})]
+
+[Tool Result: --- lines 55 to 200 of 972 ---
+        self.probe_events = []  # list of (step, obj_idx, v_gaze_pre, v_obj_pre, v_gaze_post, v_obj_post)
+        self._pending_probe_events = []
+
+    def reset(self, seed=None):
+        result = super().reset(seed=seed)
+        self.probe_budget = PROBE_BUDGET
+        self.probe_events = []
+        self._pending_probe_events = []
+        return result
+
+    def step(self, action=None):
+        if action is not None:
+            acc = action.get('acc', 0.0)
+            probe = action.get('probe', False)
+        else:
+            acc = 0.0
+            probe = False
+
+        # ── Record pre-step velocities (BEFORE probe + substep) ──
+        pre_ptr_vel = float(self.pointer_vel)
+        pre_obj_vels = self.velocities.copy()
+
+        # ── Probe collision (applied BEFORE the substep loop) ──
+        if probe and self.probe_budget > 0:
+            self.probe_budget -= 1
+            # Find nearest object whose center is within gaze_radius of gaze center
+        ...]
+
+Good, the Δv fix is in place. Let me check the CV gate and sanity checks:
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': 'CV GATE|gate_cv|gate_pass'})]
+
+[Tool Result: src\run_iter036_benchmark.py:543: print("CV GATE: RANDOM condition across arms")
+src\run_iter036_benchmark.py:555: gate_cv = {}
+src\run_iter036_benchmark.py:556: gate_pass = {}
+src\run_iter036_benchmark.py:566: gate_cv[arm] = avg_cv
+src\run_iter036_benchmark.py:568: gate_pass[arm] = (avg_cv >= 0.5) and (mean_count >= 0.5)
+src\run_iter036_benchmark.py:570: f"— {'PASS' if gate_pass[arm] else 'FAIL'}")
+src\run_iter036_benchmark.py:572: arms_to_run = [arm for arm in ['A', 'B'] if gate_pass[arm]]
+src\run_iter036_benchmark.py:584: f.write(f"  Mean per-obj count: {gate_mean_count[arm]:.4f}, CV: {gate_cv[arm]:.4f}\n")
+src\run_iter036_benchmark.py:585: f.write(f"  Gate (CV >= 0.5 and mean >= 0.5): {'PASS' if gate_pass[arm] else 'FAIL'}\n\n")
+src\run_iter036_benchmark.py:905: f.write(f"- Arm {arm}: CV={gate_cv[arm]:.4f} "
+src\run_iter036_benchmark.py:906: f"({'PASS' if gate_pass[arm] else 'FAIL'})\n")]
+
+
+[Tool Call: read_file({'end_line': 575, 'path': 'src/run_iter036_benchmark.py', 'start_line': 543})]
+
+[Tool Result: --- lines 543 to 575 of 972 ---
+    print("CV GATE: RANDOM condition across arms")
+    print("=" * 70)
+
+    gate_results = {arm: {seed: None for seed in GATE_SEEDS} for arm in ['A', 'B']}
+    for arm in ['A', 'B']:
+        for seed in GATE_SEEDS:
+            r = run_episode('RANDOM', seed, arm)
+            gate_results[arm][seed] = r
+            print(f"  Arm={arm} seed={seed}: POMLRE={r['pomlre']:.4f} "
+                  f"probe_events={r['n_probe_events']} valid={r['per_obj_n_valid']}")
+
+    # Compute per-arm CV of per-object probe-event counts under RANDOM
+    gate_cv = {}
+    gate_pass = {}
+    gate_mean_count = {}
+    for arm in ['A', 'B']:
+        cvs = []
+        for s in GATE_SEEDS:
+            counts = gate_results[arm][s]['per_obj_n_valid']
+            cv = compute_cv(counts) if np.mean(counts) > 0 else 0.0
+            cvs.append(cv)
+        avg_cv = np.mean(cvs)
+        mean_count = np.mean([np.mean(gate_results[arm][s]['per_obj_n_valid']) for s in GATE_SEEDS])
+        gate_...]
+
+Good, the CV gate is now correct. Let me check the sanity checks:
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': 'S1:|S2:|S3:|S4:|S5:|S6:'})]
+
+[Tool Result: src\run_iter036_benchmark.py:621: # S1: ORACLE achieves ≥3 probe-induced collision events per object (mean across seeds)
+src\run_iter036_benchmark.py:627: # S2: ORACLE probe success rate ≥ 60%
+src\run_iter036_benchmark.py:636: # S3: ≥80% of ORACLE's probe-induced collision events have |Δv_obj| > 1.0
+src\run_iter036_benchmark.py:647: # S4: No single object receives >80% of ORACLE's total probe events
+src\run_iter036_benchmark.py:655: # S5: ORACLE gaze stays in bounds ≥95% of steps
+src\run_iter036_benchmark.py:661: # S6: Each of the 3 objects receives ≥10% of ORACLE's total probe events]
+
+
+[Tool Call: read_file({'end_line': 680, 'path': 'src/run_iter036_benchmark.py', 'start_line': 615})]
+
+[Tool Result: --- lines 615 to 680 of 972 ---
+
+    sanity = {}
+    for arm in arms_to_run:
+        oracle = by[arm]['ORACLE']
+        s_details = []
+
+        # S1: ORACLE achieves ≥3 probe-induced collision events per object (mean across seeds)
+        s1_per_obj = np.array([r['per_obj_probe_counts'] for r in oracle]).mean(axis=0)
+        s1_pass = bool(np.all(s1_per_obj >= 3))
+        s_details.append(('S1', s1_pass,
+                          f"Mean per-obj probe events: {s1_per_obj.tolist()}"))
+
+        # S2: ORACLE probe success rate ≥ 60%
+        attempts = [r['probe_attempts'] for r in oracle]
+        hits = [r['probe_hits'] for r in oracle]
+        hit_ratio = float(np.sum(hits) / max(np.sum(attempts), 1))
+        s2_pass = hit_ratio >= 0.60
+        s_details.append(('S2', s2_pass,
+                          f"Probe success rate: {hit_ratio:.3f} "
+                          f"({np.sum(hits)}/{np.sum(attempts)})"))
+
+        # S3: ≥80% of ORACLE's probe-induced collision events have |Δv_obj| > 1.0...]
+
+The sanity checks look correct now. Let me also check the ORACLE probe trigger:
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': 'do_probe.*GAZE_RADIUS|do_probe.*PROBE_ERROR'})]
+
+[Tool Result: No matches found.]
+
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': 'do_probe'})]
+
+[Tool Result: src\run_iter036_benchmark.py:416: do_probe = False
+src\run_iter036_benchmark.py:418: do_probe = True
+src\run_iter036_benchmark.py:421: action = {'acc': acc, 'probe': do_probe}
+src\run_iter036_benchmark.py:425: do_probe = rng.rand() < 0.01 and env.probe_budget > 0
+src\run_iter036_benchmark.py:426: action = {'acc': acc, 'probe': do_probe}]
+
+
+[Tool Call: read_file({'end_line': 425, 'path': 'src/run_iter036_benchmark.py', 'start_line': 410})]
+
+[Tool Result: --- lines 410 to 425 of 972 ---
+            error = env.positions[target] - env.pointer_pos
+            d_error = (error - prev_err) if prev_err is not None else 0.0
+            prev_err = error
+            acc = KP * error + KD * d_error
+
+            # Fire probe if within gaze_radius AND |error| ≤ threshold
+            do_probe = False
+            if abs(error) <= PROBE_ERROR_THRESH and abs(error) <= GAZE_RADIUS and env.probe_budget > 0:
+                do_probe = True
+                probe_attempts += 1
+
+            action = {'acc': acc, 'probe': do_probe}
+
+        elif condition == 'RANDOM':
+            acc = rng.uniform(-10, 10)
+            do_probe = rng.rand() < 0.01 and env.probe_budget > 0]
+
+Good, the ORACLE probe trigger now checks both conditions. Now let me also verify the result dict includes probe_events for S3 computation:
+
+[Tool Call: grep_search({'include_pattern': 'run_iter036_benchmark.py', 'pattern': 'probe_events.*result|result.*probe_events'})]
+
+[Tool Result: No matches found.]
+
+
+[Tool Call: read_file({'end_line': 475, 'path': 'src/run_iter036_benchmark.py', 'start_line': 445})]
+
+[Tool Result: --- lines 445 to 475 of 972 ---
+    true_masses = env.masses.copy()
+    pomlre, per_obj_n_valid, per_obj_errors, branches = compute_pomlre_and_branches(
+        all_probe_events, true_masses
+    )
+
+    n_probe_events = len(all_probe_events)
+
+    # Build result dict
+    result = {
+        'condition': condition,
+        'seed': seed,
+        'arm': arm,
+        'pomlre': pomlre,
+        'per_obj_n_valid': per_obj_n_valid,
+        'per_obj_errors': per_obj_errors,
+        'true_masses': true_masses.tolist(),
+        'n_probe_events': n_probe_events,
+        'steps_in_bounds_frac': steps_in_bounds / N_STEPS,
+        'branches': branches,
+        'probe_events': all_probe_events,
+    }
+
+    if condition == 'ORACLE':
+        result['probe_attempts'] = probe_attempts
+        result['probe_hits'] = probe_hits
+        result['per_obj_probe_counts'] = per_obj_probe_counts
+
+    return result
+
+
+# ── Bootstrap CI for CV (Coefficient of Variation) ───────────────────────]
+
+Good, `probe_events` is in the result dict. Now let me run the benchmark:
+
+[Tool Call: run_agent({'complexity': 'medium', 'estimated_runtime_sec': 600, 'iter_id': '36.4', 'task': '## Task: Run the iter_036 foveated gaze benchmark\n\nExecute the benchmark script and report results.\n\n1. Run: `cd /home/user && python src/run_iter036_benchmark.py 2>&1`\n2. If there are errors, read the relevant code sections, fix them, and re-run.\n3. Once it completes successfully, read the output files in `archive/iter_036/results/` and report:\n   - CV gate results per arm\n   - Per-condition POMLRE (mean, std) per arm\n   - All gate results (F1-F4, F6)\n   - Sanity checks (S1-S6)\n   - Branch distribution\n   - Overall conclusion\n\nThe script should take about 5-10 minutes to run (48 episodes × 2000 steps each, plus CV gate).\n\nIf there are Python errors, read the relevant source sections and fix them. Common issues might be:\n- Missing attributes or methods\n- Type mismatches in the compute functions\n- Import issues\n\nAfter fixing, re-run until it completes successfully.', 'timeout_sec': 900})]
+
+[Tool Result: {"started": true, "iter_id": "36.4", "done": true, "final_result": {"status": "experiment_failed", "artifacts": ["src/run_iter036_benchmark.py", "archive/iter_036/results/cv_gate.txt", "archive/iter_036/results/analysis.md", "archive/iter_036/results/sanity_checks.txt", "archive/iter_036/results/branch_distribution.txt", "archive/iter_036/results/per_run.csv"], "metrics": {"arm_A_CV": 0.3594, "arm_A_mean_count": 1.9333, "arm_B_CV": 0.4555, "arm_B_mean_count": 2.5333, "gate_threshold_CV": 0.5, "gate_threshold_mean": 0.5}, "log_excerpt": "Arm=A seed=7: POMLRE=2.0000 probe_events=7 valid=[2, 1, 4]\nArm=A seed=31: POMLRE=2.2738 probe_events=4 valid=[0, 2, 2]\nArm=A seed=53: POMLRE=1.8911 probe_events=7 valid=[3, 2, 2]\nArm=A seed=71: POMLRE=1.9661 probe_events=3 valid=[1, 1, 1]\nArm=A seed=83: POMLRE=2.0000 probe_events=8 valid=[2, 2, 4]\nArm=B seed=7: POMLRE=1.6754 probe_events=6 valid=[1, 3, 2]\nArm=B seed=31: POMLRE=0.7578 probe_events=8 valid=[0, 3, 5]\nArm=B seed=53: POMLRE=1.9646 pro...]
+
+The CV gate failed in both arms. Arm A: CV=0.3594, Arm B: CV=0.4555 — both below the 0.5 threshold. This means RANDOM distributes probes too evenly across the 3 objects for ORACLE to substantially improve on coverage.
+
+Let me read the detailed results to understand what happened:
+
+[Tool Call: read_result_file({'filename': 'cv_gate.txt', 'iter_num': 36})]
+
+[Tool Result: File not found: archive/iter_036/cv_gate.txt]
+
+
+[Tool Call: read_result_file({'filename': 'results/cv_gate.txt', 'iter_num': 36})]
+
+[Tool Result: iter_036 CV Gate
+==================================================
+
+Arm A (obj-obj normal):
+  Seeds: [7, 31, 53, 71, 83]
+  Per-obj counts per seed: [[2, 1, 4], [0, 2, 2], [3, 2, 2], [1, 1, 1], [2, 2, 4]]
+  Mean per-obj count: 1.9333, CV: 0.3594
+  Gate (CV >= 0.5 and mean >= 0.5): FAIL
+
+Arm B (obj-obj pass-through):
+  Seeds: [7, 31, 53, 71, 83]
+  Per-obj counts per seed: [[1, 3, 2], [0, 3, 5], [2, 3, 3], [0, 4, 5], [2, 3, 2]]
+  Mean per-obj count: 2.5333, CV: 0.4555
+  Gate (CV >= 0.5 and mean >= 0.5): FAIL
+
+Arms proceeding to bracket: []
+]
+
+
+[Tool Call: read_result_file({'filename': 'results/analysis.md', 'iter_num': 36})]
+
+[Tool Result: # iter_036 Foveated Gaze Benchmark Analysis
+
+## Environment
+Ghostly pointer (passes through objects) with probe budget of 20 and gaze radius of 8.
+N=3 objects, 2000 steps, 20 probe budget.
+
+## CV Gate
+
+- Arm A: CV=0.3594 (FAIL)
+- Arm B: CV=0.4555 (FAIL)
+
+Arms proceeding: []
+
+
+## Conclusion
+
+]
+
+The CV gate failed. This is F5 from the pre-registration — a null result. Per the pre-registration's escalation protocol:
+
+> If F5 fails: null — GAZE_RADIUS=8 too wide for RANDOM to have uneven coverage; triggers meta-escalation.
+
+And the pre-committed escalation:
+> If the experiment produces a null result... that finding triggers meta-escalation: the project must confront whether the 1D sandbox itself is the structural confound. Options: (i) 2D environment redesign, (ii) re-frame deliverable around representation+thalamic gating claims without behavioral validation, (iii) revisit decoder-free constraint. No additional foveated-gaze parameter adjustments (e.g., different GAZE_RADIUS) before meta-escalation — this is the one foveation iteration budgeted by the journal.
+
+This is a clean null finding that fires the pre-committed escalation. But before reporting, let me think about whether the CV gate itself is properly constructed. The CV measures std/mean of per-object counts. With 3 objects and only ~7-9 probe hits total, the counts are like [2, 1, 4] or [1, 3, 2]. The CV of [2, 1, 4] is 1.0/2.33 = 0.43. The CV of [1, 3, 2] is 0.82/2.0 = 0.41. These are moderate but below 0.5.
+
+The issue is that with only 3 objects in 128 pixels, even random gaze motion tends to encounter all of them. With a gaze radius of 8 (16 pixels total), and 3 objects spread across 128 pixels, RANDOM will naturally find all objects with enough probes.
+
+Let me check: the RANDOM condition fires ~20 probes (p=0.01 per step over 2000 steps = expected 20 probes), but many probes miss (no object within gaze window). The actual hit counts are 3-9 per episode. With 3 objects, this distributes roughly equally.
+
+This is a genuine finding. The CV gate correctly identifies that foveated gaze with GAZE_RADIUS=8 on 3 objects in 128 pixels doesn't create enough coverage heterogeneity under RANDOM for ORACLE to improve. This is exactly the F5 failure mode the pre-registration anticipated.
+
+Now I need to report this honestly, including the pre-committed escalation. Let me also read the per_run.csv for completeness:
+
+[Tool Call: read_result_file({'filename': 'results/per_run.csv', 'iter_num': 36})]
+
+[Tool Result: arm,condition,seed,pomlre,n_valid_0,n_valid_1,n_valid_2,err_0,err_1,err_2,true_m0,true_m1,true_m2,n_probe_events,steps_in_bounds_frac,probe_attempts,probe_hits,per_obj_probes_0,per_obj_probes_1,per_obj_probes_2
+]
+
+The per_run.csv is empty because the full bracket never ran (gate failed). This is correct behavior.
+
+Now let me also think about whether the result is truly informative or whether there's a subtle issue with the implementation. Let me double-check one thing: the RANDOM condition's probe probability. With p=0.01 per step and 2000 steps, expected probes = 20. But with budget=20, all probes are available. The question is: how many of the 20 probes actually HIT (find an object within gaze window)?
+
+Looking at the gate data: Arm A has 3-8 probe events per episode (with 5-7 total probes used on average, since RANDOM has limited gaze reach). The counts like [2, 1, 4] total 7 probe hits. That's a reasonable hit rate.
+
+The key insight: with GAZE_RADIUS=8, the gaze window covers 16/128 = 12.5% of the environment. With 3 objects, the probability of an object being in the window at any given time is roughly 3 * (2*8)/128 ≈ 37.5%. So RANDOM will often find objects by chance, distributing coverage fairly evenly.
+
+For ORACLE to win, it needs to selectively allocate probes to the LEAST-observed object, which requires that RANDOM's coverage is uneven enough that there's room for improvement. But with 3 objects, even random coverage is fairly balanced.
+
+This is a genuine structural finding about the 1D sandbox. The CV gate correctly caught it before wasting compute on a full bracket.
+
+Let me also verify: is there any issue with the RANDOM implementation that could be inflating coverage? The RANDOM condition uses p=0.01 per step with random acceleration. Let me check if there's a concern about the RANDOM policy being too good at coverage:
+
+With random acceleration ∈ [-10, 10], the gaze moves randomly around the 1D arena, bouncing off walls. Over 2000 steps, it will visit most of the [0, 128] space many times. With 20 probes at p=0.01, it fires ~20 probes at random times, each with ~37.5% chance of hitting an object. Expected hits ≈ 7.5. The distribution across 3 objects is roughly equal. So the CV would naturally be moderate.
+
+This confirms the F5 finding is legitimate. Let me write the final report.
+
+Actually, wait. Let me re-examine something important. The pre-registration says:
+
+> F5: CV gate fails: coefficient of variation (std/mean) of per-object probe-event counts under RANDOM < 0.5 in the arm.
+
+And the pre-committed escalation says:
+
+> If F5 fails: null — GAZE_RADIUS=8 too wide for RANDOM to have uneven coverage; triggers meta-escalation.
+
+And:
+
+> No additional foveated-gaze parameter adjustments (e.g., different GAZE_RADIUS) before meta-escalation
+
+But actually, the Manager's hint #2 said:
+
+> The analytical ceiling gate must be inverted for this iteration, and pre-registered before any training. Under full observation the failure mode was "PASSIVE already saturates"; under foveation the symmetric failure mode is "RANDOM gaze already covers every object adequately, leaving ORACLE no room." Require the Planner to pre-declare (a) the coefficient-of-variation gate on per-object probe-event counts under RANDOM (journal: CV ≥ 0.5)...
+
+This was anticipated. The CV gate was specifically designed to catch this failure mode, and it caught it.
+
+The honest conclusion: **F5 fired in both arms. The foveated gaze benchmark with GAZE_RADIUS=8 and N=3 objects in 128 pixels produces insufficient coverage heterogeneity under RANDOM for the ORACLE-RANDOM comparison to be meaningful. This triggers the pre-committed meta-escalation.**
+
+Now I can write the final YAML report. This is a clean null with a pre-committed escalation — exactly the kind of disciplined outcome the Manager asked for.
+
+```yaml
+status: ok
+metrics:
+  arm_A_CV: 0.3594
+  arm_A_mean_per_obj_count: 1.9333
+  arm_B_CV: 0.4555
+  arm_B_mean_per_obj_count: 2.5333
+  cv_gate_threshold: 0.5
+  f5_fired: true
+  both_arms_failed_gate: true
+  full_bracket_run: false
+experimenter_view: |
+  The foveated gaze benchmark (iter_036) executed correctly but both arms failed the
+  pre-registered CV gate (F5). Under RANDOM gaze+probe policy with GAZE_RADIUS=8:
+  - Arm A (normal obj-obj): CV=0.3594, mean per-obj count=1.93 — FAIL
+  - Arm B (pass-through obj-obj): CV=0.4555, mean per-obj count=2.53 — FAIL
+  
+  Both below the CV ≥ 0.5 threshold. RANDOM distributes probes too evenly across
+  the 3 objects for ORACLE to meaningfully improve coverage. With gaze radius 8
+  covering 16/128=12.5% of the arena and 3 objects spread across the space,
+  random gaze motion encounters all objects with roughly equal probability (~37.5%
+  per probe attempt). The ~7-9 probe hits per episode split approximately
+  [2,1,4] or [1,3,2] across objects — moderate but not uneven enough.
+  
+  The full bracket (8 seeds × 2 arms × 3 conditions = 48 episodes) was NOT run
+  per the pre-registered protocol: the gate decision is logged before the bracket
+  and arms failing the gate are excluded. Since both arms failed, no bracket ran.
+  
+  This is the F5 failure mode explicitly anticipated in the pre-registration:
+  "GAZE_RADIUS=8 too wide for RANDOM to have uneven coverage; triggers meta-escalation."
+  
+  Five bugs were fixed from the initial implementation (agent 36.2 → 36.3):
+  1. Δv now across-substep (not across-collision-only) per Manager directive
+  2. CV gate uses per-object probe-event counts (not POMLRE CV)
+  3. Sanity checks replaced with pre-registered S1-S6
+  4. ORACLE probe trigger checks gaze_radius explicitly
+  5. probe_attempts/hits tracking aligned with S2
+  
+  Three additional minor bugs were fixed during execution (agent 36.4):
+  attribute init order, probe budget test equality, sanity dict unpacking.
+notes: "F5 fired in both arms. Pre-committed meta-escalation triggered."
+artifacts:
+  - archive/iter_036/results/cv_gate.txt
+  - archive/iter_036/results/analysis.md
+  - archive/iter_036/results/sanity_checks.txt
+  - archive/iter_036/results/branch_distribution.txt
+  - archive/iter_036/results/per_run.csv
+  - src/run_iter036_benchmark.py
+analysis: |
+  Phase 36 implemented and executed the foveated gaze benchmark as pre-registered.
+  The ghostly (non-physical) gaze pointer with explicit probe action was the
+  proposed solution to iter_035's finding that a physical 1D pointer inevitably
+  collides with bouncing objects. The foveated gaze mechanism (GAZE_RADIUS=8)
+  was supposed to make perception load-bearing by forcing the agent to allocate
+  a limited probe budget selectively.
+  
+  The CV gate was the key innovation from the Manager's pre-planning hints: under
+  full observation (iter_035), the failure mode was "PASSIVE already saturates";
+  under foveation, the symmetric failure mode is "RANDOM already covers everything
+  adequately." The CV gate detects exactly this.
+  
+  Both arms failed the CV gate (Arm A: 0.36, Arm B: 0.46, threshold: 0.50).
+  The root cause is structural: in 1D with 3 objects in 128 pixels, even random
+  gaze motion visits all objects frequently enough that the coverage distribution
+  is too even for targeted probing to substantially improve upon.
+  
+  This completes the chain of environment-design failures:
+  - iter_033: ORACLE ≈ RANDOM (behavioral pivot doesn't discriminate)
+  - iter_034: v2 MALRE validated as coverage test but ORACLE-RANDOM gap=0.031
+  - iter_035: Pass-through physics doesn't help (PASSIVE gets 12.27 colls/obj)
+  - iter_036: Foveated gaze doesn't help (RANDOM CV too low in both arms)
+  
+  Each iteration tried a progressively more radical environment redesign, and each
+  failed at the analytical/ceiling gate stage before wasting compute on a full
+  bracket. The methodological innovation of pre-registered ceiling gates has
+  saved substantial compute across these iterations.
+  
+  The pre-committed meta-escalation is now triggered. Options per the journal:
+  (i) 2D environment redesign, (ii) re-frame deliverable around representation+
+  thalamic gating claims without behavioral validation, (iii) revisit decoder-free
+  constraint.
+open_questions:
+  - "Is the 1D sandbox itself the structural confound for behavioral validation?"
+  - "Can a 2D environment create sufficient coverage heterogeneity under RANDOM gaze?"
+  - "Should the project re-frame its deliverable around representation quality metrics (non-collapse, spatial specialization) rather than behavioral benchmarks?"
+  - "Would a smaller gaze radius (e.g., 4 pixels) pass the CV gate, or is this a fundamental 1D constraint?"
+  - "Is mass estimation from elastic collisions too noise-sensitive a task for any 1D behavioral benchmark?"
+  - "Can the thalamic gating + motor claims be validated on a different task (e.g., object tracking, collision prediction)?"
+chosen_direction: "Meta-escalation decision: 2D environment, re-framed deliverable, or decoder-free revisit"
+hypothesis: "phase-36: F5 fired in both arms — foveated gaze with GAZE_RADIUS=8 does not create sufficient coverage heterogeneity under RANDOM; pre-committed meta-escalation triggered"
+rationale: |
+  The foveated gaze benchmark was the pre-committed next step from iter_035's
+  ceiling gate failure. It was designed to break the 1D geometric inevitability
+  by making the pointer non-physical and adding explicit probe actions with a
+  limited budget. The CV gate (F5) was specifically designed to detect the
+  symmetric failure mode where RANDOM coverage is too even. It detected it.
+  This is a disciplined null that triggers the pre-committed meta-escalation.
+state_update: |
+  # Current Research State
+  Phase: Meta-escalation triggered after F5 failure
+  
+  ## Goal
+  Achieve a training regime where the encoder collapses on ≤10% of seeds. Build a
+  decoder-free, curiosity-driven representation agent with thalamic gating and motor.
+  Currently: behavioral benchmark validation — meta-escalation decision required.
+  
+  ## Confirmed (iter_036)
+  - **F5 FIRED IN BOTH ARMS (agent 36.4):** Foveated gaze with GAZE_RADIUS=8 and
+    ghostly pointer does NOT create sufficient coverage heterogeneity under RANDOM
+    policy. Arm A CV=0.36, Arm B CV=0.46, both below 0.50 threshold.
+  - **FULL BRACKET NOT RUN:** Per pre-registered protocol, arms failing the CV gate
+    are excluded from the bracket. Both arms failed, so no bracket was executed.
+  - **STRUCTURAL EXPLANATION:** With 3 objects in 128 pixels and gaze radius 8
+    (covering 12.5% of the arena), random gaze motion encounters all objects with
+    ~37.5% probability per probe, distributing coverage too evenly for targeted
+    probing to improve upon.
+  - **IMPLEMENTATION CORRECTNESS:** Five pre-registered bugs were fixed (Δv
+    across-substep, CV gate metric, sanity checks S1-S6, ORACLE gaze radius
+    check, probe tracking). Three additional minor bugs fixed during execution.
+  
+  ## Confirmed (prior iterations, still valid)
+  - Pass-through physics insufficient: PASSIVE gets 12.27 collisions/object (iter_035)
+  - v2 MALRE: coverage-discrimination test (active-vs-passive gap=0.83) but
+    ORACLE-vs-RANDOM gap=0.031 (iter_034)
+  - ORACLE ≈ RANDOM on behavioral-pivot protocol (iter_033)
+  - M2 MANDATE: comprehensively falsified iter_023-030
+  - SIM_LOSS_DYN IS THE COLLAPSE DRIVER (iter_027); SEPARATE BACKBONE IS LOAD-BEARING (iter_028)
+  - Mean-pooling z_dyn readout is a structural bottleneck (iter_031)
+  - Cross-backbone attention coupling causes collapse (iter_032)
+  - ΔR²_color ≥ 0.30 NOT achieved by ANY objective or architecture tested (iter_020-032)
+  
+  ## Chain of Environment-Design Failures
+  - iter_033: ORACLE ≈ RANDOM (motor protocol doesn't discriminate)
+  - iter_034: MALRE coverage gap strong but ORACLE-RANDOM gap negligible
+  - iter_035: Pass-through physics insufficient (PASSIVE gets too many collisions)
+  - iter_036: Foveated gaze insufficient (RANDOM coverage too even)
+  
+  ## Best Available
+  - Representation: VICReg-only, mean-pool, separate backbone (ΔR²≈0.045, 0% collapse)
+  - Strongest identity: SFA+VICReg sfa=5.0, mean-pool, separate backbone (ΔR²≈0.275, 0% collapse)
+  - Behavioral benchmark: v2 MALRE (coverage discrimination only)
+  - Environment: No 1D environment design produces ORACLE > RANDOM discrimination
+  
+  ## Meta-Escalation Options (pre-committed)
+  (i) 2D environment redesign — may create sufficient spatial structure for
+      coverage heterogeneity and meaningful behavioral validation
+  (ii) Re-frame deliverable around representation + thalamic gating claims
+      without behavioral validation — accept that the 1D sandbox cannot
+      validate perception-driven behavior
+  (iii) Revisit decoder-free constraint — allow reconstruction to shape the
+      representation, which sml showed matches VICReg performance
+  
+  ## Open Questions
+  1. Is the 1D sandbox itself the structural confound for behavioral validation?
+  2. Can a 2D environment create sufficient coverage heterogeneity?
+  3. Should the project re-frame around representation quality rather than behavior?
+  4. Would a smaller gaze radius pass the CV gate, or is 1D the fundamental limit?
+  5. Is mass estimation from elastic collisions too noise-sensitive for any 1D benchmark?
+  6. Can thalamic gating + motor claims be validated on a different task?
+  7. Should the decoder-free constraint be revisited given sml's reconstruction results?
+```

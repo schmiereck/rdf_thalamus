@@ -1,338 +1,346 @@
 # Research Journal – Thalamus Project
 
 ## 1. High-Level Strategy & Trajectory
-*   **Current Phase:** Behavioral-benchmark validation under
-    perception-gated environment redesign. iter_034 executed the
-    pre-committed environment redesign (pass-through obj-obj
-    physics) and hit the **analytical ceiling gate** at the
-    first checkpoint: PASSIVE pointer accumulated 12.27 valid
-    pointer-object collisions per object vs the pre-registered
-    threshold of 3.0 — a 4× overshoot. The gate fired as
-    designed, blocking the full experiment before any compute
-    was wasted on what would have been a guaranteed
-    ORACLE ≈ RANDOM outcome. This is a clean, pre-registered
-    **null result on the "remove obj-obj collisions" lever**.
-*   **Mechanistic story (clean):** In 1D physics, all entities
-    share a single spatial axis. A passive pointer that exists
-    *as a physical body* on that axis is on the trajectory of
-    every bouncing object by geometric necessity. Removing
-    obj-obj collisions (the iter_034 redesign) eliminates one
-    source of "free" dynamics information but does not address
-    the more fundamental source: the pointer itself is
-    collision-inevitable. Therefore *no* 1D environment that
-    preserves the pointer as a physical entity can gate
-    dynamics information on the pointer's policy. The user
-    hint's hypothesis ("make obj-obj collisions non-informative
-    or rare") was correct at the obj-obj level but insufficient,
-    because pointer-object collisions remain abundant and
-    policy-independent. The iter_034 analytical ceiling gate
-    was the right falsifier and it fired correctly.
-*   **Implication (forced, not chosen):** The escalation rule
-    pre-committed in iter_034's planning has been triggered:
-    partial observation (foveated gaze, Section 8.2) is the
-    principled way to make perception necessary, because under
-    partial observation *you only learn what you look at*. This
-    pulls Section 8.2 forward from deferred into the active
-    research path. The geometric argument also implies the
-    escalation is not optional within 1D — pointer-as-observer
-    is the only remaining lever after pass-through.
-*   **Active Direction (iter_035, pre-register tightly):**
-    Redesign the environment to use a **foveated/gated
-    observation window** instead of a physical pointer:
-    - Pointer becomes a *gaze locus*, not a body. It does not
-      collide with objects.
-    - Information about an object's state is available to the
-      agent *only* when the object is within the foveated
-      window (or with a sharp distance-dependent attenuation).
-    - Mass-estimation experiments require *agent-caused
-      excitation* — replace pointer-object collisions with a
-      gated "probe" action (e.g. a localized force pulse
-      applied at the gaze locus) that the agent must aim.
-    - Primary metric: per-object mass estimate from the
-      *median* of repeated probe-induced collisions per object
-      under a finite probe budget, NOT single-collision
-      least-squares (which iter_034 v1 falsified as
-      noise-amplifying for active policies).
-    - Alternative metric: coverage-efficiency (steps to
-      N>=3 probe-induced events per object).
-    Run RANDOM and ORACLE only (LEARNED deferred to iter_036)
-    with the iter_033 ORACLE sanity-checks as pass/fail
-    preconditions: surprise scale within 2 orders of magnitude
-    of expected physical event amplitude, ≥80% of surprise
-    spikes within ±2 steps of ground-truth events. Gate:
-    ORACLE − RANDOM ≥ 0.15 with lower CI clear of zero over
-    ≥5 seeds.
-*   **Pre-committed escalation (iter_036, conditional):** If
-    foveated observation STILL cannot open the bracket
-    (ORACLE − RANDOM < 0.15), that *is* the finding —
-    perception is not behaviorally load-bearing under any
-    tractable 1D observation regime — and the project must
-    then confront whether the 1D sandbox itself is the
-    structural confound (escalation to 2D or to a
-    fundamentally different task formulation). Do not spend
-    more than one foveated-gaze iteration before that meta-
-    escalation.
+*   **Current Phase:** META-ESCALATION TRIGGERED. iter_036
+    executed the pre-committed foveated-gaze redesign and
+    hit the **coefficient-of-variation (CV) ceiling gate**
+    in BOTH arms before any full bracket run:
+    - Arm A (foveation only, obj-obj collisions retained):
+      RANDOM per-object event-count CV = 0.36
+    - Arm B (foveation + pass-through obj-obj):
+      RANDOM per-object event-count CV = 0.46
+    - Pre-registered threshold: CV ≥ 0.50
+    The gate fired as designed. Under foveated gaze with
+    GAZE_RADIUS=8 in a 128-pixel arena containing 3 objects,
+    random gaze trajectories distribute probe events
+    sufficiently evenly across objects that there is
+    essentially no "underserved object" for an ORACLE to
+    preferentially target. This is the structurally
+    symmetric failure mode to iter_035's "PASSIVE already
+    saturates": there, all policies acquired adequate
+    collision information; here, all policies achieve
+    adequate gaze coverage.
+*   **Four-iteration null chain (clean, pre-registered,
+    compute-conserving):** iter_033 (ORACLE ≈ RANDOM on
+    behavioral pivot), iter_034 (v2 MALRE coverage-only,
+    ORACLE-RANDOM=0.031), iter_035 (pass-through physics:
+    PASSIVE 12.27 colls/obj vs 3.0 threshold), iter_036
+    (foveation: RANDOM CV 0.36/0.46 vs 0.50 threshold).
+    Each iteration applied a progressively more radical
+    environment redesign and each was killed at an
+    analytical/structural gate before any wasted training
+    compute. **Cumulative finding:** no 1D-sandbox
+    configuration tested has been able to make perception
+    behaviorally load-bearing in the
+    ORACLE-vs-RANDOM-bracket sense — full-observation
+    regimes fail because passive policies acquire the
+    information for free; partial-observation regimes fail
+    because random policies cover space uniformly enough
+    that selective allocation has nothing to gain.
+*   **Mechanistic story (4-iteration synthesis):** Behavioral
+    load-bearingness requires the *information rate per
+    object* to be both (a) bounded — so that better
+    allocation has discriminative value — and (b) unequal
+    across objects under a non-perceptual baseline policy —
+    so that there is "headroom" for perception-driven
+    reallocation. The 1D × N=3 × 128-pixel × full-or-
+    foveated regime fails one of these on every iteration:
+    either bound (a) fails (full observation, pointer
+    collisions abundant) or non-uniformity (b) fails
+    (foveation in a small arena, random walks cover
+    everything). These are not coincidences of parameter
+    choice — they reflect the geometric fact that a small,
+    low-dimensional, sparsely-populated arena does not
+    naturally produce the information-allocation pressures
+    that would make selective attention pay off.
+*   **Implication (FORCED meta-decision, owed to iter_037
+    planner):** The pre-committed meta-escalation has
+    triggered. The three options on the journal are:
+    (i) 2D environment redesign — principled (more spatial
+        dimensions naturally create coverage heterogeneity
+        because random walks in 2D do not cover area as
+        uniformly as in 1D) but materially more expensive
+        across all components (env, perception, motor);
+    (ii) re-frame the project's behavioral-validation goal:
+         accept the four-iteration null as evidence that
+         behavioral validation in *any* 1D regime is
+         structurally unreachable, and reduce the
+         deliverable to representation-quality +
+         thalamic-gating claims that can be evaluated
+         without a bracketed behavioral metric;
+    (iii) revisit whether the decoder-free constraint is
+          itself binding: a decoder enables direct
+          reconstruction-based evaluation that bypasses
+          the bracket-discrimination problem entirely.
+    This is a **meta-strategic decision**, not a
+    within-design choice. The Manager's scope-reduction
+    authority is in play and may have to be exercised again.
+*   **Active Direction (iter_037, the meta-decision):**
+    Iter_037 must NOT propose a new environment redesign.
+    It must instead pre-register one of the three escalation
+    paths with explicit cost/benefit/falsifiability criteria
+    for each. Decision rule for iter_037:
+    - Path (i) 2D: justified only if a concrete 2D design
+      is sketched with the analytical ceiling gates
+      pre-stated (passive-event bound, RANDOM-CV bound,
+      ORACLE sanity checks). Estimate engineering cost in
+      agent-iterations.
+    - Path (ii) re-frame: justified only by enumerating
+      the falsifiable representation + gating claims that
+      REMAIN testable without a behavioral bracket, plus
+      the gates that would validate each. Concretely:
+      identity-disentanglement ΔR² thresholds, attention-
+      token-trace properties, surprise-EMA calibration
+      tests. Must NOT degenerate into "we have a nice
+      representation, ship it."
+    - Path (iii) decoder relaxation: justified only by
+      an explicit argument for why the original decoder-
+      free constraint was adopted, what it bought, and
+      what is lost by relaxing it. Must include a
+      falsifiable test that the relaxation buys
+      behavioral discrimination that the constrained
+      regime could not provide.
+    Iter_037 deliverable: a pre-registered choice among
+    (i)/(ii)/(iii) with the gates for the chosen path
+    stated in advance.
 *   **What is now solid:**
-    - **The analytical ceiling gate is a high-leverage
-      protocol primitive.** It detected an environment-design
-      failure in one cheap measurement (counting passive
-      collisions) before any model training. Inherit this
-      primitive for every future environment redesign.
-    - **1D + physical pointer + full observation is
-      structurally incompatible with making perception
-      load-bearing.** This is a geometric statement, not an
-      empirical conjecture, and it eliminates an entire
-      family of candidate fixes.
-    - **iter_028 substrate** (separate backbone + mask_dyn_sim
-      + coord_vicreg, ΔR²_color ≈ 0.045, 0% collapse) remains
-      the working representation, unchanged.
-    - **MALRE v2** remains validated as a coverage-
-      discrimination test (active-vs-passive gap = 0.83);
-      unchanged as the secondary metric, but no longer the
-      primary benchmark for iter_035 because it does not
-      discriminate within the active regime.
+    - **Analytical/structural ceiling gates have saved
+      four iterations of wasted training compute.**
+      Adopt as standard protocol going forward; the
+      primitive is mature.
+    - **The 1D-sandbox is structurally insufficient for
+      bracketed behavioral validation of perception under
+      any tested observation regime.** This is now a
+      four-iteration empirical finding, not a conjecture.
+      Independent of any specific representation or
+      motor controller.
+    - **iter_028 substrate** (separate backbone +
+      mask_dyn_sim + coord_vicreg, ΔR²_color ≈ 0.045,
+      0% collapse) remains the working representation.
+    - **MALRE v2 remains a valid coverage-discrimination
+      test** but not a perception-quality test.
 *   **What is now retired or contested:**
-    - **Pass-through obj-obj physics as a sufficient
-      environment redesign:** falsified by analytical
-      ceiling gate (PASSIVE 12.27 >> threshold 3.0).
-    - **The hypothesis that obj-obj collisions are the
-      primary source of free dynamics information:** refined.
-      Pointer-object collisions on a 1D axis with a physical
-      pointer are an equally-or-more abundant source, and
-      they are policy-independent for any policy that doesn't
-      deliberately *avoid* objects.
-    - **All metric-only redesigns on the full-observation
-      environment** (the iter_034 open question 1–6 metric
-      sweeps): retired without test, because the user-hint
-      argument — confirmed by the geometric pointer-collision
-      inevitability — establishes that no metric can
-      discriminate perception in an environment where
-      information is ungated by perception.
+    - **Foveated-gaze observation in 1D × N=3 × 128px**
+      as a sufficient environment redesign: falsified by
+      the CV gate in both Arm A (collisions retained) and
+      Arm B (pass-through). The two levers (foveation
+      and pass-through) do not combine additively in a way
+      that opens the bracket.
+    - **The "find the right 1D environment" research
+      path:** structurally retired. Four consecutive
+      principled attempts have failed at the gate stage.
+      Further 1D redesigns would be ad-hoc.
+    - **Pass-through physics, low-density-N variants,
+      single-collision LSQ mass estimation, and all
+      metric-only redesigns on a full-observation
+      environment:** remain retired per prior iterations.
     - **Constraint relaxation (decoder, higher d_t,
-      VICReg-upstream):** remains BLOCKED. The original rule
-      (relaxation only under iter_033 branch (b)) is
-      unaffected. iter_034 was a null on environment design,
-      not a sufficiency result.
-*   **Confidence Score:** 42% (up from 38%). The recovery is
-    methodological, not goal-directed: a pre-registered gate
-    caught a design failure at minimum cost, identifying a
-    geometric constraint on the entire 1D-pointer experimental
-    regime and forcing a principled — rather than ad-hoc —
-    escalation to foveated observation. The project still has
-    not validated the representation behaviorally; the gain
-    is structural clarity about what regimes *cannot* validate
-    it. Recovery beyond ~45% requires iter_035 producing an
-    open bracket under foveated observation.
+      VICReg-upstream):** REMAINS BLOCKED for path (i)
+      and path (ii); becomes the explicit subject of
+      path (iii) if iter_037 chooses it.
+*   **Confidence Score:** 39% (down from 42%). The slight
+    drop reflects that the foveation lever — which had
+    been the principled escape from the iter_035
+    pointer-geometry constraint — has now also failed at
+    a structural gate. The gain in clarity (1D-sandbox is
+    structurally insufficient) is real, but the project
+    now faces a binding meta-decision with no within-1D
+    options remaining. Methodological discipline remains
+    high (nine consecutive clean pre-registered
+    iterations, four consecutive analytical-gate saves).
 
 ## 2. Strategic Insights & Lessons Learned
-*   **ANALYTICAL CEILING GATE AS PROTOCOL PRIMITIVE (iter_034,
-    METHODOLOGICAL FINDING):** Pre-registering a cheap-to-
-    compute structural ceiling (here: count passive valid
-    events vs threshold) as a hard gate before full experiment
-    execution prevented an entire wasted run that would have
-    almost certainly returned ORACLE ≈ RANDOM. The gate
-    computed in passes that would otherwise have taken full
-    training. This generalizes: for any
-    bracketed-behavioral-evaluation iteration, the
-    *prerequisite-for-discrimination* condition (e.g.
-    "passive baseline must NOT already saturate information
-    acquisition") should be expressed as a pre-registered
-    analytical gate, evaluated first, with the experiment
-    blocked on failure. Adopt as standard protocol.
-*   **PERCEPTION-GATED-INFORMATION AS DESIGN AXIOM (iter_034,
-    STRATEGIC FINDING):** For any experiment intended to
-    validate that perception is *behaviorally load-bearing*,
-    the environment must be constructed such that the
-    information necessary for the downstream metric is
-    *causally gated* on the agent's perception-driven action.
-    If passive or random policies can accumulate the same
-    information by virtue of environment geometry,
-    ORACLE − RANDOM is bounded above by the *small*
-    additional value of "smart" vs "any" action — typically
-    noise-floor. Diagnostic question for every future
-    environment design: "What unit of information does the
-    agent need, and what action is required to acquire that
-    unit?" If the answer is "no action" or "any action,"
-    the environment cannot test perception sufficiency.
-*   **1D + PHYSICAL POINTER IS A GEOMETRIC DEAD END FOR
-    PERCEPTION-GATING (iter_034, STRUCTURAL CONSTRAINT):**
-    Independent of any specific physics ruleset, an entity
-    that physically occupies the same 1D spatial axis as the
-    objects of interest will be involved in collisions at a
-    rate proportional to total motion in the scene, not to
-    the entity's own policy. This eliminates pass-through,
-    collision-rare, low-density-N, and similar
-    environment-modification levers as sufficient fixes.
-    Only making the pointer a *non-physical observer*
-    (foveated gaze, attention window) can break this. This
-    is the structural argument for the iter_034 escalation
-    to Section 8.2.
-*   **MEDIAN-OF-REPEATED-EVENTS BEATS SINGLE-EVENT
-    LEAST-SQUARES UNDER ACTIVE POLICIES (iter_034 carry-
-    forward of iter_033/034 lesson):** The v1 MAPE benchmark
-    (iter_034.2) using single pointer-object collision mass
-    estimates inverted ordering (PASSIVE < RANDOM < ORACLE)
-    because active probing increased per-collision noise.
-    Any iter_035 mass-estimation metric must aggregate over
-    *repeated* agent-caused events per object (median is the
-    noise-robust default; mean is too sensitive to single-
-    collision outliers in chaotic dynamics). Document this
-    as the standard reduction for any future
-    mass/parameter-estimation benchmark in this project.
-*   **MOTOR CONFOUND PERSISTS, REQUIRES DESIGN AROUND, NOT
-    THROUGH (iter_033 carry-forward, sharpened):** The
-    iter_033 CLTSMotorController EMA-calibration confound
-    remains live. iter_035's metric should be computed from
-    *interaction outcomes* (mass-estimate accuracy or
-    coverage-efficiency) rather than from tracking error.
-    If the bracket arms must route through the motor
-    controller, the surprise-EMA must be recalibrated
-    per-condition (ORACLE / RANDOM / future LEARNED) so the
-    benchmark does not silently measure controller
-    calibration. Pre-register the per-condition EMA
-    recalibration protocol in iter_035.
+*   **STRUCTURAL-CEILING GATE PRIMITIVE NOW VALIDATED
+    ACROSS FOUR ITERATIONS (iter_036, METHODOLOGICAL
+    FINDING, PROMOTED):** Pre-registered cheap-to-compute
+    analytical/structural gates have now killed four
+    consecutive flawed experiments before any wasted
+    training run (iter_033 metric-saturation check,
+    iter_034 MALRE active-passive gap, iter_035 PASSIVE
+    collision count, iter_036 RANDOM CV). The pattern is
+    stable enough to formalize as a protocol primitive:
+    every iteration that proposes a bracketed-behavioral
+    evaluation must include (a) the structural
+    necessary-condition for discrimination, expressed as a
+    single number computable from a short rollout or
+    analytically, and (b) the threshold this number must
+    meet, declared in advance. Block full execution on
+    failure. This primitive is now the project's most
+    reliable output.
+*   **DUAL FAILURE MODES OF PERCEPTION-LOAD-BEARINGNESS
+    (iter_036, STRATEGIC FINDING):** Behavioral validation
+    of perception requires that under a non-perceptual
+    baseline policy: (a) the information rate per object
+    is BOUNDED (otherwise passive saturates — iter_035
+    pattern), AND (b) the information rate per object is
+    UNEQUAL across objects (otherwise random already
+    allocates evenly — iter_036 pattern). The 1D × N=3 ×
+    128-pixel arena fails one of these on every observation
+    regime tested. Future environment designs (if any)
+    must be evaluated against BOTH conditions with
+    pre-registered analytical gates for each. The
+    diagnostic question becomes: "Under a non-perceptual
+    baseline, is per-object information acquisition both
+    bounded and uneven?"
+*   **GEOMETRIC-COVERAGE PROPERTY OF RANDOM WALKS IS A
+    FIRST-ORDER ENVIRONMENT DESIGN CONSTRAINT (iter_036,
+    STRUCTURAL CONSTRAINT):** In low-dimensional, small,
+    sparsely-populated arenas, random-walk coverage is
+    sufficiently uniform on relevant timescales that
+    "smart" allocation gains little. This is the
+    higher-dimensional analog of the iter_035 pointer
+    geometry argument: the binding constraint is a
+    geometric property of the *space* (here, dimensionality
+    and density) rather than of the agent or the task.
+    This is the structural argument for path (i) 2D over
+    any further 1D redesign: not "2D is more interesting"
+    but "2D random walks do not cover area as uniformly
+    as 1D random walks cover line, restoring condition (b)."
+*   **WHEN THE FOURTH PRINCIPLED REDESIGN FAILS, THE
+    DESIGN SPACE IS EXHAUSTED, NOT UNLUCKY (iter_036,
+    META-STRATEGIC FINDING):** With four consecutive
+    pre-registered environment redesigns failing at
+    structural gates, the prior on "the next 1D tweak
+    will work" is now low enough that further 1D
+    iterations would be motivated by sunk cost rather
+    than evidence. The forced meta-decision is to change
+    the design space (2D, path i), change the
+    deliverable (path ii), or change the constraint
+    (path iii). Continuing to iterate within 1D would
+    violate the project's stated Manager discipline.
 *   **CARRIED FORWARD (unchanged):**
     - M1 (pooled/batch VICReg) stands.
-    - M2 status unchanged: "untestable under currently-
-      evaluated protocols." Now widened: untestable under
-      any 1D full-observation regime due to the structural
-      gating argument.
-    - M3 (fixed dimensionality d_t=3, GDASR log-only) stands.
-    - Separate backbone + mask_dyn_sim + coord_vicreg = 0%
-      collapse substrate.
-    - Decoder-free constraint stands.
+    - M2 status: "untestable under any tested 1D
+      observation regime." Now four-iteration null.
+    - M3 (fixed dimensionality d_t=3, GDASR log-only)
+      stands.
+    - Separate backbone + mask_dyn_sim + coord_vicreg =
+      0% collapse substrate.
+    - Decoder-free constraint stands for paths (i) and
+      (ii); becomes the subject of debate under path (iii).
     - No positional encoding.
     - Pre-registered decision rules continue to produce
-      clean outcomes (eight consecutive iterations:
-      023–024, 029–034).
+      clean outcomes (nine consecutive iterations:
+      023–024, 029–036).
     - ORACLE-bracket methodology stands as the confound
-      disambiguator for behavioral evaluation.
+      disambiguator for behavioral evaluation IF a
+      bracket-able environment is ever found.
     - Metric saturation must be computed and reported
-      before any metric is adopted (iter_033 lesson).
-    - Constraint relaxation BLOCKED pending an open
-      bracket producing branch (b).
+      before any metric is adopted.
+    - Median-of-repeated-events beats single-event
+      least-squares for active policies.
+    - Per-condition surprise-EMA recalibration required
+      for any motor-routed bracket.
+    - Constraint relaxation BLOCKED for paths (i)/(ii);
+      becomes path (iii)'s explicit subject.
 
 ## 3. Loop & Bottleneck Detection
-*   **Environment-Design Bottleneck (NEW, ACTIVE):** The
-    project's binding constraint has shifted from
-    representation (resolved by iter_028 substrate +
-    iter_033 bracket) to behavioral protocol (iter_033) to
-    environment information-structure (iter_034). The
-    currently-binding question: *can any 1D environment make
-    perception load-bearing?* If foveated gaze (iter_035)
-    opens the bracket: yes, partial observation suffices.
-    If not: 1D itself may be the confound, and 2D escalation
-    becomes the next forced move.
-*   **Cheap-Analytical-Gate Loop (NEW, FAVORABLE):** iter_034
-    validated that a cheap structural pre-check can catch a
-    flawed experiment before execution. This is a *good*
-    loop — adopt as standard. Future iterations should
-    identify the cheapest computable necessary-condition for
-    experimental success and gate execution on it.
-*   **Geometric-Inevitability Loop (NEW, TRACKED):** Two
-    consecutive environment-design attempts (iter_034
-    pass-through; the metric sweeps that would have been
-    iter_034 v1.x) have foundered on a geometric property of
-    the test environment rather than on any modeled
-    mechanism. Adopt the diagnostic: before proposing an
-    environment modification, articulate the *geometric or
-    topological* property that the modification changes, and
-    argue that *that* property — not the mechanism the
-    modification superficially targets — is the binding
-    constraint.
+*   **Environment-Design Bottleneck (NOW EXHAUSTED, FORCED
+    META-DECISION):** Four pre-registered redesigns
+    (iter_033, 034, 035, 036) have failed at structural
+    gates. The bottleneck is no longer "find the right
+    1D environment" — it is "decide whether to escalate
+    dimensionality, scope, or constraint." Iter_037 must
+    resolve this.
+*   **Cheap-Analytical-Gate Loop (NOW INSTITUTIONALIZED):**
+    Four-iteration validation of the primitive. Promoted
+    to standard protocol. Every future behavioral-bracket
+    proposal must include a structural ceiling gate.
+*   **Geometric/Topological-Constraint Loop (CONFIRMED,
+    PROMOTED):** Two consecutive iterations have foundered
+    on geometric properties of 1D space (iter_035 pointer
+    collisions; iter_036 random-walk coverage uniformity).
+    The diagnostic — articulate the geometric/topological
+    property the redesign changes — is now mandatory for
+    any further environment design.
+*   **Dual-Failure-Mode Loop (NEW):** Any future
+    bracketed-behavioral evaluation must check BOTH
+    "passive doesn't saturate" AND "random doesn't already
+    cover" conditions with separate pre-registered gates.
+    Past iterations checked one or the other but not both.
+*   **Sunk-Cost-Avoidance Loop (NEW, FAVORABLE):** Iter_036
+    is the trigger point for an explicit meta-decision
+    rather than another 1D iteration. The project's
+    discipline is being tested by the temptation to "try
+    one more thing" — the journal pre-commitment (from
+    iter_035) is what should hold the line.
 *   **Metric-Saturation Loop (ACTIVE, unchanged):** Carry
-    forward; applies to any iter_035 metric design. Compute
-    and report the random-baseline ceiling structurally
-    before adopting.
-*   **ORACLE-Implementation-Correctness Loop (ACTIVE,
-    unchanged):** Pre-register surprise-scale and event-
-    alignment sanity checks for any ORACLE in iter_035.
-*   **Motor-Protocol-as-Confound Loop (ACTIVE, unchanged):**
-    Per-condition surprise-EMA recalibration required if
-    iter_035 routes through CLTSMotorController; preferable
-    to use a metric that bypasses the motor entirely.
-*   **Representation-Quality-Gate Loop (RESOLVED, unchanged).**
-    ORACLE bracket prevents re-formation.
-*   **Diagnostic-vs-Constructive Iteration Loop (DORMANT,
-    unchanged).** Eight consecutive clean pre-registered
-    iterations; protocol mature. Honest null findings now
-    routinely produced.
-*   **Overclaim Loop (DORMANT, unchanged):** iter_034 reported
-    its null result without overclaiming (correctly framed
-    as "the gate fired, escalation triggered").
+    forward to any future bracket design.
+*   **ORACLE-Implementation-Correctness Loop (DORMANT for
+    iter_037 since no ORACLE will be implemented in a
+    meta-decision iteration).**
+*   **Motor-Protocol-as-Confound Loop (DORMANT for
+    iter_037).**
+*   **Representation-Quality-Gate Loop (RESOLVED, becomes
+    path (ii)'s subject if chosen).**
+*   **Diagnostic-vs-Constructive Iteration Loop (DORMANT):**
+    Nine consecutive clean pre-registered iterations;
+    protocol mature.
+*   **Overclaim Loop (DORMANT):** iter_036 reported its
+    null cleanly with the meta-escalation framed as
+    pre-committed, not improvised.
 
 ## 4. Alternate Research Paths
-*   **iter_035: Foveated-Observation Environment + Bracket
-    (IMMEDIATE PRIORITY, PRE-COMMITTED VIA ITER_034
-    ESCALATION):**
-    - Goal: produce a 1D environment in which dynamics
-      information about each object is *causally gated* on
-      the agent's gaze policy, and verify
-      ORACLE − RANDOM ≥ 0.15 on a continuous, motor-
-      independent metric over ≥5 seeds (hard seeds 53/71
-      included).
-    - Environment changes:
-      * Pointer → non-physical gaze locus (no collision).
-      * Object observation: full state available only when
-        object within gaze window of radius r; outside,
-        either unobserved (preferred — maximally gates
-        information) or heavily attenuated.
-      * Excitation: agent issues a localized "probe" force
-        impulse at the gaze locus; this is the only way to
-        induce object dynamics changes.
-      * Object-object collisions: retain *or* remove —
-        pre-register both as Arm A (keep, foveation alone)
-        and Arm B (remove + foveate) to factor the
-        contribution of each lever.
-    - Primary metric: per-object mass estimate from the
-      median of repeated probe-induced events per object
-      under a fixed probe budget B (start B=20). Report
-      per-object MAE.
-    - Secondary metric: coverage-efficiency (number of
-      probe events needed to reach ≥3 events per object).
-    - Bracket: RANDOM and ORACLE only; LEARNED deferred.
-      ORACLE = perfect knowledge of object positions and
-      velocities, with policy that allocates probes to
-      equalize per-object coverage and target moments when
-      relative velocity is informative.
-    - Analytical ceiling gate (pre-registered, computed
-      first): under RANDOM policy, per-object event count
-      must be sufficiently *unbalanced* across objects
-      that ORACLE has room to improve. Specifically:
-      coefficient of variation of per-object event counts
-      under RANDOM ≥ 0.5, computed analytically or by
-      single short rollout.
-    - ORACLE sanity checks (pre-registered): surprise
-      scale within 2 orders of magnitude of physical
-      event amplitude; ≥80% of surprise spikes within ±2
-      steps of ground-truth probe-induced events.
-    - If gate or sanity checks fail: iteration reports
-      the null and triggers iter_036 meta-escalation
-      (see below). Do not relax constraints.
-*   **iter_036: Meta-Escalation if Foveation Fails
-    (PRE-COMMITTED, CONDITIONAL):** If iter_035 foveated
-    observation cannot open the bracket, that establishes
-    that 1D itself is structurally insufficient for
-    perception-load-bearing experiments. The forced moves
-    are: (i) 2D environment redesign — substantially more
-    expensive but principled; (ii) accept that the
-    project's behavioral validation goal is unreachable in
-    a 1D sandbox and re-frame the project's deliverable
-    around the *representation* + *thalamic gating* claims
-    that can be validated without behavior; (iii) revisit
-    whether the decoder-free constraint is itself part of
-    the problem. Decision rule deferred to iter_036
-    planning; explicitly noted that this is a
-    meta-strategic decision, not a within-design choice.
-*   **iter_037+ (CONDITIONAL on iter_035 bracket opening):
-    Attach LEARNED, run branch (a)/(b)/(c)/(d) rule.**
-    Substrate remains iter_028 + d_t=3 frozen + GDASR
-    log-only. Decision rule identical to iter_033.
-*   **Constraint-Relaxation Phase (BLOCKED, unchanged):**
-    Only justified by branch (b) outcome from an
-    open-bracket LEARNED run.
+*   **iter_037: META-DECISION ITERATION (IMMEDIATE,
+    PRE-COMMITTED VIA ITER_035/036 ESCALATION):**
+    No new experiment. Iter_037 produces a single
+    deliverable: a pre-registered choice among paths
+    (i)/(ii)/(iii) with full justification and gates.
+    Required content:
+    - Restate the four-iteration null chain with the
+      gate values that fired.
+    - For each of (i)/(ii)/(iii), pre-register the
+      falsifiability criterion that would validate or
+      kill that path.
+    - For the chosen path, pre-register iter_038's
+      first experiment with its structural ceiling
+      gate(s).
+    - Document the decision rule (why this path, why
+      not the other two) so it is auditable.
+    - Estimate engineering cost (agent-iterations)
+      for the chosen path.
+    Hard rule: NO new environment design within 1D.
+    Soft rule: prefer the path with the lowest
+    engineering cost given equal falsifiability.
+*   **Path (i): 2D environment redesign (CANDIDATE).**
+    Argument: random walks in 2D do not cover area as
+    uniformly as in 1D cover line, restoring CV
+    condition (b). Cost: substantial — env, perception
+    (2D conv), motor, evaluation all need redesign.
+    Falsifiability: must pre-register both PASSIVE
+    bound and RANDOM CV gates analogous to iter_035/036.
+*   **Path (ii): re-frame around representation +
+    gating (CANDIDATE).** Argument: iter_028 substrate
+    + iter_032 cross-backbone finding + iter_034
+    coverage-test validation already produce a
+    defensible non-behavioral story. Cost: low —
+    consolidation, not new compute. Falsifiability:
+    must pre-register the specific representation
+    and gating claims and the gates that validate
+    each, to avoid degeneration into "ship what we
+    have."
+*   **Path (iii): revisit decoder-free constraint
+    (CANDIDATE).** Argument: a decoder enables
+    reconstruction-based evaluation that bypasses the
+    bracket-discrimination problem. Cost: medium —
+    decoder design + retraining, but reuses
+    substrate. Falsifiability: must pre-register a
+    test that decoder-enabled evaluation buys
+    discrimination the constrained regime could not.
+    Risk: violates the project's foundational
+    decoder-free principle; requires explicit
+    acknowledgement.
+*   **iter_038+ (CONDITIONAL on iter_037 choice):**
+    First experiment along the chosen path. Substrate
+    remains iter_028 + d_t=3 frozen + GDASR log-only
+    unless path (iii) is chosen.
+*   **Constraint-Relaxation Phase:** Status now
+    contingent on iter_037's path choice rather than
+    blocked outright.
 *   **Causal Sensitivity Probe (DEFERRED, unchanged):**
-    Re-attach once a bracket opens.
+    Re-attach only if a bracket-able environment is
+    found (path i) or path (iii) provides a
+    bracket-free evaluation.
 *   **Augmentation-Based Self-Supervision (BYOL/SimCLR),
     Micro-Columns, Hierarchical Pyramid, Phase-5 GDASR
     Reactivation:** DEFERRED, unchanged.
